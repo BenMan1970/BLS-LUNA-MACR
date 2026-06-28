@@ -12,14 +12,14 @@ scenarios -> :class:`BriefingContext`.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 from . import config as C
 from .models import (
     AssetSetup, BriefingContext, CentralBankSnapshot, CotPositioning,
-    CurrencyStrength, Datum, MacroEvent, MarketSnapshot, Reliability,
-    RiskScenario, SourceStamp, na_stamp, proxy_stamp,
+    CurrencyStrength, MacroEvent, MarketSnapshot,
+    RiskScenario, na_stamp, proxy_stamp,
 )
 from .market_data import fr_num
 
@@ -350,7 +350,6 @@ def _build_setup(asset: str, direction: int, score: float, market: MarketSnapsho
                  allow_proxy_levels: bool, ips_by_ccy: dict, ccys, ev) -> AssetSetup:
     price = market.price(asset)
     em_disp, em_method, atr = compute_expected_move(asset, market)
-    proxy_levels = (em_method.startswith("PROXY") or not allow_proxy_levels is False)
     # Levels are ATR-derived -> [PROXY] origin (we have no real S/R feed).
     p = price.value
     buy = p - C.LEVEL_ATR_MULT * atr if atr else None
@@ -542,7 +541,7 @@ def build_context(
     """Assemble the full :class:`BriefingContext` from all layers."""
     overrides = overrides or {}
     now_cet = now_utc.astimezone(C.TZ_CET)
-    sess_label, is_live = session_label(now_cet)
+    _, is_live = session_label(now_cet)
 
     raw_engine = calendar.get("events_engine") or calendar.get("events") or []
     events = [MacroEvent.from_enriched(e) for e in raw_engine]
@@ -593,7 +592,7 @@ def build_context(
     op_note = None
     if not is_live:
         op_note = ("Briefing généré hors session FX live — niveaux & données basés sur la "
-                   f"dernière clôture. À revalider à l'ouverture de la prochaine session.")
+                   "dernière clôture. À revalider à l'ouverture de la prochaine session.")
 
     return BriefingContext(
         generated_utc=now_utc, generated_cet=now_cet,
