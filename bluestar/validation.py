@@ -58,7 +58,7 @@ def check_sources_or_na(ctx: BriefingContext) -> list[ValidationIssue]:
     for s in ctx.priority_assets:
         for f in ("zone_buy", "zone_sell", "stop"):
             val = str(getattr(s, f))
-            origin = str(getattr(s, "origin_" + f.split("_")[-1], ""))
+            origin = str(getattr(s, "origin_" + f.rsplit('_', maxsplit=1)[-1], ""))
             has_num = any(ch.isdigit() for ch in val)
             if has_num and not (tag.search(origin) or "[" in origin):
                 issues.append(ValidationIssue("sources_or_na", "WARN",
