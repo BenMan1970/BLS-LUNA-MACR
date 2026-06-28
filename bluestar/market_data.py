@@ -14,11 +14,11 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Optional
 
 import pytz
 
-from .config import TZ_CET, YF_TICKERS
+from .config import YF_TICKERS
 from .models import Datum, Reliability, SourceStamp, MarketSnapshot, na_stamp
 
 logger = logging.getLogger(__name__)
