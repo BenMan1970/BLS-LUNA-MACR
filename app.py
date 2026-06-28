@@ -16,8 +16,6 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-
-import pytz
 import streamlit as st
 import streamlit.components.v1 as components
 
