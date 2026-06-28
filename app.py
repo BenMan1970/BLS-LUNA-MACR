@@ -25,7 +25,7 @@ from bluestar.config import (
     CALENDAR_CACHE_TTL, MARKET_CACHE_TTL, MODES, TZ_CET, TZ_UTC,
 )
 from bluestar.macro_engine import build_context, fr_date, fr_day_name, session_label
-from bluestar.market_data import build_market_snapshot
+from bluestar.oanda_data import build_market_snapshot
 from bluestar.renderer import render_html
 from bluestar.validation import validate_context, validate_html
 
