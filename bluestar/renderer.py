@@ -9,11 +9,10 @@ the output (the validation engine enforces this).
 from __future__ import annotations
 
 import html
-from datetime import datetime
 from pathlib import Path
 
 from .models import AssetSetup, BriefingContext, MacroEvent
-from .macro_engine import fr_date, fr_day_name
+from .macro_engine import fr_date, fr_day_name, session_label
 
 _TPL_DIR = Path(__file__).parent / "templates"
 
@@ -325,6 +324,13 @@ def _render_section4(ctx: BriefingContext) -> str:
 # ---------------------------------------------------------------------------
 # Section 5
 # ---------------------------------------------------------------------------
+def _bear_style(r: str) -> str:
+    """Return inline style attribute string for a bear-scenario row."""
+    if "Refuges" in r:
+        return ' style="color:var(--green);font-weight:700"'
+    return ""
+
+
 def _render_recap_row(s: AssetSetup) -> str:
     dot = "🟢" if s.color == "green" else "🟡"
     biais_col = "green" if s.bias_class == "long" else "red"
@@ -348,7 +354,7 @@ def _render_section5(ctx: BriefingContext) -> str:
     rm = ctx.risk_main
     bull_rows = "".join(f'<div class="risk-row">{_e(r)}</div>' for r in ctx.bull.rows)
     bear_rows = "".join(
-        f'<div class="risk-row"{" style=\"color:var(--green);font-weight:700\"" if "Refuges" in r else ""}>{_e(r)}</div>'
+        f'<div class="risk-row"{_bear_style(r)}>{_e(r)}</div>'
         for r in ctx.bear.rows)
     if ctx.priority_assets:
         recap = "".join(_render_recap_row(s) for s in ctx.priority_assets)
@@ -402,9 +408,7 @@ def render_html(ctx: BriefingContext) -> str:
     """Render the complete BLUESTAR briefing HTML for ``ctx``."""
     head = _load("scaffold_head.html").replace("{{DATE}}", fr_date(ctx.generated_cet))
     header = _load("scaffold_header.html")
-    sess_label, _ = (ctx.regime, ctx.is_live_session)  # session label below
-    from .macro_engine import session_label as _sl
-    label, _ = _sl(ctx.generated_cet)
+    label, _ = session_label(ctx.generated_cet)
     header = (header
               .replace("{{JOUR}}", fr_day_name(ctx.generated_cet))
               .replace("{{DATE}}", fr_date(ctx.generated_cet))
