@@ -12,7 +12,7 @@ import pytz
 
 from .calendar_layer import build_calendar
 from .macro_engine import build_context
-from .market_data import build_market_snapshot
+from .oanda_data import build_market_snapshot
 from .models import BriefingContext, ValidationIssue
 from .renderer import render_html
 from .validation import validate_context, validate_html
@@ -50,3 +50,4 @@ def generate_briefing(
         logger.warning("Validation produced %d error(s): %s",
                        len(errors), [e.message for e in errors])
     return html, ctx, issues
+  
