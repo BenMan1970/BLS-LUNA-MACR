@@ -1,0 +1,34 @@
+<body>
+
+<!-- ═══ BOUTON TÉLÉCHARGEMENT PDF (masqué à l'impression) ═══ -->
+<div id="pdf-fab">
+  <button onclick="window.print()">📥 Télécharger PDF</button>
+  <small>Chrome → Enregistrer en PDF<br>Activer "Graphiques d'arrière-plan"</small>
+</div>
+
+<!-- ═══ HEADER — Design BLUESTAR (inchangé) ═══ -->
+<div id="page">
+<div class="page-header">
+  <div class="header-left">
+    <div class="logo-marker">
+        <svg width="30" height="30" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 17.27L18.18 21L16.54 13.97L22 9.24L14.81 8.63L12 2L9.19 8.63L2 9.24L7.46 13.97L5.82 21L12 17.27Z" fill="#1B45B4"/>
+        </svg>
+    </div>
+    <div>
+      <div class="sys-label">BLUESTAR SYSTEM</div>
+      <div class="sys-name">BLUESTAR</div>
+      <div class="sys-desc">FX INSTITUTIONAL DESK · v8.1</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="briefing-label">INSTITUTIONAL MACRO BRIEFING</div>
+    <div class="briefing-sub">Analyse Macro Quantitative</div>
+  </div>
+</div>
+<div class="page-subbar">
+  <span>📅 {{JOUR}} {{DATE}}</span>
+  <span>🕐 {{HEURE}} CET — {{SESSION_LABEL}}</span>
+  <span class="confidential">● CONFIDENTIEL</span>
+</div>
+
