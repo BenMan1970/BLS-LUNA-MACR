@@ -223,11 +223,11 @@ def _fetch_oanda(
     instrument: str,
     api_key: str,
     now_utc: datetime,
-) -> tuple[Datum, Optional[float]]:
-    """Fetch D1 OHLC from Oanda, compute ATR-14, return (Datum, atr)."""
+) -> tuple[Datum, Optional[float], list[float]]:
+    """Fetch D1 OHLC from Oanda, compute ATR-14, return (Datum, atr, closes)."""
     candles = _oanda_candles(instrument, api_key)
     if not candles:
-        return Datum(None, na_stamp("oanda unavailable"), "N/A"), None
+        return Datum(None, na_stamp("oanda unavailable"), "N/A"), None, []
 
     try:
         closes = [float(c["mid"]["c"]) for c in candles]
@@ -235,7 +235,7 @@ def _fetch_oanda(
         lows   = [float(c["mid"]["l"]) for c in candles]
     except (KeyError, TypeError, ValueError) as e:
         logger.warning("Oanda candle parse error for %s: %s", instrument, e)
-        return Datum(None, na_stamp("oanda parse error"), "N/A"), None
+        return Datum(None, na_stamp("oanda parse error"), "N/A"), None, []
 
     last, prev = closes[-1], closes[-2]
     atr = _atr(highs, lows, closes)
@@ -246,7 +246,7 @@ def _fetch_oanda(
         url=f"https://www.oanda.com/rw-en/trading/instrument-data/{instrument}/",
     )
     disp = _display(key, last)
-    return Datum(last, stamp, disp, _trend_str(last, prev)), atr
+    return Datum(last, stamp, disp, _trend_str(last, prev)), atr, closes
 
 
 # ---------------------------------------------------------------------------
@@ -256,23 +256,23 @@ def _fetch_oanda(
 def _fetch_yf_fallback(
     key: str,
     now_utc: datetime,
-) -> tuple[Datum, Optional[float]]:
+) -> tuple[Datum, Optional[float], list[float]]:
     """yfinance fallback — stamped FALLBACK, not PRIMARY."""
     if not _YF_OK:
-        return Datum(None, na_stamp("yfinance unavailable"), "N/A"), None
+        return Datum(None, na_stamp("yfinance unavailable"), "N/A"), None, []
 
     ticker = YF_TICKERS.get(key)
     if ticker is None:
-        return Datum(None, na_stamp("no ticker mapping"), "N/A"), None
+        return Datum(None, na_stamp("no ticker mapping"), "N/A"), None, []
 
     try:
         df = yf.Ticker(ticker).history(period="1mo", interval="1d",
                                        auto_adjust=False)
         if df is None or df.empty or len(df) < 2:
-            return Datum(None, na_stamp("yfinance empty"), "N/A"), None
+            return Datum(None, na_stamp("yfinance empty"), "N/A"), None, []
     except Exception as e:  # pragma: no cover
         logger.warning("yfinance fallback failed for %s: %s", key, e)
-        return Datum(None, na_stamp("yfinance error"), "N/A"), None
+        return Datum(None, na_stamp("yfinance error"), "N/A"), None, []
 
     closes = [float(x) for x in df["Close"].tolist()]
     highs  = [float(x) for x in df["High"].tolist()]
@@ -294,7 +294,7 @@ def _fetch_yf_fallback(
         url=f"https://finance.yahoo.com/quote/{ticker}",
     )
     disp = _display(key, last)
-    return Datum(last, stamp, disp, _trend_str(last, prev)), atr
+    return Datum(last, stamp, disp, _trend_str(last, prev)), atr, closes
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +304,7 @@ def _fetch_instrument(
     key: str,
     now_utc: datetime,
     api_key: Optional[str],
-) -> tuple[Datum, Optional[float]]:
+) -> tuple[Datum, Optional[float], list[float]]:
     """Route to Oanda or yfinance based on key and key availability."""
     oanda_instrument = _OANDA_INSTRUMENTS.get(key)
 
@@ -317,9 +317,9 @@ def _fetch_instrument(
         return _fetch_yf_fallback(key, now_utc)
 
     # Primary: Oanda D1 candles.
-    datum, atr = _fetch_oanda(key, oanda_instrument, api_key, now_utc)
+    datum, atr, closes = _fetch_oanda(key, oanda_instrument, api_key, now_utc)
     if datum.available:
-        return datum, atr
+        return datum, atr, closes
 
     # Oanda failed: transparent fallback to yfinance, logged as WARN.
     logger.warning("Oanda fetch failed for %s — falling back to yfinance", key)
@@ -361,7 +361,7 @@ def build_market_snapshot(
 
     keys = set(_GAUGE_KEYS) | set(UNIVERSE)
     for key in keys:
-        datum, atr = _fetch_instrument(key, now_utc, api_key)
+        datum, atr, closes = _fetch_instrument(key, now_utc, api_key)
 
         # Manual override always wins — stamped PROXY.
         if key in overrides:
@@ -383,6 +383,11 @@ def build_market_snapshot(
             snap.prices[key] = datum
         if atr is not None:
             snap.atr[key] = atr
+        if closes:
+            # Kept even when the current point is a manual override: the
+            # historical series itself is real and still useful for the
+            # [PROXY] short-window correlation overlay.
+            snap.closes[key] = closes
 
     # GDP Nowcast and Surprise Index: no keyless source — [N/A] unless overridden.
     for gkey in ("GDP_NOWCAST", "SURPRISE_IDX"):
