@@ -138,6 +138,7 @@ class MarketSnapshot:
     gauges: dict[str, Datum] = field(default_factory=dict)   # VIX, MOVE, DXY, US10Y, GDP...
     prices: dict[str, Datum] = field(default_factory=dict)   # instrument -> Datum
     atr: dict[str, float] = field(default_factory=dict)      # instrument -> 14d ATR (absolute)
+    closes: dict[str, list[float]] = field(default_factory=dict)  # instrument -> recent daily closes (oldest->newest); reused for [PROXY] correlation, never displayed raw
 
     def gauge(self, key: str) -> Datum:
         return self.gauges.get(key, Datum(None, na_stamp(), "N/A"))
