@@ -259,7 +259,7 @@ def _render_section3b(ctx: BriefingContext) -> str:
         <span class="brief-lbl">Volatility</span>
         <span>{_e(ctx.vol_regime)} → <span style="font-style:italic">{_e(ctx.vol_implication)}</span></span>
         <span class="brief-lbl">Correlation</span>
-        <span class="mono" style="font-size:11px">{_e(ctx.correlation_summary)} <span style="font-size:10px;color:var(--muted)">[PROXY corrélations 30j]</span></span>
+        <span class="mono" style="font-size:11px">{_e(ctx.correlation_summary)} <span style="font-size:10px;color:var(--muted)">[PROXY · échantillon court]</span></span>
         <span class="brief-lbl">Liquidity &amp; Flow</span>
         <span>{_e(ctx.liquidity_flow)}</span>
       </div>
