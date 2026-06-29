@@ -12,6 +12,7 @@ scenarios -> :class:`BriefingContext`.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -125,13 +126,83 @@ def build_central_bank_context(overrides: Optional[dict]) -> list[CentralBankSna
     return out
 
 
+_HAWKISH_OPEN_RE = re.compile(r"^\s*(très\s+)?hawkish\b")
+_DOVISH_OPEN_RE = re.compile(r"^\s*(très\s+)?dovish\b")
+_HAWKISH_ANY_RE = re.compile(r"\bhawkish\b")
+_DOVISH_ANY_RE = re.compile(r"\bdovish\b")
+
+
+def _parse_rate_pct(rate_display: str) -> Optional[float]:
+    """Parse a CB rate string into a float percentage.
+
+    Handles a single value ("2,25%"), a range ("3,50–3,75%" -> midpoint) and
+    a leading "~" ("~1,00%"). Returns ``None`` for anything not parseable
+    (e.g. "[N/A]"), so the caller can tell "sourced" from "not sourced".
+    """
+    if not rate_display:
+        return None
+    s = rate_display.strip().lstrip("~").rstrip("%").strip()
+    parts = re.split(r"[–-]", s)
+    try:
+        vals = [float(p.strip().replace(",", ".")) for p in parts if p.strip()]
+    except ValueError:
+        return None
+    return sum(vals) / len(vals) if vals else None
+
+
+def _build_rate_differential(central_banks: list[CentralBankSnapshot]) -> tuple[str, str]:
+    """Dominant policy-rate differential among the tracked central banks.
+
+    Previously this was hardcoded to "non calculable sans taux sourcés"
+    unconditionally -- even on a run where every rate *was* sourced via
+    manual overrides. It now actually reads ``central_banks`` and only
+    degrades to [N/A] when fewer than 2 rates are genuinely available.
+    """
+    rates: dict[str, float] = {}
+    for (_name, _flag, ccy), cb in zip(_CB_DEFS, central_banks):
+        if cb.stamp.ok:
+            r = _parse_rate_pct(cb.rate_display)
+            if r is not None:
+                rates[ccy] = r
+
+    if len(rates) < 2:
+        return ("[N/A] — taux directeurs non sourcés (saisir en overrides).",
+                "Différentiel non calculable sans au moins 2 taux sourcés.")
+
+    ccy_hi = max(rates, key=rates.get)
+    ccy_lo = min(rates, key=rates.get)
+    gap = rates[ccy_hi] - rates[ccy_lo]
+    dominant = (f"{ccy_hi} ({fr_num(rates[ccy_hi], 2)}%) vs {ccy_lo} "
+               f"({fr_num(rates[ccy_lo], 2)}%) → écart ≈ {fr_num(gap, 2)} pt "
+               "[PROXY · taux saisis en overrides]")
+    if gap == 0:
+        implication = f"Taux directeurs identiques ({ccy_hi}/{ccy_lo}) — pas de portage net entre les deux."
+    else:
+        implication = (f"Portage structurellement favorable à {ccy_hi} face à {ccy_lo} "
+                       "tant que cet écart de taux directeurs persiste.")
+    return dominant, implication
+
+
 def _cb_bias_word(cb: CentralBankSnapshot) -> int:
-    """Map a CB bias string to a strength delta (+hawkish / -dovish)."""
-    b = cb.bias_interpretation.lower()
-    if "hawkish" in b:
+    """Map a CB bias string to a strength delta (+hawkish / -dovish).
+
+    The bias field is free text (e.g. "Hawkish — biais de resserrement..."
+    or "Neutre à légèrement hawkish."). A plain ``"hawkish" in text`` match
+    treats an outright stance and a hedged "leaning hawkish" identically --
+    that's exactly how BoE's "Neutre à légèrement hawkish" used to land on
+    the same +12 as the Fed's unqualified "Hawkish", producing a false tie.
+    The tone word must *open* the sentence for the full +/-12; appearing
+    later or softened (légèrement, neutre à, etc.) counts as a weaker +/-6.
+    """
+    b = cb.bias_interpretation.strip().lower()
+    if _HAWKISH_OPEN_RE.match(b):
         return 12
-    if "dovish" in b:
+    if _DOVISH_OPEN_RE.match(b):
         return -12
+    if _HAWKISH_ANY_RE.search(b):
+        return 6
+    if _DOVISH_ANY_RE.search(b):
+        return -6
     return 0
 
 
@@ -152,10 +223,14 @@ def build_currency_strength_ranking(
         if cb is not None:
             delta = _cb_bias_word(cb)
             scores[ccy] += delta
-            if delta > 0:
+            if delta >= 12:
                 drivers[ccy] = "biais hawkish"
-            elif delta < 0:
+            elif delta > 0:
+                drivers[ccy] = "biais hawkish modéré"
+            elif delta <= -12:
                 drivers[ccy] = "biais dovish"
+            elif delta < 0:
+                drivers[ccy] = "biais dovish modéré"
         if regime_class == "regime-off" and ccy in C.SAFE_HAVENS:
             scores[ccy] += 10
             drivers[ccy] = "flux refuge"
@@ -164,10 +239,13 @@ def build_currency_strength_ranking(
 
     ranked = sorted(C.MAJOR_CURRENCIES, key=lambda c: scores[c], reverse=True)
     rows: list[CurrencyStrength] = []
-    n = len(ranked)
-    for i, ccy in enumerate(ranked):
+    for ccy in ranked:
         s = max(0, min(100, scores[ccy]))
-        cls = "strong" if i < n // 3 else "weak" if i >= 2 * n // 3 else "neutral"
+        # Tier by the score's own value, not by rank position. Previously a
+        # tie (e.g. two currencies both at 50) could still land in different
+        # thirds purely because of where they happened to fall in the sort,
+        # so identical scores rendered with different colours/widths.
+        cls = "strong" if s >= 60 else "weak" if s <= 40 else "neutral"
         rows.append(CurrencyStrength(ccy, s, drivers[ccy], cls))
     return rows
 
@@ -241,6 +319,88 @@ def compute_expected_move(asset: str, market: MarketSnapshot) -> tuple[str, str,
 def _level(value: float, asset: str) -> str:
     return fr_num(value, _decimals_for(asset), thousands=asset in
                   ("XAU/USD", "DAX", "US30", "NAS100", "SPX500"))
+
+
+# ---------------------------------------------------------------------------
+# Correlation overlay -- real short-window Pearson r, always [PROXY]
+# ---------------------------------------------------------------------------
+# Each instrument paired with the single macro benchmark it is most commonly
+# read against. This is a heuristic pairing (not a full cross-asset matrix),
+# which is exactly why the output stays tagged [PROXY] even when the number
+# itself is genuinely computed.
+_CORR_BENCHMARK: dict[str, str] = {
+    "EUR/USD": "DXY", "GBP/USD": "DXY", "AUD/USD": "DXY", "NZD/USD": "DXY",
+    "USD/CAD": "DXY", "USD/CHF": "DXY", "EUR/GBP": "DXY",
+    "USD/JPY": "US10Y", "GBP/JPY": "US10Y",
+    "XAU/USD": "US10Y", "Brent": "DXY", "WTI": "DXY",
+    "DAX": "VIX", "US30": "VIX", "NAS100": "VIX", "SPX500": "VIX",
+}
+
+
+def _pct_returns(closes: list[float]) -> list[float]:
+    """Day-over-day percentage returns (correlating returns, not raw levels,
+    avoids the spurious correlation two trending price series would share)."""
+    return [(closes[i] - closes[i - 1]) / closes[i - 1]
+            for i in range(1, len(closes)) if closes[i - 1] != 0]
+
+
+def _pearson(xs: list[float], ys: list[float]) -> Optional[float]:
+    """Pearson correlation coefficient; None if too short or zero-variance."""
+    n = min(len(xs), len(ys))
+    if n < 10:
+        return None
+    xs, ys = xs[-n:], ys[-n:]
+    mx, my = sum(xs) / n, sum(ys) / n
+    cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    vx = sum((x - mx) ** 2 for x in xs)
+    vy = sum((y - my) ** 2 for y in ys)
+    if vx == 0 or vy == 0:
+        return None
+    return cov / (vx * vy) ** 0.5
+
+
+def _correlation_value(asset: str, market: MarketSnapshot) -> Optional[tuple[float, str, int]]:
+    """Return (r, benchmark, n_sessions) computed from real closes, or None."""
+    bench = _CORR_BENCHMARK.get(asset)
+    if not bench:
+        return None
+    a_closes, b_closes = market.closes.get(asset), market.closes.get(bench)
+    if not a_closes or not b_closes:
+        return None
+    n = min(len(a_closes), len(b_closes))
+    r = _pearson(_pct_returns(a_closes[-n:]), _pct_returns(b_closes[-n:]))
+    if r is None:
+        return None
+    return r, bench, n - 1  # n-1 usable return observations
+
+
+def compute_correlation(asset: str, market: MarketSnapshot) -> str:
+    """Asset-card '9. Corrélation clé' field -- a real, computed [PROXY].
+
+    Previously this was a hardcoded literal string ("[PROXY] corrélations
+    30j") identical for every asset, every day, regardless of what the
+    market actually did. The closes needed are already fetched for the ATR
+    calculation, so this costs zero extra network calls / API keys.
+    """
+    res = _correlation_value(asset, market)
+    if res is None:
+        if asset not in _CORR_BENCHMARK:
+            return "[N/A] — pas de référence définie pour cet actif."
+        return "[PROXY] corrélation indisponible (historique insuffisant)."
+    r, bench, n = res
+    sign = "+" if r >= 0 else "−"
+    return f"≈ {sign}{fr_num(abs(r), 2)} {bench} [PROXY · {n} séances]"
+
+
+def _correlation_short(asset: str, market: MarketSnapshot) -> str:
+    """Compact form for the Section 3 overlay row (no bracket -- the
+    template already appends a single shared [PROXY] tag for that row)."""
+    res = _correlation_value(asset, market)
+    if res is None:
+        return f"{asset} n/d"
+    r, bench, _n = res
+    sign = "+" if r >= 0 else "−"
+    return f"{asset} ≈ {sign}{fr_num(abs(r), 2)} {bench}"
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +576,7 @@ def _build_setup(asset: str, direction: int, score: float, market: MarketSnapsho
         expected_move=em_disp, em_method=em_method,
         session="Londres / New York", session_reason="liquidité maximale",
         invalidation_risk=invalidation, invalidation_level=inval_level,
-        positioning_link=pos_link, correlation_key="[PROXY] corrélations 30j",
+        positioning_link=pos_link, correlation_key=compute_correlation(asset, market),
         ips_summary=ips_summary, squeeze_risk=squeeze_risk, squeeze_class=squeeze_cls,
         sizing_factor=compute_sizing_factor(conviction, market),
         price_display=price.display, levels_are_proxy=levels_proxy,
@@ -485,7 +645,7 @@ def build_macro_overlay(market: MarketSnapshot, regime: str,
         "theme": theme, "theme_src": "[Forex Factory | calendrier]",
         "dxy_ctx": dxy_ctx, "dxy_src": dxy_src,
         "vol_regime": vol_regime, "vol_impl": vol_impl,
-        "correlation": "EUR/USD ≈ −0,9 DXY · USD/JPY ≈ +0,7 US10Y",
+        "correlation": f"{_correlation_short('EUR/USD', market)} · {_correlation_short('USD/JPY', market)}",
         "liquidity": ("Pas de stress de financement USD signalé [PROXY]. "
                       "Surveiller les flux de fin de mois/trimestre si applicable."),
     }
@@ -575,9 +735,8 @@ def build_context(
                          "mais impose un stop discipliné.")
             break
 
-    # Diff dominant (only if at least one CB rate is sourced)
-    diff_dominant = "[N/A] — taux directeurs non sourcés (saisir en overrides)."
-    diff_impl = "Différentiel non calculable sans taux sourcés."
+    # Diff dominant -- computed from sourced CB rates (>= 2 needed to mean anything).
+    diff_dominant, diff_impl = _build_rate_differential(central_banks)
 
     cot_date = ""
     for r in ips:
