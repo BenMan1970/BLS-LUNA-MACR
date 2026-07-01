@@ -253,7 +253,7 @@ def _render_section3b(ctx: BriefingContext) -> str:
         <span class="brief-lbl">Macro Theme</span>
         <span>{_e(ctx.macro_theme)} <span style="font-size:10px;color:var(--muted)">{_e(ctx.macro_theme_src)}</span></span>
         <span class="brief-lbl">COT &amp; Positioning</span>
-        <span>{_e(ctx.cot_summary)} {squeeze_badge}<span style="font-size:10px;color:var(--muted)"> [CFTC J-3 — Non-Commercials | {_e(ctx.cot_date)}]</span></span>
+        <span>{_e(ctx.cot_summary)} {squeeze_badge}<span style="font-size:10px;color:var(--muted)"> [{_e(ctx.cot_date)}]</span></span>
         <span class="brief-lbl">DXY Context</span>
         <span>{_e(ctx.dxy_context)} <span style="font-size:10px;color:var(--muted)">{_e(ctx.dxy_src)}</span></span>
         <span class="brief-lbl">Volatility</span>
@@ -272,7 +272,7 @@ def _render_section3b(ctx: BriefingContext) -> str:
     <div class="sub-lbl">📊 INSTITUTIONAL POSITIONING SCORE (IPS 0–100) — Non-Commercials CFTC</div>
     <div style="font-family:var(--mono);font-size:11px">
       {ips_rows}
-      <div style="font-size:10px;color:var(--muted);margin-top:4px">Lecture : &gt;80 = Crowded · 20–80 = Normal · &lt;20 = Capitulation. <span class="amber">[PROXY — CFTC J-3]</span></div>
+      <div style="font-size:10px;color:var(--muted);margin-top:4px">Lecture : &gt;80 = Crowded · 20–80 = Normal · &lt;20 = Capitulation. <span class="amber">[{_e(ctx.cot_date)}]</span></div>
     </div>
     {alert}
   </div>
