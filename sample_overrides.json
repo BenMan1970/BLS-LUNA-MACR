@@ -1,42 +1,80 @@
 {
-  "_comment": "Optional manual overrides for fields without a keyless source (central bank rates, FedWatch probabilities, COT Non-Commercials). Everything here is stamped [PROXY] in the briefing. Market prices are fetched automatically via yfinance; add a 'market' block only to override a price that failed to fetch.",
+  "_comment": "Optional manual overrides for fields without a keyless automatic source. SOURCING RULES: (1) central_banks / market blocks -> stamped [PROXY] (no keyless API for CB rates or FedWatch). (2) cot block -> stamped [OBSERVÉ — CFTC Non-Commercials | <vendredi calculé>] as PRIMARY when figures are entered: the engine computes the authoritative CFTC reference Friday automatically (last Friday 15:30 ET). The \"date\" field in each cot entry (e.g. \"02/06\") is a CROSS-CHECK HINT only -- it is stored in stamp.note for audit but does NOT drive the reference label. If the date field does not match the computed reference Friday, review your data. Market prices are fetched automatically via yfinance; add a \"market\" block only to override a price that failed to fetch.",
   "market": {
     "MOVE": 66.8,
     "GDP_NOWCAST": "3,0% (T2, Atlanta Fed 17/06)"
   },
   "central_banks": {
     "FED": {
-      "rate": "3,50\u20133,75%",
-      "fact": "Maintenu 3,50\u20133,75% le 17/06 (12-0). Dot-plot : 9/18 voient \u22651 hausse d'ici fin 2026.",
-      "bias": "Hawkish \u2014 biais de resserrement, hausse possible en septembre (~65% FedWatch).",
+      "rate": "3,50–3,75%",
+      "fact": "Maintenu 3,50–3,75% le 17/06 (12-0). Dot-plot : 9/18 voient ≥1 hausse d'ici fin 2026.",
+      "bias": "Hawkish — biais de resserrement, hausse possible en septembre (~65% FedWatch).",
       "next": "29/07/2026",
-      "pause": 70, "cut": 0, "hike": 30
+      "pause": 70,
+      "cut": 0,
+      "hike": 30
     },
     "BCE": {
       "rate": "2,25%",
-      "fact": "D\u00e9p\u00f4t 2,25% (+25bp le 17/06). MRO 2,40%.",
-      "bias": "Hawkish \u2014 lutte contre l'inflation \u00e9nerg\u00e9tique ; croissance r\u00e9vis\u00e9e en baisse.",
+      "fact": "Dépôt 2,25% (+25bp le 17/06). MRO 2,40%.",
+      "bias": "Hawkish — lutte contre l'inflation énergétique ; croissance révisée en baisse.",
       "next": "fin juillet [PROXY]"
     },
     "BoJ": {
       "rate": "~1,00%",
-      "fact": "Call o/n ~1,0% (relev\u00e9 le 17/06, 7-1).",
-      "bias": "Hawkish \u2014 poursuite de la normalisation vers 2% ; risque d'intervention MoF >161.",
-      "next": "30\u201331/07/2026"
+      "fact": "Call o/n ~1,0% (relevé le 17/06, 7-1).",
+      "bias": "Hawkish — poursuite de la normalisation vers 2% ; risque d'intervention MoF >161.",
+      "next": "30–31/07/2026"
     },
     "BoE": {
       "rate": "3,75%",
       "fact": "Maintenu 3,75% en juin (7-2, 2 voulaient +25bp).",
-      "bias": "Neutre \u00e0 l\u00e9g\u00e8rement hawkish.",
+      "bias": "Neutre à légèrement hawkish.",
       "next": "30/07/2026"
     }
   },
   "cot": {
-    "EUR": {"net": 48866, "delta": "+", "momentum": "\u2191", "date": "02/06"},
-    "JPY": {"net": -129567, "delta": "\u2212", "momentum": "\u2193\u2193", "date": "02/06"},
-    "GBP": {"net": -52218, "delta": "\u2212", "momentum": "\u2193", "date": "02/06"},
-    "AUD": {"net": 41812, "delta": "+", "momentum": "\u2191", "date": "02/06"},
-    "CAD": {"net": -94111, "delta": "\u2212", "momentum": "\u2193", "date": "02/06"},
-    "CHF": {"net": -32909, "delta": "\u2248 stable", "momentum": "\u2192", "date": "02/06"}
+    "EUR": {
+      "net": 48866,
+      "delta": "+",
+      "momentum": "↑",
+      "date": "02/06",
+      "_date_note": "cross-check hint only — not used as the CFTC reference date"
+    },
+    "JPY": {
+      "net": -129567,
+      "delta": "−",
+      "momentum": "↓↓",
+      "date": "02/06",
+      "_date_note": "cross-check hint only — not used as the CFTC reference date"
+    },
+    "GBP": {
+      "net": -52218,
+      "delta": "−",
+      "momentum": "↓",
+      "date": "02/06",
+      "_date_note": "cross-check hint only — not used as the CFTC reference date"
+    },
+    "AUD": {
+      "net": 41812,
+      "delta": "+",
+      "momentum": "↑",
+      "date": "02/06",
+      "_date_note": "cross-check hint only — not used as the CFTC reference date"
+    },
+    "CAD": {
+      "net": -94111,
+      "delta": "−",
+      "momentum": "↓",
+      "date": "02/06",
+      "_date_note": "cross-check hint only — not used as the CFTC reference date"
+    },
+    "CHF": {
+      "net": -32909,
+      "delta": "≈ stable",
+      "momentum": "→",
+      "date": "02/06",
+      "_date_note": "cross-check hint only — not used as the CFTC reference date"
+    }
   }
 }
