@@ -1,14 +1,25 @@
-"""Market Data Layer.
+"""Market Data Layer — LEGACY / REFERENCE MODULE.
 
-Provides market gauges and prices with **no mandatory API key**. The primary
-(and only built-in) source is yfinance, which works without credentials. Any
-field that cannot be fetched degrades to ``[N/A]`` (or ``[PROXY]`` when the user
-supplies a documented manual override). Every value carries a
-:class:`SourceStamp`.
+.. warning::
+    **This module is NOT the active production data layer.**
 
-The architecture is deliberately extensible: ``_FETCHERS`` maps a logical key to
-a callable, so additional licensed providers can be slotted in later without
-touching the engine.
+    ``oanda_data.py`` is the production entry-point and supersedes this file:
+    it supports Oanda v20 as primary source with yfinance as fallback, and
+    populates ``MarketSnapshot.closes`` (required by the correlation overlay).
+
+    This module is kept for:
+    - Offline / keyless integration tests that do not need Oanda credentials.
+    - Reference implementation of ``fr_num``, ``_atr`` and ``_fetch_instrument``
+      whose contracts must stay in sync with ``oanda_data.py``.
+    - Historical diff baseline.
+
+    **Do not add new features here.**  Any fix applied to ``_atr`` or ``fr_num``
+    in ``oanda_data.py`` must be mirrored here to keep the two in sync, or this
+    file must be explicitly deprecated and removed.
+
+    ``macro_engine.py`` previously imported ``fr_num`` from this module;
+    that import has been redirected to ``oanda_data.py`` (Constat n°3 — audit
+    BLUESTAR v8.1).
 """
 from __future__ import annotations
 
