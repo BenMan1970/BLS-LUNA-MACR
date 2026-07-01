@@ -83,8 +83,12 @@ with st.sidebar:
     st.divider()
 
     st.caption("OVERRIDES MANUELS (JSON)")
-    st.caption("Pour les champs sans source sans clé : taux CB, FedWatch, COT. "
-               "Tout est stampé [PROXY].")
+    st.caption(
+        "Champs sans source sans clé : **taux CB** et **FedWatch** → stampés [PROXY]. "
+        "**COT Non-Commercials** → stampé [OBSERVÉ — CFTC | vendredi de référence calculé] "
+        "dès que les chiffres sont saisis (le vendredi CFTC en vigueur est calculé automatiquement). "
+        "Prix marchés : récupérés via yfinance — saisir un bloc 'market' uniquement pour forcer une valeur."
+    )
     sample_path = Path(__file__).parent / "sample_overrides.json"
     use_sample = st.toggle("Charger l'exemple fourni", value=True)
     default_text = sample_path.read_text(encoding="utf-8") if (use_sample and sample_path.exists()) else "{}"
@@ -230,3 +234,4 @@ if show_raw_json:
 
 st.caption("BLUESTAR SYSTEM · MACRO BRIEFING ENGINE · "
            "Aucune donnée inventée — [N/A]/[PROXY] partout où la source manque.")
+
