@@ -17,12 +17,13 @@ from datetime import datetime
 from typing import Optional
 
 from . import config as C
+from .config import TZ_UTC
 from .models import (
     AssetSetup, BriefingContext, CentralBankSnapshot, CotPositioning,
-    CurrencyStrength, MacroEvent, MarketSnapshot,
+    CurrencyStrength, MacroEvent, MarketSnapshot, Reliability, SourceStamp,
     RiskScenario, na_stamp, proxy_stamp,
 )
-from .market_data import fr_num
+from .oanda_data import fr_num
 
 logger = logging.getLogger(__name__)
 
@@ -43,21 +44,43 @@ def fr_day_name(dt: datetime) -> str:
 # Session / live-market helpers
 # ---------------------------------------------------------------------------
 def session_label(dt_cet: datetime) -> tuple[str, bool]:
-    """Return (human session label, is_live_fx_session)."""
-    wd = dt_cet.weekday()  # 0=Mon .. 6=Sun
-    # FX cash market: opens ~Sunday 23:00 CET, closes Friday ~23:00 CET.
-    if wd == 5:  # Saturday
+    """Return (human session label, is_live_fx_session).
+
+    Session boundaries are defined in **UTC** so they remain stable year-round
+    regardless of DST transitions.  Using local CET/CEST hour comparisons
+    introduced a systematic 1-hour drift during summer (CEST = UTC+2):
+    "Session Londres" would fire at 08:00 CEST = 06:00 UTC, one hour before
+    the actual FX open at 07:00 UTC.  All boundaries below are UTC-constant.
+
+    Reference boundaries (UTC, approximate industry consensus):
+      Asian      00:00–07:00  (Tokyo liquidity peak 00:00–03:00)
+      London     07:00–17:00
+      Overlap    13:00–17:00  (London + New York both active)
+      New York   13:00–22:00
+      FX closed  Fri 22:00 – Sun 22:00 (UTC)
+
+    The ``dt_cet`` argument is kept for API compatibility (callers already hold
+    a CET datetime); we reproject to UTC internally.
+    """
+    dt_utc = dt_cet.astimezone(TZ_UTC)
+    wd = dt_utc.weekday()   # 0 = Monday … 6 = Sunday
+
+    # FX cash market: opens Sun ~22:00 UTC, closes Fri ~22:00 UTC.
+    if wd == 5:                          # Saturday
         return "MARCHÉ FX FERMÉ (week-end)", False
-    if wd == 6 and dt_cet.hour < 23:  # Sunday before reopen
+    if wd == 6 and dt_utc.hour < 22:     # Sunday before reopen
         return "MARCHÉ FX FERMÉ (week-end)", False
-    if wd == 4 and dt_cet.hour >= 23:  # Friday after close
+    if wd == 4 and dt_utc.hour >= 22:    # Friday after close
         return "MARCHÉ FX FERMÉ (week-end)", False
-    h = dt_cet.hour
-    if 8 <= h < 14:
-        return "Session Londres", True
-    if 14 <= h < 18:
+
+    h = dt_utc.hour
+    london = 7 <= h < 17
+    ny     = 13 <= h < 22
+    if london and ny:
         return "Overlap Londres/New York", True
-    if 18 <= h < 22:
+    if london:
+        return "Session Londres", True
+    if ny:
         return "Session New York", True
     return "Session Asie / hors liquidité", True
 
@@ -71,8 +94,8 @@ def determine_market_regime(market: MarketSnapshot,
     vix = market.gauge("VIX")
     penalty = 0
     if not vix.available:
-        return ("MIXTE — données vol insuffisantes [PROXY]", "regime-mix",
-                "[PROXY]", 1)
+        return ("MIXTE — données vol insuffisantes [N/A]", "regime-mix",
+                "[N/A]", 1)
 
     v = vix.value
     imminent = any(e.priority == "CRITICAL" for e in events)
@@ -251,38 +274,93 @@ def build_currency_strength_ranking(
 
 
 # ---------------------------------------------------------------------------
-# Step 5c -- IPS (Non-Commercials only) -- always [PROXY]
+# Step 5c -- IPS (Non-Commercials only)
 # ---------------------------------------------------------------------------
-def build_ips_scores(overrides: Optional[dict]) -> list[CotPositioning]:
+def _reference_cftc_friday(now_utc: datetime) -> datetime:
+    """Return the CFTC Friday whose report is the current authoritative reference.
+
+    The CFTC publishes Non-Commercials data every Friday at approximately
+    15:30 ET.  Until the next Friday's publication, the previous Friday's
+    report remains the official reference (Règle Absolue n°3).
+
+    Logic:
+      1. Convert now_utc to ET to stay consistent with CFTC publication time.
+      2. Find the most recent Friday ≤ today.
+      3. If today IS a Friday but the 15:30 ET cut-off has not yet passed,
+         step back one more week (the current report is not yet released).
+
+    Returns a datetime set to 15:30 ET on the reference Friday (UTC-aware).
+    """
+    from datetime import timedelta
+    now_et = now_utc.astimezone(C.TZ_ET)
+    # days_since_friday: 0 if today is Friday, 1 if Saturday, ..., 6 if Thursday
+    days_since_friday = (now_et.weekday() - 4) % 7
+    candidate = now_et.replace(hour=15, minute=30, second=0, microsecond=0) \
+                - timedelta(days=days_since_friday)
+    # If it is Friday but before 15:30 ET, the current report is not yet out.
+    if now_et < candidate:
+        candidate -= timedelta(days=7)
+    return candidate
+
+
+def build_ips_scores(overrides: Optional[dict],
+                     now_utc: datetime) -> tuple[list[CotPositioning], str]:
     """Build IPS rows from COT overrides (Non-Commercials net contracts).
 
-    The 0-100 score is a documented heuristic (bounded scaling) -- not a true
-    CFTC percentile -- hence always [PROXY].
+    The 0-100 IPS score is a documented heuristic (bounded linear scaling) --
+    not a true CFTC percentile -- and is always tagged accordingly in the
+    ``ips_summary`` / ``positioning_link`` display strings (Constat n°8).
+
+    Sourcing rules (Règle Absolue n°3):
+    - The CFTC publishes Non-Commercials data every Friday ~15:30 ET.
+    - That report remains the authoritative reference until the NEXT Friday's
+      publication.  We therefore compute the reference Friday deterministically
+      via ``_reference_cftc_friday()`` rather than reading it from the override.
+    - When the user supplies figures in overrides["cot"], those figures are
+      assumed to match the reference Friday report.  The stamp is set to
+      ``Reliability.PRIMARY`` with the computed reference date in the
+      ``source_name`` -- never [PROXY].
+    - ``[N/A]`` is used only when no COT data is supplied at all.
+
+    Returns (rows, cot_ref_label) -- the label is passed to ``build_context``
+    so every downstream string that cites COT uses the same computed reference.
     """
+    ref = _reference_cftc_friday(now_utc)
+    # Full label as prescribed by Règle n°3:
+    # "OBSERVÉ — CFTC Non-Commercials | Friday 27 June 2026"
+    ref_label = (
+        f"OBSERVÉ — CFTC Non-Commercials | "
+        f"{FR_DAYS[ref.weekday()]} "
+        f"{ref.day} {FR_MONTHS[ref.month]} {ref.year}"
+    )
+
     cot_over = (overrides or {}).get("cot", {})
     rows: list[CotPositioning] = []
     for ccy in C.MAJOR_CURRENCIES:
         o = cot_over.get(ccy)
-        if o is None:
+        if o is None or o.get("net") is None:
             continue
-        net = o.get("net")
-        if net is None:
-            continue
-        net = int(net)
-        # Map net contracts to 0-100 around 50 (heuristic, bounded).
+        net = int(o["net"])
         frac = max(-1.0, min(1.0, net / C.IPS_FULL_SCALE_CONTRACTS))
         score = int(round(50 + frac * 50))
-        label = ("Crowded long" if score >= C.IPS_CROWDED else
-                 "Crowded short / Capitulation" if score <= C.IPS_CAPITULATION else
-                 "Normal")
+        label = (
+            "Crowded long"            if score >= C.IPS_CROWDED else
+            "Crowded short / Capitul." if score <= C.IPS_CAPITULATION else
+            "Normal"
+        )
         rows.append(CotPositioning(
             currency=ccy, net_contracts=net, ips_score=score, ips_label=label,
             delta_week=o.get("delta", "≈ stable"),
             momentum=o.get("momentum", "→"),
-            stamp=proxy_stamp("CFTC J-3 — Non-Commercials",
-                              note=o.get("date", "")),
+            # PRIMARY: the user is inputting the official Friday report.
+            # note preserves the override's own "date" field for cross-check.
+            stamp=SourceStamp(
+                ref_label,
+                Reliability.PRIMARY,
+                note=o.get("date", ""),
+            ),
         ))
-    return rows
+    return rows, ref_label
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +464,7 @@ def compute_correlation(asset: str, market: MarketSnapshot) -> str:
     if res is None:
         if asset not in _CORR_BENCHMARK:
             return "[N/A] — pas de référence définie pour cet actif."
-        return "[PROXY] corrélation indisponible (historique insuffisant)."
+        return "[N/A] — corrélation indisponible (historique insuffisant)."
     r, bench, n = res
     sign = "+" if r >= 0 else "−"
     return f"≈ {sign}{fr_num(abs(r), 2)} {bench} [PROXY · {n} séances]"
@@ -437,6 +515,7 @@ def select_priority_assets(
     events: list[MacroEvent],
     mode: str,
     allow_proxy_levels: bool,
+    cot_label: str = "[PROXY]",
 ) -> tuple[list[AssetSetup], list[tuple[str, str]], Optional[str]]:
     """Score the universe, return (priority[<=3], avoid, no_setup_reason)."""
     smap = _strength_map(currency_strength)
@@ -480,7 +559,17 @@ def select_priority_assets(
                 direction, edge = 1, 0.2
 
         atr = market.atr.get(asset)
-        price_avail = 1.0
+        # Price availability weight: honour the reliability tier of the source
+        # (Oanda D1 = PRIMARY → 1.00 ; yfinance fallback = FALLBACK → 0.85 ;
+        # manual override = PROXY → 0.70).  The gate above already excludes
+        # UNAVAILABLE.  This makes the scoring formula's price_avail term
+        # genuinely discriminating rather than a constant shift.
+        _price_reliability_weight = {
+            Reliability.PRIMARY:     1.00,
+            Reliability.FALLBACK:    0.85,
+            Reliability.PROXY:       0.70,
+        }
+        price_avail = _price_reliability_weight.get(price.stamp.reliability, 0.85)
         vol_ok = 1.0 if atr is not None else 0.6
         catalyst_pen = 0.15 * len([e for e in ev if e.priority == "HIGH"])
 
@@ -491,7 +580,7 @@ def select_priority_assets(
             continue
 
         setup = _build_setup(asset, direction, score, market, allow_proxy_levels,
-                             ips_by_ccy, ccys, ev)
+                             ips_by_ccy, ccys, ev, cot_label)
         scored.append((score, setup))
 
     scored.sort(key=lambda t: t[0], reverse=True)
@@ -507,7 +596,8 @@ def select_priority_assets(
 
 
 def _build_setup(asset: str, direction: int, score: float, market: MarketSnapshot,
-                 allow_proxy_levels: bool, ips_by_ccy: dict, ccys, ev) -> AssetSetup:
+                 allow_proxy_levels: bool, ips_by_ccy: dict, ccys, ev,
+                 cot_label: str = "[PROXY]") -> AssetSetup:
     price = market.price(asset)
     em_disp, em_method, atr = compute_expected_move(asset, market)
     # Levels are ATR-derived -> [PROXY] origin (we have no real S/R feed).
@@ -540,15 +630,19 @@ def _build_setup(asset: str, direction: int, score: float, market: MarketSnapsho
         for ccy in ccys:
             r = ips_by_ccy.get(ccy)
             if r and r.ips_score is not None:
-                ips_summary = f"{ccy} {r.ips_score} [PROXY] {r.ips_label}"
+                # ips_summary: compact data-only string for the narrow top-card row.
+                # Source reference goes exclusively in positioning_link (Section 4 field 8).
+                ips_summary = f"{ccy} {r.ips_score} — {r.ips_label}"
                 if r.is_extreme:
                     squeeze_risk, squeeze_cls = f"Élevé ({ccy} IPS extrême)", "red"
-                    pos_link = (f"{ccy} en zone extrême (IPS {r.ips_score} [PROXY]). "
+                    pos_link = (f"{ccy} en zone extrême (IPS {r.ips_score} · {r.ips_label}). "
+                                f"[{cot_label}]. "
                                 "Le COT ne déclenche pas le trade ; il signale un risque de "
                                 "squeeze inverse si le catalyseur déçoit → conviction ±, stop strict.")
                 else:
-                    pos_link = (f"{ccy} IPS {r.ips_score} [PROXY] (Normal) — positionnement "
-                                "non extrême, n'amende pas la conviction.")
+                    pos_link = (f"{ccy} IPS {r.ips_score} — {r.ips_label}. "
+                                f"[{cot_label}]. "
+                                "Positionnement non extrême, n'amende pas la conviction.")
                 break
 
     # Reduce conviction by 1 if positioning is contra and extreme (squeeze).
@@ -639,7 +733,7 @@ def build_macro_overlay(market: MarketSnapshot, regime: str,
                        else "Vol modérée à élevée → réduire la taille, élargir les stops."))
     else:
         vol_regime = "VIX [N/A]"
-        vol_impl = "Méthode indisponible — régime vol non évaluable [PROXY]."
+        vol_impl = "Méthode indisponible — régime vol non évaluable [N/A]."
 
     return {
         "theme": theme, "theme_src": "[Forex Factory | calendrier]",
@@ -664,7 +758,12 @@ def build_risk_scenarios(events: list[MacroEvent], regime_class: str,
         "desc": ("Surprise macro sur le principal catalyseur de la semaine "
                  f"({anchor_name}) déclenchant un repricing brutal."),
         "asset": priority[0].asset if priority else "—",
-        "level": "niveaux [PROXY]",
+        # Use the primary asset's computed invalidation level when available.
+        # [PROXY] is wrong here: we either have a real level or we don't.
+        # [N/A] is the honest tag when the level cannot be determined.
+        "level": (priority[0].invalidation_level
+                  if priority and priority[0].invalidation_level not in ("[N/A]", "", None)
+                  else "niveau non disponible [N/A]"),
         "proba": "qualitative — équilibré",
         "source": anchor_src,
     }
@@ -710,12 +809,13 @@ def build_context(
     regime, regime_cls, regime_since, _pen = determine_market_regime(market, events)
     central_banks = build_central_bank_context(overrides)
     cs = build_currency_strength_ranking(central_banks, regime_cls)
-    ips = build_ips_scores(overrides)
+    ips, cot_ref_label = build_ips_scores(overrides, now_utc)
     high, medium, scenarios = build_catalysts(events)
     overlay = build_macro_overlay(market, regime, upcoming)
 
     priority, avoid, no_setup = select_priority_assets(
-        market, regime_cls, central_banks, cs, ips, events, mode, allow_proxy_levels)
+        market, regime_cls, central_banks, cs, ips, events, mode,
+        allow_proxy_levels, cot_label=cot_ref_label)
 
     risk_main, bull, bear, inval = build_risk_scenarios(upcoming, regime_cls, priority)
 
@@ -730,7 +830,7 @@ def build_context(
     for r in ips:
         if r.is_extreme and r.currency in setup_ccys:
             squeeze_ccy = r.currency
-            pos_alert = (f"{r.currency} IPS {r.ips_score} [PROXY] en zone extrême et impliqué "
+            pos_alert = (f"{r.currency} IPS {r.ips_score} [{cot_ref_label}] en zone extrême et impliqué "
                          "dans un setup → risque de squeeze inverse. Ne rejette pas le setup, "
                          "mais impose un stop discipliné.")
             break
@@ -738,11 +838,9 @@ def build_context(
     # Diff dominant -- computed from sourced CB rates (>= 2 needed to mean anything).
     diff_dominant, diff_impl = _build_rate_differential(central_banks)
 
-    cot_date = ""
-    for r in ips:
-        if r.stamp.note:
-            cot_date = r.stamp.note
-            break
+    # cot_date carries the deterministic CFTC reference label for the renderer
+    # (Constats n°2 & n°4 — replaces the fragile stamp.note extraction loop).
+    cot_date = cot_ref_label if ips else "[N/A]"
     cot_summary = ("Aucune donnée COT chargée [N/A] — saisir les Non-Commercials en overrides."
                    if not ips else
                    "Non-Commercials : " + " · ".join(
