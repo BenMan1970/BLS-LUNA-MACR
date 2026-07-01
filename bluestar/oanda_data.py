@@ -9,8 +9,11 @@ US10Y) or when the key is absent / the request fails.
 Design constraints (zero regression):
 - Public signature of ``build_market_snapshot`` is unchanged.
 - ``MarketSnapshot``, ``Datum``, ``SourceStamp`` contracts are unchanged.
-- ATR calculation is the same Wilder 14-period simple average used in
-  ``market_data.py`` — D1 candles, 30 bars, identical formula.
+- ATR calculation is the same SMA-14 of True Ranges used in ``market_data.py``
+  (original Welles Wilder 1978 formula) — D1 candles, 30 bars, identical
+  formula.  Note: this is a plain simple average of the last 14 TRs, NOT the
+  EMA-recursive smoothing that MetaTrader / TradingView label "Wilder ATR";
+  values will differ by ~5–15 % from those platforms in high-vol regimes.
 - ``Reliability.PRIMARY`` stamped when Oanda responds; ``Reliability.FALLBACK``
   when yfinance is used instead.  The renderer and validation engine already
   handle both levels correctly.
@@ -122,8 +125,12 @@ def _trend_str(last: float, prev: float, pct_decimals: int = 1) -> str:
 
 
 # ---------------------------------------------------------------------------
-# ATR — Wilder 14-period (simple average over last 14 TRs)
-# Identical formula to market_data._atr — single source of truth here.
+# ATR — SMA-14 of True Ranges (original Welles Wilder 1978 formula)
+# Implementation: plain simple-average of the last 14 TR values.
+# This is intentionally NOT the EMA-recursive version that most modern
+# platforms (MetaTrader, TradingView) label "Wilder ATR".  The difference
+# is documented here so risk / QA audits can reconcile values correctly.
+# Single source of truth: this file.  market_data.py is a legacy stub.
 # ---------------------------------------------------------------------------
 def _atr(highs: list[float], lows: list[float],
          closes: list[float], period: int = 14) -> Optional[float]:
@@ -199,7 +206,22 @@ def _oanda_candles(
 
 
 def _oanda_price(instrument: str, api_key: str) -> Optional[float]:
-    """Fetch latest mid price from Oanda pricing endpoint (real-time)."""
+    """Fetch latest mid price from Oanda pricing endpoint (real-time, S5 bar).
+
+    .. note::
+        RESERVED — not yet wired into ``_fetch_oanda()``.
+
+        Intended for intra-session price refresh: fetch only the current bar's
+        mid price without pulling the full 30-bar D1 history (cost: one HTTP
+        call vs three for a full candle fetch).  Candidate use-case: a
+        ``is_live_session=True`` path in ``build_market_snapshot()`` that
+        refreshes the spot price more frequently than the D1 ATR window.
+
+        Do not remove without updating this docstring and the architecture
+        note in the README.  Do not call from ``_fetch_oanda()`` without also
+        deciding how to reconcile a real-time ``last`` price with the D1 OHLC
+        series used for ATR (the two time-frames must not be mixed silently).
+    """
     url = f"{_OANDA_BASE}/instruments/{instrument}/candles"
     headers = {"Authorization": f"Bearer {api_key}"}
     params = {"granularity": "S5", "count": 1, "price": "M"}
