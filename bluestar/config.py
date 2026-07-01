@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 # ----------------------------------------------------------------------------
 TZ_UTC = ZoneInfo("UTC")
 TZ_CET = ZoneInfo("Europe/Paris")  # CET/CEST display timezone
+TZ_ET  = ZoneInfo("America/New_York")  # CFTC publication timezone (Eastern)
 
 # ----------------------------------------------------------------------------
 # Calendar Layer (validated Forex Factory module)
@@ -117,3 +118,4 @@ MODE_SELECTION_MIN_SCORE = {
     "Aggressive": 0.40,
 }
 MAX_PRIORITY_ASSETS = 3
+
