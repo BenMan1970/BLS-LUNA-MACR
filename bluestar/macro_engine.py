@@ -24,6 +24,12 @@ from .models import (
     RiskScenario, na_stamp, proxy_stamp,
 )
 from .oanda_data import fr_num
+from .external_sources import (
+    fetch_central_bank_rates,
+    fetch_fedwatch_probabilities,
+    fetch_cot_data,
+    fetch_liquidity_stress,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -128,23 +134,65 @@ _CB_DEFS = [
 def build_central_bank_context(overrides: Optional[dict]) -> list[CentralBankSnapshot]:
     """Build the four central-bank blocks.
 
-    ``overrides['central_banks'][name]`` may carry: rate, fact, bias, next,
-    pause/cut/hike. Missing pieces render as [N/A] -- never invented.
+    Sourcing precedence (non-regression):
+      1. User override (``overrides['central_banks'][name]``) — always wins.
+      2. FRED policy rate (``fetch_central_bank_rates``) — fills a missing rate.
+      3. CME FedWatch (``fetch_fedwatch_probabilities``) — fills the Fed's
+         pause/cut/hike when the override omits them.
+      4. Otherwise [N/A] — never invented.
     """
     cb_over = (overrides or {}).get("central_banks", {})
+
+    # External feeds fetched once; each is best-effort ({} / None on failure).
+    fred_rates = fetch_central_bank_rates()          # {name: pct} or {}
+    fedwatch = fetch_fedwatch_probabilities()        # {pause/cut/hike} or None
+
     out: list[CentralBankSnapshot] = []
     for name, flag, _ccy in _CB_DEFS:
         o = cb_over.get(name, {})
-        rate = o.get("rate", "[N/A]")
+
+        # --- Rate: override > FRED > [N/A] ---
+        rate = o.get("rate")
+        rate_from_fred = False
+        if rate is None:
+            fred_val = fred_rates.get(name)
+            if fred_val is not None:
+                rate = f"{fr_num(fred_val, 2)}%"
+                rate_from_fred = True
+        if rate is None:
+            rate = "[N/A]"
+
         fact = o.get("fact") or "[N/A] — taux/probabilité non sourcés sans clé API."
         bias = o.get("bias") or "[N/A] — interprétation à confirmer."
         nxt = o.get("next", "[N/A]")
-        stamp = (proxy_stamp("manual override") if o else na_stamp("source sans clé API"))
+
+        # --- Fed probabilities: override > FedWatch > None ---
+        pause = o.get("pause")
+        cut = o.get("cut")
+        hike = o.get("hike")
+        fw_used = False
+        if name == "FED" and pause is None and cut is None and hike is None and fedwatch:
+            pause = fedwatch.get("pause_pct")
+            cut = fedwatch.get("cut_pct")
+            hike = fedwatch.get("hike_pct")
+            fw_used = True
+
+        # --- Stamp reflects the strongest source actually used ---
+        if o:
+            stamp = proxy_stamp("manual override")
+        elif rate_from_fred or fw_used:
+            src = "FRED" if rate_from_fred else ""
+            if fw_used:
+                src = (src + " + CME FedWatch").strip(" +")
+            stamp = SourceStamp(src or "external", Reliability.PRIMARY)
+        else:
+            stamp = na_stamp("source sans clé API")
+
         out.append(CentralBankSnapshot(
             name=name, flag=flag, rate_display=str(rate),
             fact=str(fact), bias_interpretation=str(bias), next_meeting=str(nxt),
             stamp=stamp,
-            pause_pct=o.get("pause"), cut_pct=o.get("cut"), hike_pct=o.get("hike"),
+            pause_pct=pause, cut_pct=cut, hike_pct=hike,
         ))
     return out
 
@@ -359,11 +407,10 @@ def build_ips_scores(overrides: Optional[dict],
     - That report remains the authoritative reference until the NEXT Friday's
       publication.  We therefore compute the reference Friday deterministically
       via ``_reference_cftc_friday()`` rather than reading it from the override.
-    - When the user supplies figures in overrides["cot"], those figures are
-      assumed to match the reference Friday report.  The stamp is set to
-      ``Reliability.PRIMARY`` with the computed reference date in the
-      ``source_name`` -- never [PROXY].
-    - ``[N/A]`` is used only when no COT data is supplied at all.
+    - Sourcing precedence: user override > live CFTC feed > [N/A].
+      When the user supplies figures in overrides["cot"], those take priority.
+      Otherwise the live CFTC scrape (``fetch_cot_data``) is attempted.
+    - ``[N/A]`` is used only when no COT data is supplied and the feed fails.
 
     Returns (rows, cot_ref_label) -- the label is passed to ``build_context``
     so every downstream string that cites COT uses the same computed reference.
@@ -378,6 +425,16 @@ def build_ips_scores(overrides: Optional[dict],
     )
 
     cot_over = (overrides or {}).get("cot", {})
+
+    # If the user supplied no COT data, try the live CFTC feed.
+    external_used = False
+    external_date: Optional[str] = None
+    if not cot_over:
+        ext_net, external_date = fetch_cot_data()   # ({ccy: net}, date|None)
+        if ext_net:
+            external_used = True
+            cot_over = {ccy: {"net": net} for ccy, net in ext_net.items()}
+
     rows: list[CotPositioning] = []
     for ccy in C.MAJOR_CURRENCIES:
         o = cot_over.get(ccy)
@@ -387,20 +444,24 @@ def build_ips_scores(overrides: Optional[dict],
         frac = max(-1.0, min(1.0, net / C.IPS_FULL_SCALE_CONTRACTS))
         score = int(round(50 + frac * 50))
         label = (
-            "Crowded long"            if score >= C.IPS_CROWDED else
+            "Crowded long"             if score >= C.IPS_CROWDED else
             "Crowded short / Capitul." if score <= C.IPS_CAPITULATION else
             "Normal"
         )
+        # When data came from the live CFTC scrape, cite the report's own
+        # "as of" date; otherwise keep the deterministic reference-Friday label.
+        if external_used:
+            src_label = f"OBSERVÉ — CFTC Non-Commercials | {external_date or ref_label}"
+        else:
+            src_label = ref_label
         rows.append(CotPositioning(
             currency=ccy, net_contracts=net, ips_score=score, ips_label=label,
             delta_week=o.get("delta", "≈ stable"),
             momentum=o.get("momentum", "→"),
-            # PRIMARY: the user is inputting the official Friday report.
-            # note preserves the override's own "date" field for cross-check.
             stamp=SourceStamp(
-                ref_label,
+                src_label,
                 Reliability.PRIMARY,
-                note=o.get("date", ""),
+                note=o.get("date", external_date or ""),
             ),
         ))
     return rows, ref_label
@@ -510,7 +571,7 @@ def compute_correlation(asset: str, market: MarketSnapshot) -> str:
         return "[N/A] — corrélation indisponible (historique insuffisant)."
     r, bench, n = res
     sign = "+" if r >= 0 else "−"
-    return f"≈ {sign}{fr_num(abs(r), 2)} {bench} [PROXY · {n} séances]"
+    return f"≈ {sign}{fr_num(abs(r), 2)} {bench} [Pearson · {n} séances]"
 
 
 def _correlation_short(asset: str, market: MarketSnapshot) -> str:
@@ -705,11 +766,11 @@ def _build_setup(asset: str, direction: int, score: float, market: MarketSnapsho
                       if ccys else "Biais de régime (refuge / risque) [PROXY]"),
         conviction=conviction, action=action, action_class=action_class, arrow=arrow,
         zone_buy=_level(buy, asset) if buy is not None else "[N/A]",
-        origin_buy="[PROXY · ATR 14j / support implicite]" if buy is not None else "[N/A]",
+        origin_buy="[ATR 14j · support implicite]" if buy is not None else "[N/A]",
         zone_sell=_level(sell, asset) if sell is not None else "[N/A]",
-        origin_sell="[PROXY · ATR 14j / résistance implicite]" if sell is not None else "[N/A]",
+        origin_sell="[ATR 14j · résistance implicite]" if sell is not None else "[N/A]",
         stop=_level(stop, asset) if stop is not None else "[N/A]",
-        origin_stop="[PROXY · ATR extension]" if stop is not None else "[N/A]",
+        origin_stop="[ATR 14j · stop dynamique]" if stop is not None else "[N/A]",
         expected_move=em_disp, em_method=em_method,
         session="Londres / New York", session_reason="liquidité maximale",
         invalidation_risk=invalidation, invalidation_level=inval_level,
@@ -752,7 +813,8 @@ def build_catalysts(events: list[MacroEvent]) -> tuple[list[MacroEvent], list[Ma
 # Step -- Macro overlay text blocks
 # ---------------------------------------------------------------------------
 def build_macro_overlay(market: MarketSnapshot, regime: str,
-                        events: list[MacroEvent]) -> dict:
+                        events: list[MacroEvent],
+                        liquidity_msg: str) -> dict:
     vix = market.gauge("VIX")
     move = market.gauge("MOVE")
     dxy = market.gauge("DXY")
@@ -783,8 +845,7 @@ def build_macro_overlay(market: MarketSnapshot, regime: str,
         "dxy_ctx": dxy_ctx, "dxy_src": dxy_src,
         "vol_regime": vol_regime, "vol_impl": vol_impl,
         "correlation": f"{_correlation_short('EUR/USD', market)} · {_correlation_short('USD/JPY', market)}",
-        "liquidity": ("Pas de stress de financement USD signalé [PROXY]. "
-                      "Surveiller les flux de fin de mois/trimestre si applicable."),
+        "liquidity": liquidity_msg,
     }
 
 
@@ -855,7 +916,24 @@ def build_context(
     cs = _oanda_strength_scores(market, cs)   # BLUESTAR-PATCH v10.0
     ips, cot_ref_label = build_ips_scores(overrides, now_utc)
     high, medium, scenarios = build_catalysts(events)
-    overlay = build_macro_overlay(market, regime, upcoming)
+
+    # Liquidity / funding stress — TED spread via FRED, else honest [N/A].
+    ted = fetch_liquidity_stress()
+    if ted is not None:
+        if ted >= 0.50:
+            tone = "tension de financement USD notable"
+        elif ted >= 0.30:
+            tone = "légère tension de financement USD"
+        else:
+            tone = "pas de stress de financement USD"
+        liquidity_msg = (f"TED spread {fr_num(ted, 2)} pt → {tone} "
+                         "[FRED · TEDRATE]. Surveiller les flux de fin de "
+                         "mois/trimestre si applicable.")
+    else:
+        liquidity_msg = ("Stress de financement USD non sourcé [N/A]. "
+                         "Surveiller les flux de fin de mois/trimestre si applicable.")
+
+    overlay = build_macro_overlay(market, regime, upcoming, liquidity_msg)
 
     priority, avoid, no_setup = select_priority_assets(
         market, regime_cls, central_banks, cs, ips, events, mode,
