@@ -3,3 +3,4 @@ requests>=2.31
 pytz>=2024.1
 yfinance>=0.2.40
 pandas>=2.0
+oandapyV20>=0.6.6
