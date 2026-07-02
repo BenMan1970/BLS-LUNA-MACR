@@ -51,6 +51,18 @@ try:
 except Exception:  # pragma: no cover
     _ST_OK = False
 
+# BLUESTAR-PATCH: optional import — StrengthEngine lives in oanda_strength.py.
+# oandapyV20 is required; absent in keyless/offline environments → graceful skip.
+try:
+    from .oanda_strength import (  # type: ignore
+        StrengthEngine as _StrengthEngine,
+        _create_client as _strength_create_client,
+    )
+    _STRENGTH_OK = True
+except Exception:  # pragma: no cover
+    _STRENGTH_OK = False
+    logger.debug("oanda_strength not available — currency strength will be [PROXY]")
+
 # ---------------------------------------------------------------------------
 # Oanda instrument mapping
 # BLUESTAR key  ->  Oanda v20 instrument name
@@ -421,5 +433,25 @@ def build_market_snapshot(
             )
         else:
             snap.gauges[gkey] = Datum(None, na_stamp("source sans cle API"), "N/A")
+
+    # BLUESTAR-PATCH: attach Oanda price-derived currency strength scores.
+    # macro_engine._oanda_strength_scores() reads this via getattr — absent
+    # or failed → silent CB-bias [PROXY] fallback. models.py untouched.
+    # api_key is already in scope; we reuse it so no extra secret read.
+    if _STRENGTH_OK and api_key:
+        try:
+            _env = (
+                st.secrets.get("OANDA_ENVIRONMENT", "practice")
+                if _ST_OK else "practice"
+            )
+            _result = _StrengthEngine(
+                client=_strength_create_client(api_key, _env)
+            ).run()
+            if _result.valid and _result.scores_display:
+                snap.currency_strength_oanda = _result.scores_display
+        except Exception as _exc:
+            logger.warning(
+                "Oanda strength unavailable — fallback CB-bias: %s", _exc
+            )
 
     return snap
