@@ -32,6 +32,7 @@ import requests
 
 from .config import YF_TICKERS
 from .models import Datum, Reliability, SourceStamp, MarketSnapshot, na_stamp
+from .external_sources import fetch_gdp_nowcast
 
 logger = logging.getLogger(__name__)
 
@@ -446,16 +447,37 @@ def build_market_snapshot(
             # [PROXY] short-window correlation overlay.
             snap.closes[key] = closes
 
-    # GDP Nowcast and Surprise Index: no keyless source — [N/A] unless overridden.
-    for gkey in ("GDP_NOWCAST", "SURPRISE_IDX"):
-        if gkey in overrides:
-            snap.gauges[gkey] = Datum(
-                None,
-                SourceStamp("manual override", Reliability.PROXY),
-                str(overrides[gkey]), "",
+    # GDP Nowcast: override > Atlanta Fed GDPNow scrape > [N/A].
+    if "GDP_NOWCAST" in overrides:
+        snap.gauges["GDP_NOWCAST"] = Datum(
+            None,
+            SourceStamp("manual override", Reliability.PROXY),
+            str(overrides["GDP_NOWCAST"]), "",
+        )
+    else:
+        gdp_val = fetch_gdp_nowcast()
+        if gdp_val is not None:
+            snap.gauges["GDP_NOWCAST"] = Datum(
+                gdp_val,
+                SourceStamp("Atlanta Fed GDPNow", Reliability.PRIMARY,
+                            timestamp=now_utc,
+                            url="https://www.atlantafed.org/cqer/research/gdpnow"),
+                f"{gdp_val:.1f}%", "",
             )
         else:
-            snap.gauges[gkey] = Datum(None, na_stamp("source sans cle API"), "N/A")
+            snap.gauges["GDP_NOWCAST"] = Datum(
+                None, na_stamp("source indisponible"), "N/A")
+
+    # Surprise Index: no keyless source — [N/A] unless overridden (unchanged).
+    if "SURPRISE_IDX" in overrides:
+        snap.gauges["SURPRISE_IDX"] = Datum(
+            None,
+            SourceStamp("manual override", Reliability.PROXY),
+            str(overrides["SURPRISE_IDX"]), "",
+        )
+    else:
+        snap.gauges["SURPRISE_IDX"] = Datum(
+            None, na_stamp("source sans cle API"), "N/A")
 
     # BLUESTAR-PATCH v10.0: attach Oanda price-derived currency strength via the
     # requests-based bridge. macro_engine reads this attribute via getattr;
