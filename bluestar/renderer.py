@@ -31,6 +31,19 @@ def _stars(n: int) -> str:
     return f'<span class="stars-{n}"></span>'
 
 
+def _cs_source_tag(currency_strength: list) -> str:
+    """Return source tag for Currency Strength Ranking footer.
+
+    If ANY row carries the Oanda driver, the whole ranking is Oanda-sourced.
+    Otherwise falls back to [PROXY] (CB-bias).
+    """
+    if not currency_strength:
+        return "[PROXY]"
+    if any("Oanda" in (getattr(r, "driver", "") or "") for r in currency_strength):
+        return "[Oanda v20 · D1]"
+    return "[PROXY]"
+
+
 # ---------------------------------------------------------------------------
 # Section 1
 # ---------------------------------------------------------------------------
@@ -267,7 +280,7 @@ def _render_section3b(ctx: BriefingContext) -> str:
     <div class="sub-lbl">💪 CURRENCY STRENGTH RANKING — 8 devises majeures</div>
     <div style="font-family:var(--mono);font-size:11px">
       {cs_rows}
-      <div style="font-size:10px;color:var(--muted);margin-top:4px">Score qualitatif 0–100, pas un momentum chiffré (différentiel de taux, flux refuge, surprises macro récentes). <span class="amber">[PROXY]</span></div>
+      <div style="font-size:10px;color:var(--muted);margin-top:4px">Score qualitatif 0–100, pas un momentum chiffré (différentiel de taux, flux refuge, surprises macro récentes). <span class="amber">{_e(_cs_source_tag(ctx.currency_strength))}</span></div>
     </div>
     <div class="sub-lbl">📊 INSTITUTIONAL POSITIONING SCORE (IPS 0–100) — Non-Commercials CFTC</div>
     <div style="font-family:var(--mono);font-size:11px">
