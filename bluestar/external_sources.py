@@ -28,7 +28,6 @@ import io
 import logging
 import re
 import zipfile
-from datetime import datetime
 from typing import Optional
 
 import requests
