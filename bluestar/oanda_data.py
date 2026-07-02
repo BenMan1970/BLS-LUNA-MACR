@@ -435,20 +435,26 @@ def build_market_snapshot(
             snap.gauges[gkey] = Datum(None, na_stamp("source sans cle API"), "N/A")
 
     # BLUESTAR-PATCH: attach Oanda price-derived currency strength scores.
-    # macro_engine._oanda_strength_scores() reads this via getattr — absent
-    # or failed → silent CB-bias [PROXY] fallback. models.py untouched.
-    # api_key is already in scope; we reuse it so no extra secret read.
-    if _STRENGTH_OK and api_key:
+    # Tries OANDA_API_KEY (oanda_data primary) then OANDA_ACCESS_TOKEN
+    # (strength dashboard) — same physical token, two possible secret names.
+    if _STRENGTH_OK:
         try:
-            _env = (
-                st.secrets.get("OANDA_ENVIRONMENT", "practice")
-                if _ST_OK else "practice"
-            )
-            _result = _StrengthEngine(
-                client=_strength_create_client(api_key, _env)
-            ).run()
-            if _result.valid and _result.scores_display:
-                snap.currency_strength_oanda = _result.scores_display
+            _access_token = api_key  # from _oanda_creds(), may be None
+            if not _access_token and _ST_OK:
+                _access_token = (
+                    st.secrets.get("OANDA_ACCESS_TOKEN")
+                    or st.secrets.get("oanda_access_token")
+                )
+            if _access_token:
+                _env = (
+                    st.secrets.get("OANDA_ENVIRONMENT", "practice")
+                    if _ST_OK else "practice"
+                )
+                _result = _StrengthEngine(
+                    client=_strength_create_client(_access_token, _env)
+                ).run()
+                if _result.valid and _result.scores_display:
+                    snap.currency_strength_oanda = _result.scores_display
         except Exception as _exc:
             logger.warning(
                 "Oanda strength unavailable — fallback CB-bias: %s", _exc
