@@ -13,7 +13,6 @@ Usage in BLUESTAR macro pipeline:
 from __future__ import annotations
 
 import hashlib
-import html
 import logging
 import random
 import time
@@ -924,5 +923,4 @@ class StrengthEngine:
             pairs_fetched  = len(self._cache),
             valid          = True,
         )
-
 
