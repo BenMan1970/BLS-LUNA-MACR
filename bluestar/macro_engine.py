@@ -267,7 +267,7 @@ def _oanda_strength_scores(
         rows.append(CurrencyStrength(
             currency=ccy,
             score=score_100,
-            driver="force relative Oanda · D1",
+            driver="",
             css_class=cls,
         ))
 
@@ -282,7 +282,7 @@ def build_currency_strength_ranking(
     """Qualitative 0-100 score per major currency. Always [PROXY]."""
     cb_by_ccy = {ccy: cb for (name, _f, ccy), cb in zip(_CB_DEFS, central_banks)}
     scores: dict[str, int] = {c: 50 for c in C.MAJOR_CURRENCIES}
-    drivers: dict[str, str] = {c: "neutre [PROXY]" for c in C.MAJOR_CURRENCIES}
+    drivers: dict[str, str] = {c: "" for c in C.MAJOR_CURRENCIES}
 
     for ccy in C.MAJOR_CURRENCIES:
         cb = cb_by_ccy.get(ccy)
@@ -290,16 +290,16 @@ def build_currency_strength_ranking(
             delta = _cb_bias_word(cb)
             scores[ccy] += delta
             if delta >= 12:
-                drivers[ccy] = "biais hawkish"
+                drivers[ccy] = ""
             elif delta > 0:
-                drivers[ccy] = "biais hawkish modéré"
+                drivers[ccy] = ""
             elif delta <= -12:
-                drivers[ccy] = "biais dovish"
+                drivers[ccy] = ""
             elif delta < 0:
-                drivers[ccy] = "biais dovish modéré"
+                drivers[ccy] = ""
         if regime_class == "regime-off" and ccy in C.SAFE_HAVENS:
             scores[ccy] += 10
-            drivers[ccy] = "flux refuge"
+            drivers[ccy] = ""
         if regime_class == "regime-on" and ccy in C.SAFE_HAVENS:
             scores[ccy] -= 6
 
