@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 import pytz
 
-from bluestar.calendar_layer import build_calendar, enrich, fmt_until, get_session
+from bluestar.calendar_layer import build_calendar, fmt_until, get_session
 from bluestar.macro_engine import build_context
 from bluestar.market_data import build_market_snapshot, fr_num
 from bluestar.models import MarketSnapshot, Datum, SourceStamp, Reliability, na_stamp
