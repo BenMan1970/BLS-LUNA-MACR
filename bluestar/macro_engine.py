@@ -230,17 +230,53 @@ def _cb_bias_word(cb: CentralBankSnapshot) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Step 5b -- Currency Strength Ranking (qualitative, always [PROXY])
+# Step 5b -- Currency Strength Ranking
 # ---------------------------------------------------------------------------
-def build_currency_strength_ranking(
-    central_banks: list[CentralBankSnapshot],
-    regime_class: str,
-) -> list[CurrencyStrength]:
-    """Qualitative 0-100 score per major currency. Always [PROXY]."""
+# BLUESTAR-PATCH (helper 1/2): Read Oanda price-derived strength scores off the
+# MarketSnapshot WITHOUT touching models.py. The snapshot may carry an optional
+# ``currency_strength_oanda`` attribute (dict {ccy: float}, 0-10 scale centered
+# on 5.0 — exactly what StrengthResult.scores_display produces). Read via
+# getattr so a snapshot that predates this field yields None → silent CB-bias
+# fallback. Upholds "never invent a figure": absent/malformed → None, not 50.
+def _oanda_strength_scores(market: "MarketSnapshot") -> Optional[dict]:
+    """Return {ccy: int 0-100} from Oanda momentum, or None if unavailable.
+
+    Rescales the Oanda 0-10 ``scores_display`` to the engine's 0-100 scale
+    using the same bounded-linear pattern as the IPS scorer so genuinely close
+    currencies stay close (no artificial spreading).
+    Returns None (not {}) on any absence, malformation, or <2 majors covered.
+    """
+    try:
+        raw = getattr(market, "currency_strength_oanda", None)
+        if not raw or not isinstance(raw, dict):
+            return None
+        out: dict[str, int] = {}
+        for ccy in C.MAJOR_CURRENCIES:
+            v = raw.get(ccy)
+            if v is None:
+                continue
+            # Oanda scores_display: 0-10 centred on 5.0 (neutral).
+            # frac = (v-5)/5 → [-1,+1] ; score = 50 + frac*50 → [0,100].
+            frac = max(-1.0, min(1.0, (float(v) - 5.0) / 5.0))
+            out[ccy] = int(round(50.0 + frac * 50.0))
+        if len(out) < 2:  # less than 2 majors → signal is meaningless
+            return None
+        return out
+    except (TypeError, ValueError, AttributeError) as exc:
+        logger.warning("Oanda strength scores unusable, falling back to CB-bias: %s", exc)
+        return None
+
+
+# BLUESTAR-PATCH (helper 2/2): CB-bias scoring extracted verbatim so the
+# fallback path reproduces pre-patch behavior EXACTLY (regime overlay applied
+# in the shared caller, not here, so it is not duplicated).
+def _cb_bias_scores(
+    central_banks: list,
+) -> tuple[dict, dict]:
+    """Return (scores, drivers) from CB-bias text. Pre-regime-overlay. [PROXY]."""
     cb_by_ccy = {ccy: cb for (name, _f, ccy), cb in zip(_CB_DEFS, central_banks)}
     scores: dict[str, int] = {c: 50 for c in C.MAJOR_CURRENCIES}
     drivers: dict[str, str] = {c: "neutre [PROXY]" for c in C.MAJOR_CURRENCIES}
-
     for ccy in C.MAJOR_CURRENCIES:
         cb = cb_by_ccy.get(ccy)
         if cb is not None:
@@ -254,20 +290,54 @@ def build_currency_strength_ranking(
                 drivers[ccy] = "biais dovish"
             elif delta < 0:
                 drivers[ccy] = "biais dovish modéré"
+    return scores, drivers
+
+
+# BLUESTAR-PATCH: signature gains an OPTIONAL ``market`` parameter (default None)
+# so existing callers that pass only two arguments continue to work unchanged.
+# Oanda PRIMARY path activates only when market carries the scores attribute.
+def build_currency_strength_ranking(
+    central_banks: list,
+    regime_class: str,
+    market: Optional["MarketSnapshot"] = None,
+) -> list:
+    """0-100 score per major currency.
+
+    PRIMARY source: Oanda price-derived relative strength on ``market``
+    (attribute ``currency_strength_oanda``, StrengthResult.scores_display scale).
+    FALLBACK: CB-bias text parser → [PROXY] (pre-patch behavior, byte-identical).
+    Regime overlay (+10/-6 safe-haven) applied identically to both paths.
+    """
+    # --- Source selection ---------------------------------------------------
+    oanda = _oanda_strength_scores(market) if market is not None else None
+    if oanda is not None:
+        scores: dict[str, int] = dict(oanda)
+        cb_scores, cb_drivers = _cb_bias_scores(central_banks)
+        drivers: dict[str, str] = {}
+        for ccy in C.MAJOR_CURRENCIES:
+            if ccy in oanda:
+                drivers[ccy] = "force relative Oanda · D1"   # PRIMARY — no [PROXY]
+            else:
+                # Backfill from CB-bias so all 8 majors are always represented.
+                scores[ccy] = cb_scores[ccy]
+                drivers[ccy] = cb_drivers[ccy] + " (Oanda n/d)"
+    else:
+        scores, drivers = _cb_bias_scores(central_banks)
+
+    # --- Regime overlay (identical to pre-patch, applied to BOTH paths) -----
+    for ccy in C.MAJOR_CURRENCIES:
         if regime_class == "regime-off" and ccy in C.SAFE_HAVENS:
             scores[ccy] += 10
             drivers[ccy] = "flux refuge"
         if regime_class == "regime-on" and ccy in C.SAFE_HAVENS:
             scores[ccy] -= 6
 
+    # --- Build output (tier logic, output contract unchanged) ---------------
     ranked = sorted(C.MAJOR_CURRENCIES, key=lambda c: scores[c], reverse=True)
-    rows: list[CurrencyStrength] = []
+    rows: list = []
     for ccy in ranked:
         s = max(0, min(100, scores[ccy]))
-        # Tier by the score's own value, not by rank position. Previously a
-        # tie (e.g. two currencies both at 50) could still land in different
-        # thirds purely because of where they happened to fall in the sort,
-        # so identical scores rendered with different colours/widths.
+        # Tier by score value, not rank position (avoids false colour splits on ties).
         cls = "strong" if s >= 60 else "weak" if s <= 40 else "neutral"
         rows.append(CurrencyStrength(ccy, s, drivers[ccy], cls))
     return rows
@@ -808,7 +878,9 @@ def build_context(
 
     regime, regime_cls, regime_since, _pen = determine_market_regime(market, events)
     central_banks = build_central_bank_context(overrides)
-    cs = build_currency_strength_ranking(central_banks, regime_cls)
+    # BLUESTAR-PATCH: pass market so Oanda scores activate when available.
+    # Fallback (market carries no currency_strength_oanda) → identical to before.
+    cs = build_currency_strength_ranking(central_banks, regime_cls, market)
     ips, cot_ref_label = build_ips_scores(overrides, now_utc)
     high, medium, scenarios = build_catalysts(events)
     overlay = build_macro_overlay(market, regime, upcoming)
