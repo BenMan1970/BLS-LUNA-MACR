@@ -237,7 +237,7 @@ def _render_section3b(ctx: BriefingContext) -> str:
     cs_rows = "".join(
         f'<div class="rank-row"><span class="rank-lbl">{i+1}. {_e(r.currency)}</span>'
         f'<div class="rank-bar"><div class="rank-fill {r.css_class}" style="width:{r.score}%"></div></div>'
-        f'<span class="rank-val {r.css_class}">{r.score} — {_e(r.driver)}</span></div>'
+        f'<span class="rank-val {r.css_class}">{r.score}</span></div>'
         for i, r in enumerate(ctx.currency_strength))
 
     if ctx.ips_scores:
@@ -280,7 +280,7 @@ def _render_section3b(ctx: BriefingContext) -> str:
     <div class="sub-lbl">💪 CURRENCY STRENGTH RANKING — 8 devises majeures</div>
     <div style="font-family:var(--mono);font-size:11px">
       {cs_rows}
-      <div style="font-size:10px;color:var(--muted);margin-top:4px">Score qualitatif 0–100, pas un momentum chiffré (différentiel de taux, flux refuge, surprises macro récentes). <span class="amber">{_e(_cs_source_tag(ctx.currency_strength))}</span></div>
+      <div style="font-size:10px;color:var(--muted);margin-top:4px">Score qualitatif 0–100</div>
     </div>
     <div class="sub-lbl">📊 INSTITUTIONAL POSITIONING SCORE (IPS 0–100) — Non-Commercials CFTC</div>
     <div style="font-family:var(--mono);font-size:11px">
