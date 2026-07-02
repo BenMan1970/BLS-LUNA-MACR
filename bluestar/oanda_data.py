@@ -51,17 +51,20 @@ try:
 except Exception:  # pragma: no cover
     _ST_OK = False
 
-# BLUESTAR-PATCH: optional import — StrengthEngine lives in oanda_strength.py.
-# oandapyV20 is required; absent in keyless/offline environments → graceful skip.
+# ---------------------------------------------------------------------------
+# Currency strength bridge (requests-based, no oandapyV20)
+# BLUESTAR-PATCH v10.0
+# ---------------------------------------------------------------------------
 try:
-    from .oanda_strength import (  # type: ignore
-        StrengthEngine as _StrengthEngine,
-        _create_client as _strength_create_client,
-    )
+    from .oanda_strength_bridge import compute_scores as _bridge_compute_scores
     _STRENGTH_OK = True
-except Exception:  # pragma: no cover
+except Exception as _imp_exc:  # pragma: no cover
     _STRENGTH_OK = False
-    logger.debug("oanda_strength not available — currency strength will be [PROXY]")
+    _bridge_compute_scores = None  # type: ignore
+    logger.warning(
+        "oanda_strength_bridge import failed — currency strength will be [PROXY]: %s",
+        _imp_exc,
+    )
 
 # ---------------------------------------------------------------------------
 # Oanda instrument mapping
@@ -114,6 +117,26 @@ def _oanda_creds() -> tuple[Optional[str], Optional[str]]:
         return (str(key) if key else None, str(acc) if acc else None)
     except Exception:  # pragma: no cover
         return None, None
+
+
+def _strength_access_token() -> Optional[str]:
+    """Resolve the token for the strength bridge, trying all known secret names.
+
+    _oanda_creds() only looks at OANDA_API_KEY / oanda_api_key. The standalone
+    strength app uses OANDA_ACCESS_TOKEN, and that mismatch was the reason the
+    strength block never fired. Try every documented spelling here.
+    """
+    if not _ST_OK:
+        return None
+    try:
+        for name in ("OANDA_API_KEY", "OANDA_ACCESS_TOKEN",
+                     "oanda_api_key", "oanda_access_token"):
+            val = st.secrets.get(name)
+            if val:
+                return str(val)
+    except Exception as exc:  # pragma: no cover
+        logger.warning("strength token resolution failed: %s", exc)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -434,30 +457,29 @@ def build_market_snapshot(
         else:
             snap.gauges[gkey] = Datum(None, na_stamp("source sans cle API"), "N/A")
 
-    # BLUESTAR-PATCH: attach Oanda price-derived currency strength scores.
-    # Tries OANDA_API_KEY (oanda_data primary) then OANDA_ACCESS_TOKEN
-    # (strength dashboard) — same physical token, two possible secret names.
-    if _STRENGTH_OK:
-        try:
-            _access_token = api_key  # from _oanda_creds(), may be None
-            if not _access_token and _ST_OK:
-                _access_token = (
-                    st.secrets.get("OANDA_ACCESS_TOKEN")
-                    or st.secrets.get("oanda_access_token")
-                )
-            if _access_token:
-                _env = (
-                    st.secrets.get("OANDA_ENVIRONMENT", "practice")
-                    if _ST_OK else "practice"
-                )
-                _result = _StrengthEngine(
-                    client=_strength_create_client(_access_token, _env)
-                ).run()
-                if _result.valid and _result.scores_display:
-                    snap.currency_strength_oanda = _result.scores_display
-        except Exception as _exc:
-            logger.warning(
-                "Oanda strength unavailable — fallback CB-bias: %s", _exc
-            )
+    # BLUESTAR-PATCH v10.0: attach Oanda price-derived currency strength via the
+    # requests-based bridge. macro_engine reads this attribute via getattr;
+    # absent/None → documented CB-bias [PROXY] fallback.
+    # models.py is untouched (optional attribute set via assignment).
+    # Token resolution is broadened here because _oanda_creds() (→ api_key)
+    # only checks OANDA_API_KEY, but the strength source may be under
+    # OANDA_ACCESS_TOKEN. Every outcome is logged.
+    if not _STRENGTH_OK:
+        logger.warning("Oanda strength bridge unavailable at import — CB-bias [PROXY]")
+    else:
+        _strength_token = _strength_access_token() or api_key
+        if not _strength_token:
+            logger.warning("No Oanda token for strength bridge — CB-bias [PROXY]")
+        else:
+            try:
+                _scores = _bridge_compute_scores(_strength_token)
+            except Exception as _exc:  # defensive: bridge should not raise
+                logger.warning("Oanda strength bridge raised — CB-bias [PROXY]: %s", _exc)
+                _scores = None
+            if _scores:
+                snap.currency_strength_oanda = _scores
+                logger.info("Oanda strength attached (%d majors) — PRIMARY", len(_scores))
+            else:
+                logger.warning("Oanda strength returned None — CB-bias [PROXY]")
 
     return snap
