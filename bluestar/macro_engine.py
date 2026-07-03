@@ -20,9 +20,15 @@ from . import config as C
 from .config import TZ_UTC
 from .models import (
     AssetSetup, BriefingContext, CentralBankSnapshot, CotPositioning,
-    CurrencyStrength, MacroEvent, MarketSnapshot, Reliability, SourceStamp,
+    CurrencyStrength, Datum, MacroEvent, MarketSnapshot, Reliability, SourceStamp,
     RiskScenario, na_stamp, proxy_stamp,
 )
+
+# Institutional Intelligence layer (best-effort; zero-regression if absent).
+try:
+    from . import institutional as _inst  # type: ignore
+except Exception:  # pragma: no cover
+    _inst = None
 from .oanda_data import fr_num
 from .external_sources import (
     fetch_central_bank_rates,
@@ -932,6 +938,24 @@ def build_context(
     raw_engine = calendar.get("events_engine") or calendar.get("events") or []
     events = [MacroEvent.from_enriched(e) for e in raw_engine]
     upcoming = [e for e in events if e.is_upcoming]
+
+    # Surprise / Momentum gauge — BLUESTAR free substitute for the proprietary
+    # Citi CESI. Uses released actuals when present, else consensus-vs-previous
+    # momentum, so the KPI is never blank. Populated here because this is where
+    # the enriched calendar events (with actuals) are available.
+    if _inst is not None and "SURPRISE_IDX" not in (overrides.get("market") or {}):
+        try:
+            si = _inst.fetch_macro_surprise("USD", raw_events=events)
+            if si is not None:
+                disp = f"{'+' if si.value >= 0 else ''}{si.value:.0f}"
+                mode = "US Macro Surprise" if "Surprise" in si.source else "US Macro Momentum"
+                market.gauges["SURPRISE_IDX"] = Datum(
+                    si.value,
+                    SourceStamp("BLUESTAR · Forex Factory", Reliability.PRIMARY, timestamp=now_utc),
+                    disp, f"{si.trend} {mode} · n={si.n}",
+                )
+        except Exception as exc:  # pragma: no cover - never break the pipeline
+            logger.warning("surprise gauge injection failed: %s", exc)
 
     regime, regime_cls, regime_since, _pen = determine_market_regime(market, events)
     central_banks = build_central_bank_context(overrides)
