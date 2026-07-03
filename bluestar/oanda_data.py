@@ -453,43 +453,45 @@ def build_market_snapshot(
             # [PROXY] short-window correlation overlay.
             snap.closes[key] = closes
 
-    # GDP Nowcast: override > Atlanta Fed GDPNow scrape > [N/A].
-    if "GDP_NOWCAST" in overrides:
+    # GDP Nowcast precedence (updated): LIVE FRED GDPNOW (official, machine-
+    # readable) > manual override > dead Atlanta scrape > [N/A].
+    # Rationale: the manual override was only ever a crutch for the now-broken
+    # Atlanta Fed page scrape. With FRED GDPNOW live, the official series is the
+    # authoritative source; the override is demoted to a fallback so a stale
+    # hand-typed value no longer masks the live nowcast. To restore the old
+    # "override always wins" behaviour, swap the first two branches back.
+    gdp = _inst.fetch_gdpnow_full() if _inst else None
+    if gdp is not None and gdp.value is not None:
+        sub = f"FRED · GDPNOW · publié {gdp.pub_date}"
+        if gdp.quarter:
+            sub = f"FRED · GDPNOW · {gdp.quarter} · publié {gdp.pub_date}"
+        if gdp.delta is not None:
+            sub += f" · {'+' if gdp.delta >= 0 else ''}{gdp.delta:.1f} pt vs préc."
+        snap.gauges["GDP_NOWCAST"] = Datum(
+            gdp.value,
+            SourceStamp("FRED · GDPNOW", Reliability.PRIMARY, timestamp=now_utc,
+                        url="https://fred.stlouisfed.org/series/GDPNOW"),
+            f"{gdp.value:.1f}%", sub,
+        )
+    elif "GDP_NOWCAST" in overrides:
         snap.gauges["GDP_NOWCAST"] = Datum(
             None,
             SourceStamp("manual override", Reliability.PROXY),
             str(overrides["GDP_NOWCAST"]), "",
         )
     else:
-        # Primary: FRED series GDPNOW (machine-readable, gives value + prior +
-        # delta + date). The Atlanta Fed landing page is now JS-rendered and no
-        # longer scrapeable, so the legacy scrape is only a last-resort fallback.
-        gdp = _inst.fetch_gdpnow_full() if _inst else None
-        if gdp is not None and gdp.value is not None:
-            sub = f"FRED · GDPNOW · publié {gdp.pub_date}"
-            if gdp.quarter:
-                sub = f"FRED · GDPNOW · {gdp.quarter} · publié {gdp.pub_date}"
-            if gdp.delta is not None:
-                sub += f" · {'+' if gdp.delta >= 0 else ''}{gdp.delta:.1f} pt vs préc."
+        gdp_val = fetch_gdp_nowcast()
+        if gdp_val is not None:
             snap.gauges["GDP_NOWCAST"] = Datum(
-                gdp.value,
-                SourceStamp("FRED · GDPNOW", Reliability.PRIMARY, timestamp=now_utc,
-                            url="https://fred.stlouisfed.org/series/GDPNOW"),
-                f"{gdp.value:.1f}%", sub,
+                gdp_val,
+                SourceStamp("Atlanta Fed GDPNow", Reliability.PRIMARY,
+                            timestamp=now_utc,
+                            url="https://www.atlantafed.org/cqer/research/gdpnow"),
+                f"{gdp_val:.1f}%", "Atlanta Fed GDPNow",
             )
         else:
-            gdp_val = fetch_gdp_nowcast()
-            if gdp_val is not None:
-                snap.gauges["GDP_NOWCAST"] = Datum(
-                    gdp_val,
-                    SourceStamp("Atlanta Fed GDPNow", Reliability.PRIMARY,
-                                timestamp=now_utc,
-                                url="https://www.atlantafed.org/cqer/research/gdpnow"),
-                    f"{gdp_val:.1f}%", "Atlanta Fed GDPNow",
-                )
-            else:
-                snap.gauges["GDP_NOWCAST"] = Datum(
-                    None, na_stamp("source indisponible"), "N/A")
+            snap.gauges["GDP_NOWCAST"] = Datum(
+                None, na_stamp("source indisponible"), "N/A")
 
     # Surprise Index: no keyless source — [N/A] unless overridden (unchanged).
     if "SURPRISE_IDX" in overrides:
