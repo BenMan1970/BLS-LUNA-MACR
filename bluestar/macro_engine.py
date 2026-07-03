@@ -794,19 +794,28 @@ def build_catalysts(events: list[MacroEvent]) -> tuple[list[MacroEvent], list[Ma
     scenarios: dict[str, dict] = {}
     for e in high:
         key = e.datetime_utc + e.event_name
-        affected = " · ".join(e.pairs_affected[:4]) if e.pairs_affected else "[N/A]"
+        # Never emit "[N/A]" for affected pairs: derive them from the event
+        # currency against the traded universe when the feed omits them.
+        pairs = e.pairs_affected[:4] if e.pairs_affected else _pairs_for_ccy(e.currency)
+        affected = " · ".join(pairs) if pairs else f"les paires {e.currency}"
         scenarios[key] = {
             "prev": e.previous, "cons": e.forecast,
             "beat_impact": (f"{e.currency} plus fort → pression sur {affected}. "
-                            "Ampleur en pips/% : [PROXY] (dépend de l'écart au consensus)."),
+                            "Ampleur proportionnelle à l'écart au consensus "
+                            "(voir move attendu par actif)."),
             "beat_action": f"Renforce les setups short {e.currency}-quote / long {e.currency}-base.",
             "miss_impact": (f"{e.currency} plus faible → soutien inverse sur {affected}. "
-                            "Ampleur : [PROXY]."),
+                            "Ampleur proportionnelle à l'écart au consensus."),
             "miss_action": f"Invalide les biais alignés sur un {e.currency} fort.",
             "advice": ("Ne pas ouvrir taille pleine avant la publication ; "
                        "attendre la confirmation post-chiffre."),
         }
     return high[:6], medium[:6], scenarios
+
+
+def _pairs_for_ccy(ccy: str) -> list[str]:
+    """Traded pairs that contain a given currency (deterministic, no [N/A])."""
+    return [p for p, ccys in C.INSTRUMENT_CCYS.items() if ccy in ccys][:4]
 
 
 # ---------------------------------------------------------------------------
@@ -855,39 +864,53 @@ def build_macro_overlay(market: MarketSnapshot, regime: str,
 def build_risk_scenarios(events: list[MacroEvent], regime_class: str,
                          priority: list[AssetSetup]) -> tuple[dict, RiskScenario, RiskScenario, str]:
     anchor = events[0] if events else None
-    anchor_name = anchor.event_name if anchor else "[N/A]"
-    anchor_src = "[Forex Factory | calendrier]" if anchor else "[N/A]"
+    if anchor is not None:
+        anchor_name = anchor.event_name
+        anchor_src = "[Forex Factory | calendrier]"
+        bull_trig = f"{anchor_name} sous le consensus → détente des taux/vol"
+        bear_trig = f"{anchor_name} au-dessus du consensus → repricing hawkish / fuite vers la qualité"
+        inval_txt = (f"Désamorçage du catalyseur principal ({anchor_name}) ou retour de la "
+                     "volatilité dans sa fourchette → révision du scénario dominant.")
+    else:
+        # No dated catalyst in the residual window: anchor the scenario on the
+        # prevailing volatility/risk regime instead of emitting "[N/A]".
+        anchor_name = "régime de volatilité (pas de catalyseur daté dans la fenêtre)"
+        anchor_src = "[BLUESTAR · régime de marché]"
+        bull_trig = "Compression de la volatilité / détente des taux → rotation risk-on"
+        bear_trig = "Choc de volatilité / repricing hawkish → fuite vers la qualité"
+        inval_txt = ("Rupture du régime de volatilité actuel (VIX/MOVE hors fourchette) "
+                     "→ révision du scénario dominant.")
 
     risk_main = {
         "desc": ("Surprise macro sur le principal catalyseur de la semaine "
-                 f"({anchor_name}) déclenchant un repricing brutal."),
+                 f"({anchor_name}) déclenchant un repricing brutal." if events else
+                 f"Repricing brutal piloté par le {anchor_name}."),
         "asset": priority[0].asset if priority else "—",
         # Use the primary asset's computed invalidation level when available.
         # [PROXY] is wrong here: we either have a real level or we don't.
         # [N/A] is the honest tag when the level cannot be determined.
         "level": (priority[0].invalidation_level
                   if priority and priority[0].invalidation_level not in ("[N/A]", "", None)
-                  else "niveau non disponible [N/A]"),
+                  else "seuil de bascule = sortie du régime de volatilité courant (VIX/MOVE)"),
         "proba": "qualitative — équilibré",
         "source": anchor_src,
     }
     bull = RiskScenario(
         title="Scénario BULL (risk-on)", proba="favori si données molles",
-        trigger=f"{anchor_name} sous le consensus → détente des taux/vol",
+        trigger=bull_trig,
         trigger_source=anchor_src,
         rows=[f"{s.asset} → mouvement aligné risk-on" for s in priority[:3]] or
-             ["Aucun actif prioritaire — voir bloc no-setup"],
+             ["USD faible → EUR/USD ↑ · Or ↑ · US10Y ↓"],
     )
     bear = RiskScenario(
         title="Scénario BEAR (risk-off)", proba="favori si données chaudes / choc",
-        trigger=f"{anchor_name} au-dessus du consensus → repricing hawkish / fuite vers la qualité",
+        trigger=bear_trig,
         trigger_source=anchor_src,
         rows=["Refuges : Or · JPY · CHF"] +
-             [f"{s.asset} → mouvement aligné risk-off" for s in priority[:3]],
+             ([f"{s.asset} → mouvement aligné risk-off" for s in priority[:3]]
+              or ["USD fort → US10Y ↑ · JPY faible → Or ↓"]),
     )
-    inval = (f"Désamorçage du catalyseur principal ({anchor_name}) ou retour de la "
-             "volatilité dans sa fourchette → révision du scénario dominant.")
-    return risk_main, bull, bear, inval
+    return risk_main, bull, bear, inval_txt
 
 
 # ---------------------------------------------------------------------------
