@@ -410,7 +410,7 @@ def _render_section5(ctx: BriefingContext) -> str:
       </table>
     </div>
     <div style="font-size:10px;color:var(--muted);margin-top:10px;font-family:var(--mono)">
-      Sizing Factor = ajustement heuristique de taille, PAS un Kelly réel (aucune base de gains/pertes historiques disponible) : conviction × 1/(1+VIX/30), arrondi. Squeeze Risk = Élevé si IPS&gt;80 ou &lt;20 sur une devise du setup, sinon Modéré/Faible. <span class="amber">[PROXY]</span> tant que les figures COT précises (vendredi) ne sont pas recalculées.
+      Sizing Factor = ajustement heuristique de taille, PAS un Kelly réel (aucune base de gains/pertes historiques disponible) : conviction × 1/(1+VIX/30), arrondi. Squeeze Risk = Élevé si IPS&gt;80 ou &lt;20 sur une devise du setup, sinon Modéré/Faible. Figures COT Non-Commercials : {_e(ctx.cot_date)}.
     </div>
   </div>
 </div>"""
