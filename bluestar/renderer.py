@@ -205,8 +205,10 @@ def _render_section3(ctx: BriefingContext) -> str:
         _kpi("US10Y", (g("US10Y").display + "%") if g("US10Y").available else "N/A",
              g("US10Y").trend or "n/d", "amber"),
         _kpi("Or XAU", g("XAU/USD").display, g("XAU/USD").trend or "n/d", "amber"),
-        _kpi("GDP Nowcast", g("GDP_NOWCAST").display, "Atlanta Fed [N/A sans clé]", "blue"),
-        _kpi("Surprise Idx", g("SURPRISE_IDX").display, "[N/A]", "amber"),
+        _kpi("GDP Nowcast", g("GDP_NOWCAST").display,
+             g("GDP_NOWCAST").trend or g("GDP_NOWCAST").stamp.render(), "blue"),
+        _kpi("Surprise Idx", g("SURPRISE_IDX").display,
+             g("SURPRISE_IDX").trend or g("SURPRISE_IDX").stamp.render(), "amber"),
     ])
     fed = ctx.central_banks[0] if ctx.central_banks else None
     cb_blocks = (_render_fed(fed) if fed else "") + \
