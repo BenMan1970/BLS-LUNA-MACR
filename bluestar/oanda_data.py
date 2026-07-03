@@ -34,6 +34,12 @@ from .config import YF_TICKERS
 from .models import Datum, Reliability, SourceStamp, MarketSnapshot, na_stamp
 from .external_sources import fetch_gdp_nowcast
 
+# Institutional Intelligence layer (best-effort; zero-regression if absent).
+try:
+    from . import institutional as _inst  # type: ignore
+except Exception:  # pragma: no cover
+    _inst = None
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -455,18 +461,35 @@ def build_market_snapshot(
             str(overrides["GDP_NOWCAST"]), "",
         )
     else:
-        gdp_val = fetch_gdp_nowcast()
-        if gdp_val is not None:
+        # Primary: FRED series GDPNOW (machine-readable, gives value + prior +
+        # delta + date). The Atlanta Fed landing page is now JS-rendered and no
+        # longer scrapeable, so the legacy scrape is only a last-resort fallback.
+        gdp = _inst.fetch_gdpnow_full() if _inst else None
+        if gdp is not None and gdp.value is not None:
+            sub = f"FRED · GDPNOW · publié {gdp.pub_date}"
+            if gdp.quarter:
+                sub = f"FRED · GDPNOW · {gdp.quarter} · publié {gdp.pub_date}"
+            if gdp.delta is not None:
+                sub += f" · {'+' if gdp.delta >= 0 else ''}{gdp.delta:.1f} pt vs préc."
             snap.gauges["GDP_NOWCAST"] = Datum(
-                gdp_val,
-                SourceStamp("Atlanta Fed GDPNow", Reliability.PRIMARY,
-                            timestamp=now_utc,
-                            url="https://www.atlantafed.org/cqer/research/gdpnow"),
-                f"{gdp_val:.1f}%", "",
+                gdp.value,
+                SourceStamp("FRED · GDPNOW", Reliability.PRIMARY, timestamp=now_utc,
+                            url="https://fred.stlouisfed.org/series/GDPNOW"),
+                f"{gdp.value:.1f}%", sub,
             )
         else:
-            snap.gauges["GDP_NOWCAST"] = Datum(
-                None, na_stamp("source indisponible"), "N/A")
+            gdp_val = fetch_gdp_nowcast()
+            if gdp_val is not None:
+                snap.gauges["GDP_NOWCAST"] = Datum(
+                    gdp_val,
+                    SourceStamp("Atlanta Fed GDPNow", Reliability.PRIMARY,
+                                timestamp=now_utc,
+                                url="https://www.atlantafed.org/cqer/research/gdpnow"),
+                    f"{gdp_val:.1f}%", "Atlanta Fed GDPNow",
+                )
+            else:
+                snap.gauges["GDP_NOWCAST"] = Datum(
+                    None, na_stamp("source indisponible"), "N/A")
 
     # Surprise Index: no keyless source — [N/A] unless overridden (unchanged).
     if "SURPRISE_IDX" in overrides:
