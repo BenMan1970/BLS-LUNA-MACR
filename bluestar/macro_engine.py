@@ -737,23 +737,30 @@ def _build_setup(asset: str, direction: int, score: float, market: MarketSnapsho
     squeeze_risk, squeeze_cls = "Faible", "green"
     ips_summary = "[N/A]"
     if ccys:
-        for ccy in ccys:
-            r = ips_by_ccy.get(ccy)
-            if r and r.ips_score is not None:
-                # ips_summary: compact data-only string for the narrow top-card row.
-                # Source reference goes exclusively in positioning_link (Section 4 field 8).
-                ips_summary = f"{ccy} {r.ips_score} — {r.ips_label}"
-                if r.is_extreme:
-                    squeeze_risk, squeeze_cls = f"Élevé ({ccy} IPS extrême)", "red"
-                    pos_link = (f"{ccy} en zone extrême (IPS {r.ips_score} · {r.ips_label}). "
-                                f"[{cot_label}]. "
-                                "Le COT ne déclenche pas le trade ; il signale un risque de "
-                                "squeeze inverse si le catalyseur déçoit → conviction ±, stop strict.")
-                else:
-                    pos_link = (f"{ccy} IPS {r.ips_score} — {r.ips_label}. "
-                                f"[{cot_label}]. "
-                                "Positionnement non extrême, n'amende pas la conviction.")
-                break
+        # Prefer an EXTREME currency (crowded/capitulation) among the pair's
+        # legs. Stopping at the first currency with *any* usable IPS score
+        # (previous behaviour) let a boring base-currency reading mask an
+        # extreme quote-currency reading -- e.g. GBP/JPY: GBP Normal (33)
+        # would be picked first and JPY Capitulation (7) never inspected.
+        candidates = [(ccy, ips_by_ccy.get(ccy)) for ccy in ccys]
+        candidates = [(ccy, r) for ccy, r in candidates if r and r.ips_score is not None]
+        chosen = next((c for c in candidates if c[1].is_extreme),
+                      candidates[0] if candidates else None)
+        if chosen:
+            ccy, r = chosen
+            # ips_summary: compact data-only string for the narrow top-card row.
+            # Source reference goes exclusively in positioning_link (Section 4 field 8).
+            ips_summary = f"{ccy} {r.ips_score} — {r.ips_label}"
+            if r.is_extreme:
+                squeeze_risk, squeeze_cls = f"Élevé ({ccy} IPS extrême)", "red"
+                pos_link = (f"{ccy} en zone extrême (IPS {r.ips_score} · {r.ips_label}). "
+                            f"[{cot_label}]. "
+                            "Le COT ne déclenche pas le trade ; il signale un risque de "
+                            "squeeze inverse si le catalyseur déçoit → conviction ±, stop strict.")
+            else:
+                pos_link = (f"{ccy} IPS {r.ips_score} — {r.ips_label}. "
+                            f"[{cot_label}]. "
+                            "Positionnement non extrême, n'amende pas la conviction.")
 
     # Reduce conviction by 1 if positioning is contra and extreme (squeeze).
     color = "yellow"
