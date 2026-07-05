@@ -282,7 +282,7 @@ def _render_section3b(ctx: BriefingContext) -> str:
     <div class="sub-lbl">💪 CURRENCY STRENGTH RANKING — 8 devises majeures</div>
     <div style="font-family:var(--mono);font-size:11px">
       {cs_rows}
-      <div style="font-size:10px;color:var(--muted);margin-top:4px">Score qualitatif 0–100</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:4px">Score relatif · 0–100 <span class="amber">{_e(_cs_source_tag(ctx.currency_strength))}</span></div>
     </div>
     <div class="sub-lbl">📊 INSTITUTIONAL POSITIONING SCORE (IPS 0–100) — Non-Commercials CFTC</div>
     <div style="font-family:var(--mono);font-size:11px">
@@ -384,17 +384,17 @@ def _render_section5(ctx: BriefingContext) -> str:
     <div class="risk-main">
       <strong>⚠️ RISQUE PRINCIPAL</strong>
       {_e(rm['desc'])} → Si réalisé : <span class="mono bold">{_e(rm['asset'])}</span> vers <span class="mono bold">{_e(rm['level'])}</span>
-      <span style="font-size:10px;display:block;margin-top:4px">Probabilité estimée : {_e(rm['proba'])} [{_e(rm['source'])}]</span>
+      <span style="font-size:10px;display:block;margin-top:4px">Probabilité estimée : {_e(rm['proba'])} {_e(rm['source'])}</span>
     </div>
     <div class="risk-grid">
       <div class="risk-bull">
         <div class="risk-ttl">📈 {_e(ctx.bull.title)} — {_e(ctx.bull.proba)}</div>
-        <div class="risk-proba">Déclencheur ancré : {_e(ctx.bull.trigger)} [{_e(ctx.bull.trigger_source)}]</div>
+        <div class="risk-proba">Déclencheur ancré : {_e(ctx.bull.trigger)} {_e(ctx.bull.trigger_source)}</div>
         {bull_rows}
       </div>
       <div class="risk-bear">
         <div class="risk-ttl">📉 {_e(ctx.bear.title)} — {_e(ctx.bear.proba)}</div>
-        <div class="risk-proba">Déclencheur ancré : {_e(ctx.bear.trigger)} [{_e(ctx.bear.trigger_source)}]</div>
+        <div class="risk-proba">Déclencheur ancré : {_e(ctx.bear.trigger)} {_e(ctx.bear.trigger_source)}</div>
         {bear_rows}
       </div>
     </div>
