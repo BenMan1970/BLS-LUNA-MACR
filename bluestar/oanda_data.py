@@ -22,6 +22,7 @@ Design constraints (zero regression):
 """
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import math
 import os
@@ -32,7 +33,7 @@ from typing import Optional
 import pytz
 import requests
 
-from .config import YF_TICKERS
+from .config import YF_TICKERS, MARKET_FETCH_MAX_WORKERS
 from .models import Datum, Reliability, SourceStamp, MarketSnapshot, na_stamp
 from .external_sources import fetch_gdp_nowcast
 
@@ -439,8 +440,26 @@ def build_market_snapshot(
     from .config import UNIVERSE  # local import to avoid cycle at module load
 
     keys = set(_GAUGE_KEYS) | set(UNIVERSE)
+
+    # A6 (perf): each _fetch_instrument call is an independent blocking
+    # network request (Oanda v20 REST or yfinance) with no shared state
+    # between instruments (verified: no module-level cache/session) --
+    # fetched concurrently instead of one-by-one. Capped at
+    # MARKET_FETCH_MAX_WORKERS to bound load on the upstream APIs.
+    results: dict[str, tuple] = {}
+    max_workers = min(len(keys), MARKET_FETCH_MAX_WORKERS)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        future_to_key = {ex.submit(_fetch_instrument, key, now_utc, api_key): key
+                         for key in keys}
+        for future in concurrent.futures.as_completed(future_to_key):
+            key = future_to_key[future]
+            results[key] = future.result()
+
+    # Everything below is unchanged from the sequential version: same
+    # per-key branching, same override precedence, same assignment order
+    # semantics (dict keys, so iteration order is immaterial to the result).
     for key in keys:
-        datum, atr, closes = _fetch_instrument(key, now_utc, api_key)
+        datum, atr, closes = results[key]
 
         # Manual override always wins — stamped PROXY.
         if key in overrides:
