@@ -30,6 +30,10 @@ MARKET_CACHE_TTL = 300             # seconds
 HTTP_TIMEOUT = 15                  # seconds
 HTTP_RETRIES = 2
 HTTP_BACKOFF = 1.5                 # seconds, exponential base
+MARKET_FETCH_MAX_WORKERS = 8       # cap on concurrent instrument fetches
+                                    # (Oanda v20 / yfinance) — bounds load on
+                                    # the upstream APIs while still giving a
+                                    # large wall-clock win over sequential.
 
 # yfinance tickers used as a *no-key* primary/fallback market source.
 # When yfinance (or the network) is unavailable the field becomes [N/A].
@@ -118,4 +122,3 @@ MODE_SELECTION_MIN_SCORE = {
     "Aggressive": 0.40,
 }
 MAX_PRIORITY_ASSETS = 3
-
