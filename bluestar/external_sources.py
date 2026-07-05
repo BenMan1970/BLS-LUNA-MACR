@@ -24,6 +24,7 @@ as specified.
 from __future__ import annotations
 
 import csv
+import concurrent.futures
 import io
 import logging
 import os
@@ -155,12 +156,21 @@ def fetch_central_bank_rates() -> dict[str, float]:
     "BoE"). Missing / unavailable rates are simply omitted from the dict so the
     caller can distinguish "sourced" from "not sourced" per central bank.
     Returns ``{}`` if the key is absent or every series fails.
+
+    The 4 series are independent FRED queries (no shared state, verified: each
+    call to ``_fred_series`` is a fresh, stateless ``requests.get``) -- fetched
+    concurrently rather than sequentially (A6 perf fix). Same {name: pct}
+    output as before; only wall-clock ordering changes.
     """
     out: dict[str, float] = {}
-    for name, series_id in _CB_RATE_SERIES.items():
-        val = _fred_series(series_id)
-        if val is not None:
-            out[name] = val
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(_CB_RATE_SERIES)) as ex:
+        future_to_name = {ex.submit(_fred_series, series_id): name
+                          for name, series_id in _CB_RATE_SERIES.items()}
+        for future in concurrent.futures.as_completed(future_to_name):
+            name = future_to_name[future]
+            val = future.result()
+            if val is not None:
+                out[name] = val
     if not out:
         logger.warning("fetch_central_bank_rates: no CB rate resolved (no key?)")
     return out
@@ -173,9 +183,15 @@ def fetch_liquidity_stress() -> Optional[float]:
     legs come from FRED as percentages; the spread is converted to basis
     points (× 100) so the gauge stays on a natural funding-stress scale.
     Returns ``None`` if either leg is unavailable (never invents a value).
+
+    The two legs are independent FRED queries -- fetched concurrently rather
+    than sequentially (A6 perf fix); same None-on-any-missing-leg contract.
     """
-    sofr = _fred_series(_SOFR_SERIES)
-    effr = _fred_series(_EFFR_SERIES)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+        fut_sofr = ex.submit(_fred_series, _SOFR_SERIES)
+        fut_effr = ex.submit(_fred_series, _EFFR_SERIES)
+        sofr = fut_sofr.result()
+        effr = fut_effr.result()
     if sofr is None or effr is None:
         return None
     return (sofr - effr) * 100.0  # percentage points -> basis points
