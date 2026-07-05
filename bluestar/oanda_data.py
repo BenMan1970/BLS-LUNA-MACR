@@ -23,6 +23,7 @@ Design constraints (zero regression):
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import datetime
 from typing import Optional
@@ -115,15 +116,17 @@ _BACKOFF = 1.5
 # Credential resolution
 # ---------------------------------------------------------------------------
 def _oanda_creds() -> tuple[Optional[str], Optional[str]]:
-    """Return (api_key, account_id) from st.secrets or (None, None)."""
-    if not _ST_OK:
-        return None, None
-    try:
-        key = st.secrets.get("OANDA_API_KEY") or st.secrets.get("oanda_api_key")
-        acc = st.secrets.get("OANDA_ACCOUNT_ID") or st.secrets.get("oanda_account_id")
-        return (str(key) if key else None, str(acc) if acc else None)
-    except Exception:  # pragma: no cover
-        return None, None
+    """Return (api_key, account_id) from st.secrets, then os.environ, else (None, None)."""
+    key = acc = None
+    if _ST_OK:
+        try:
+            key = st.secrets.get("OANDA_API_KEY") or st.secrets.get("oanda_api_key")
+            acc = st.secrets.get("OANDA_ACCOUNT_ID") or st.secrets.get("oanda_account_id")
+        except Exception:  # pragma: no cover
+            key = acc = None
+    key = key or os.environ.get("OANDA_API_KEY") or os.environ.get("oanda_api_key")
+    acc = acc or os.environ.get("OANDA_ACCOUNT_ID") or os.environ.get("oanda_account_id")
+    return (str(key) if key else None, str(acc) if acc else None)
 
 
 def _strength_access_token() -> Optional[str]:
@@ -466,12 +469,13 @@ def build_market_snapshot(
         if gdp.quarter:
             sub = f"FRED · GDPNOW · {gdp.quarter} · publié {gdp.pub_date}"
         if gdp.delta is not None:
-            sub += f" · {'+' if gdp.delta >= 0 else ''}{gdp.delta:.1f} pt vs préc."
+            sub += (f" · {'+' if gdp.delta >= 0 else '−'}"
+                    f"{fr_num(abs(gdp.delta), 1)} pt vs préc.")
         snap.gauges["GDP_NOWCAST"] = Datum(
             gdp.value,
             SourceStamp("FRED · GDPNOW", Reliability.PRIMARY, timestamp=now_utc,
                         url="https://fred.stlouisfed.org/series/GDPNOW"),
-            f"{gdp.value:.1f}%", sub,
+            f"{fr_num(gdp.value, 1)} %", sub,
         )
     elif "GDP_NOWCAST" in overrides:
         snap.gauges["GDP_NOWCAST"] = Datum(
@@ -487,7 +491,7 @@ def build_market_snapshot(
                 SourceStamp("Atlanta Fed GDPNow", Reliability.PRIMARY,
                             timestamp=now_utc,
                             url="https://www.atlantafed.org/cqer/research/gdpnow"),
-                f"{gdp_val:.1f}%", "Atlanta Fed GDPNow",
+                f"{fr_num(gdp_val, 1)} %", "Atlanta Fed GDPNow",
             )
         else:
             snap.gauges["GDP_NOWCAST"] = Datum(
