@@ -26,6 +26,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import os
 import re
 import zipfile
 from typing import Optional
@@ -90,18 +91,28 @@ _CB_RATE_SERIES: dict[str, str] = {
     "BoE": "BOERUKM",         # BoE Official Bank Rate (%)
 }
 
-_LIQUIDITY_SERIES = "TEDRATE"  # TED spread — funding stress proxy
+# TEDRATE discontinued by FRED (St. Louis Fed) on 2022-01-31.
+# Replacement funding-stress gauge: SOFR − EFFR spread, in basis points.
+_SOFR_SERIES = "SOFR"     # Secured Overnight Financing Rate (%)
+_EFFR_SERIES = "EFFR"     # Effective Federal Funds Rate (%)
 
 
 def _fred_api_key() -> Optional[str]:
-    """Resolve the FRED API key from st.secrets, else ``None``."""
-    if not _ST_OK:
-        return None
-    try:
-        key = st.secrets.get("FRED_API_KEY") or st.secrets.get("fred_api_key")
-        return str(key) if key else None
-    except Exception:  # pragma: no cover
-        return None
+    """Resolve the FRED API key from st.secrets, then os.environ, else ``None``.
+
+    The os.environ fallback lets the keyed feeds work in cron/test contexts
+    where Streamlit is absent (matches institutional._fred_key behaviour and
+    the pipeline.py "cron/tests" contract).
+    """
+    if _ST_OK:
+        try:
+            key = st.secrets.get("FRED_API_KEY") or st.secrets.get("fred_api_key")
+            if key:
+                return str(key)
+        except Exception:  # pragma: no cover
+            pass
+    env = os.environ.get("FRED_API_KEY") or os.environ.get("fred_api_key")
+    return str(env) if env else None
 
 
 def _fred_series(series_id: str) -> Optional[float]:
@@ -156,8 +167,18 @@ def fetch_central_bank_rates() -> dict[str, float]:
 
 
 def fetch_liquidity_stress() -> Optional[float]:
-    """Return the latest TED spread (%) as a funding-stress gauge, or ``None``."""
-    return _fred_series(_LIQUIDITY_SERIES)
+    """Return the latest SOFR − EFFR spread in **basis points**, or ``None``.
+
+    Replaces the discontinued TEDRATE series (dead since 2022-01-31). Both
+    legs come from FRED as percentages; the spread is converted to basis
+    points (× 100) so the gauge stays on a natural funding-stress scale.
+    Returns ``None`` if either leg is unavailable (never invents a value).
+    """
+    sofr = _fred_series(_SOFR_SERIES)
+    effr = _fred_series(_EFFR_SERIES)
+    if sofr is None or effr is None:
+        return None
+    return (sofr - effr) * 100.0  # percentage points -> basis points
 
 
 # ===========================================================================
