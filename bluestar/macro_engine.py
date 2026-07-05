@@ -11,6 +11,7 @@ scenarios -> :class:`BriefingContext`.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import re
 from datetime import datetime
@@ -150,8 +151,14 @@ def build_central_bank_context(overrides: Optional[dict]) -> list[CentralBankSna
     cb_over = (overrides or {}).get("central_banks", {})
 
     # External feeds fetched once; each is best-effort ({} / None on failure).
-    fred_rates = fetch_central_bank_rates()          # {name: pct} or {}
-    fedwatch = fetch_fedwatch_probabilities()        # {pause/cut/hike} or None
+    # FRED (rates) and CME FedWatch (probabilities) are independent sources
+    # with no shared state -- fetched concurrently (A6 perf fix) rather than
+    # sequentially. Same two values feed the exact same logic below.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as _ex:
+        _fut_rates = _ex.submit(fetch_central_bank_rates)
+        _fut_fw = _ex.submit(fetch_fedwatch_probabilities)
+        fred_rates = _fut_rates.result()        # {name: pct} or {}
+        fedwatch = _fut_fw.result()              # {pause/cut/hike} or None
 
     out: list[CentralBankSnapshot] = []
     for name, flag, _ccy in _CB_DEFS:
@@ -875,7 +882,9 @@ def build_macro_overlay(market: MarketSnapshot, regime: str,
 # Step -- Risk scenarios
 # ---------------------------------------------------------------------------
 def build_risk_scenarios(events: list[MacroEvent], regime_class: str,
-                         priority: list[AssetSetup]) -> tuple[dict, RiskScenario, RiskScenario, str]:
+                         priority: list[AssetSetup],
+                         central_banks: Optional[list[CentralBankSnapshot]] = None
+                         ) -> tuple[dict, RiskScenario, RiskScenario, str]:
     anchor = events[0] if events else None
     if anchor is not None:
         anchor_name = anchor.event_name
@@ -894,6 +903,21 @@ def build_risk_scenarios(events: list[MacroEvent], regime_class: str,
         inval_txt = ("Rupture du régime de volatilité actuel (VIX/MOVE hors fourchette) "
                      "→ révision du scénario dominant.")
 
+    # A8 fix: reuse the FedWatch pause/cut/hike odds already sourced onto the
+    # Fed's CentralBankSnapshot (see build_central_bank_context) instead of a
+    # fixed qualitative placeholder -- but only when the anchor catalyst is
+    # actually USD-denominated (NFP/CPI/FOMC etc.); a Fed rate-path
+    # distribution isn't the relevant probability for e.g. a EUR or GBP
+    # catalyst. Falls back to the original qualitative text otherwise.
+    proba = "qualitative — équilibré"
+    proba_src = anchor_src
+    if anchor is not None and anchor.currency == "USD" and central_banks:
+        fed = next((cb for cb in central_banks if cb.name == "FED"), None)
+        if fed and fed.pause_pct is not None and fed.cut_pct is not None and fed.hike_pct is not None:
+            proba = (f"CME FedWatch : Pause {fed.pause_pct}% · Baisse {fed.cut_pct}% "
+                     f"· Hausse {fed.hike_pct}%")
+            proba_src = "[CME FedWatch]"
+
     risk_main = {
         "desc": ("Surprise macro sur le principal catalyseur de la semaine "
                  f"({anchor_name}) déclenchant un repricing brutal." if events else
@@ -905,8 +929,8 @@ def build_risk_scenarios(events: list[MacroEvent], regime_class: str,
         "level": (priority[0].invalidation_level
                   if priority and priority[0].invalidation_level not in ("[N/A]", "", None)
                   else "seuil de bascule = sortie du régime de volatilité courant (VIX/MOVE)"),
-        "proba": "qualitative — équilibré",
-        "source": anchor_src,
+        "proba": proba,
+        "source": proba_src,
     }
     bull = RiskScenario(
         title="Scénario BULL (risk-on)", proba="favori si données molles",
@@ -965,18 +989,29 @@ def build_context(
             logger.warning("surprise gauge injection failed: %s", exc)
 
     regime, regime_cls, regime_since, _pen = determine_market_regime(market, events)
-    central_banks = build_central_bank_context(overrides)
+
+    # A6 (perf): central_banks, ips and the liquidity spread are three
+    # mutually independent network-backed layers -- different inputs, no
+    # shared state (verified: none touch `market` or each other's output).
+    # Fired concurrently instead of sequentially; every parsing/business-logic
+    # line that follows is unchanged, only the wall-clock ordering changes.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as _ex:
+        _fut_cb = _ex.submit(build_central_bank_context, overrides)
+        _fut_ips = _ex.submit(build_ips_scores, overrides, now_utc)
+        _fut_liq = _ex.submit(fetch_liquidity_stress)
+        central_banks = _fut_cb.result()
+        ips, cot_ref_label = _fut_ips.result()
+        sofr_effr_bp = _fut_liq.result()
+
     cs = build_currency_strength_ranking(central_banks, regime_cls)
     cs = _oanda_strength_scores(market, cs)   # BLUESTAR-PATCH v10.0
-    ips, cot_ref_label = build_ips_scores(overrides, now_utc)
     high, medium, scenarios = build_catalysts(events)
 
     # Liquidity / funding stress — SOFR−EFFR spread (bp) via FRED, else [N/A].
     # NOTE: TEDRATE was discontinued (2022-01-31); the gauge is now the
     # SOFR−EFFR spread expressed in basis points. Thresholds below (8 bp /
     # 15 bp) are HEURISTIC and must be backtested against SOFR/EFFR history
-    # before production use.
-    sofr_effr_bp = fetch_liquidity_stress()
+    # before production use. (sofr_effr_bp fetched concurrently above.)
     if sofr_effr_bp is not None:
         if sofr_effr_bp >= 15.0:
             tone = "tension de financement USD notable"
@@ -997,7 +1032,7 @@ def build_context(
         market, regime_cls, central_banks, cs, ips, events, mode,
         allow_proxy_levels, cot_label=cot_ref_label)
 
-    risk_main, bull, bear, inval = build_risk_scenarios(upcoming, regime_cls, priority)
+    risk_main, bull, bear, inval = build_risk_scenarios(upcoming, regime_cls, priority, central_banks)
 
     # Squeeze / positioning alert
     squeeze_ccy = None
