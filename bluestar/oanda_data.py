@@ -23,6 +23,7 @@ Design constraints (zero regression):
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from datetime import datetime
@@ -344,6 +345,17 @@ def _fetch_yf_fallback(
     closes = [float(x) for x in df["Close"].tolist()]
     highs  = [float(x) for x in df["High"].tolist()]
     lows   = [float(x) for x in df["Low"].tolist()]
+
+    # yfinance occasionally returns NaN OHLC for the most recent row (e.g. an
+    # in-progress session, a stale/half-published bar around a holiday).
+    # A NaN is not None, so it would otherwise sail past Datum.available and
+    # print as a literal "nan" in the briefing -- silently breaking the
+    # [N/A]/[PROXY]-or-real-value contract. Drop any row with a NaN in it.
+    clean = [(c, h, lo) for c, h, lo in zip(closes, highs, lows)
+             if not (math.isnan(c) or math.isnan(h) or math.isnan(lo))]
+    if len(clean) < 2:
+        return Datum(None, na_stamp("yfinance NaN OHLC"), "N/A"), None, []
+    closes, highs, lows = (list(t) for t in zip(*clean))
     last, prev = closes[-1], closes[-2]
 
     # ^TNX x10 normalisation (unchanged from market_data.py).
