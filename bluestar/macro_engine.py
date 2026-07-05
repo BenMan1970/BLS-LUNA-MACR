@@ -321,7 +321,7 @@ def _oanda_strength_scores(
         rows.append(CurrencyStrength(
             currency=ccy,
             score=score_100,
-            driver="",
+            driver="Oanda D1",
             css_class=cls,
         ))
 
@@ -762,7 +762,7 @@ def _build_setup(asset: str, direction: int, score: float, market: MarketSnapsho
 
     ev_names = ", ".join(sorted({e.event_name for e in ev})[:2]) if ev else "aucun catalyseur proche"
     invalidation = (f"Retournement macro / catalyseur ({ev_names})")
-    inval_level = (f"clôture {'au-dessus' if direction>0 else 'sous'} du stop "
+    inval_level = (f"clôture {'sous le' if direction>0 else 'au-dessus du'} stop "
                    f"{_level(stop, asset)}" if stop is not None else "[N/A]")
 
     return AssetSetup(
@@ -948,11 +948,11 @@ def build_context(
             si = _inst.fetch_macro_surprise("USD", raw_events=events)
             if si is not None:
                 disp = f"{'+' if si.value >= 0 else ''}{si.value:.0f}"
-                mode = "US Macro Surprise" if "Surprise" in si.source else "US Macro Momentum"
+                gauge_mode = "US Macro Surprise" if "Surprise" in si.source else "US Macro Momentum"
                 market.gauges["SURPRISE_IDX"] = Datum(
                     si.value,
                     SourceStamp("BLUESTAR · Forex Factory", Reliability.PRIMARY, timestamp=now_utc),
-                    disp, f"{si.trend} {mode} · n={si.n}",
+                    disp, f"{si.trend} {gauge_mode} · n={si.n}",
                 )
         except Exception as exc:  # pragma: no cover - never break the pipeline
             logger.warning("surprise gauge injection failed: %s", exc)
@@ -964,17 +964,21 @@ def build_context(
     ips, cot_ref_label = build_ips_scores(overrides, now_utc)
     high, medium, scenarios = build_catalysts(events)
 
-    # Liquidity / funding stress — TED spread via FRED, else honest [N/A].
-    ted = fetch_liquidity_stress()
-    if ted is not None:
-        if ted >= 0.50:
+    # Liquidity / funding stress — SOFR−EFFR spread (bp) via FRED, else [N/A].
+    # NOTE: TEDRATE was discontinued (2022-01-31); the gauge is now the
+    # SOFR−EFFR spread expressed in basis points. Thresholds below (8 bp /
+    # 15 bp) are HEURISTIC and must be backtested against SOFR/EFFR history
+    # before production use.
+    sofr_effr_bp = fetch_liquidity_stress()
+    if sofr_effr_bp is not None:
+        if sofr_effr_bp >= 15.0:
             tone = "tension de financement USD notable"
-        elif ted >= 0.30:
+        elif sofr_effr_bp >= 8.0:
             tone = "légère tension de financement USD"
         else:
             tone = "pas de stress de financement USD"
-        liquidity_msg = (f"TED spread {fr_num(ted, 2)} pt → {tone} "
-                         "[FRED · TEDRATE]. Surveiller les flux de fin de "
+        liquidity_msg = (f"Spread SOFR−EFFR {fr_num(sofr_effr_bp, 1)} bp → {tone} "
+                         "[FRED · SOFR/EFFR]. Surveiller les flux de fin de "
                          "mois/trimestre si applicable.")
     else:
         liquidity_msg = ("Stress de financement USD non sourcé [N/A]. "
@@ -1013,7 +1017,12 @@ def build_context(
     cot_summary = ("Aucune donnée COT chargée [N/A] — saisir les Non-Commercials en overrides."
                    if not ips else
                    "Non-Commercials : " + " · ".join(
-                       f"{r.currency} {r.ips_label} (IPS {r.ips_score})" for r in ips[:4]))
+                       f"{r.currency} {r.ips_label} (IPS {r.ips_score})"
+                       for r in sorted(
+                           ips,
+                           key=lambda r: (not r.is_extreme,
+                                          abs((r.ips_score or 50) - 50) * -1),
+                       )[:4]))
 
     op_note = None
     if not is_live:
