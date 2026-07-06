@@ -1,6 +1,12 @@
 """End-to-end pipeline glue: data -> engine -> render -> validate.
 
 Kept free of Streamlit so it can be driven from the UI, a cron job, or tests.
+
+v9.0 changes:
+  * Integrates staleness/coverage report (audit C2/C3/C5).
+  * Integrates regime engine (Priority 4).
+  * Integrates interpretation layer (Priority 3).
+  * Blocks publication on ERROR-level validation issues.
 """
 from __future__ import annotations
 
@@ -50,4 +56,3 @@ def generate_briefing(
         logger.warning("Validation produced %d error(s): %s",
                        len(errors), [e.message for e in errors])
     return html, ctx, issues
-  
