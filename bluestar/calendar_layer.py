@@ -97,7 +97,7 @@ def enrich(event: Dict, event_time_ref: datetime) -> Optional[Dict]:
     try:
         t = datetime.fromisoformat(event.get("date", "").replace("Z", "+00:00"))
         if t.tzinfo is None:
-            t = pytz.UTC.localize(t)
+            t = t.replace(tzinfo=pytz.UTC)
         h = (t - event_time_ref).total_seconds() / 3600
         ccy = event.get("country", "")
         prio = (
