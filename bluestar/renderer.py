@@ -115,10 +115,14 @@ def _render_section1(ctx: BriefingContext) -> str:
 # Section 2
 # ---------------------------------------------------------------------------
 def _render_event_high(e: MacroEvent, scn: dict) -> str:
+    # Audit A1 fix: display the date alongside the time to avoid false
+    # intraday imminence, especially on weekends.
+    date_str = e.date_display if hasattr(e, 'date_display') and e.date_display else ""
+    time_label = f"{_e(e.time_display)}" if not date_str else f"{_e(date_str)} · {_e(e.time_display)}"
     return f"""
     <div class="event high">
       <div class="event-hdr">
-        <span class="ev-time">{_e(e.time_display)}</span>
+        <span class="ev-time">{time_label}</span>
         <span class="ev-name">{_e(e.event_name)} [{_e(e.currency)}]</span>
         <span class="ev-tag"><span class="badge badge-red">🔴 ÉLEVÉ</span></span>
       </div>
@@ -133,10 +137,13 @@ def _render_event_high(e: MacroEvent, scn: dict) -> str:
 
 def _render_event_medium(e: MacroEvent) -> str:
     pairs = " · ".join(e.pairs_affected[:4]) if e.pairs_affected else "—"
+    # Audit A1 fix: display the date alongside the time.
+    date_str = e.date_display if hasattr(e, 'date_display') and e.date_display else ""
+    time_label = f"{_e(e.time_display)}" if not date_str else f"{_e(date_str)} · {_e(e.time_display)}"
     return f"""
     <div class="event medium">
       <div class="event-hdr">
-        <span class="ev-time">{_e(e.time_display)}</span>
+        <span class="ev-time">{time_label}</span>
         <span class="ev-name">{_e(e.event_name)} [{_e(e.currency)}]</span>
         <span class="ev-tag"><span class="badge badge-yellow">🟡 MODÉRÉ</span></span>
         <span style="margin-left:auto;font-size:11px;color:var(--muted)">Impact : {_e(pairs)}</span>
@@ -145,6 +152,15 @@ def _render_event_medium(e: MacroEvent) -> str:
 
 
 def _render_section2(ctx: BriefingContext) -> str:
+    # Audit A1 fix: adapt the section title to the actual time context.
+    # On a weekend or outside live session, events are "à venir" not "du jour".
+    if ctx.is_live_session:
+        sec_title = "Catalyseurs du Jour"
+        sec_sub = "News qui peuvent invalider un setup"
+    else:
+        sec_title = "Catalyseurs à Venir"
+        sec_sub = "Calendrier macro — fenêtre glissante 72h (marché fermé)"
+
     if not ctx.catalysts_high and not ctx.catalysts_medium:
         body = ('<div class="abox wait" style="font-size:12px"><span>Aucun catalyseur '
                 'high-impact à venir dans la fenêtre du calendrier [Forex Factory].</span></div>')
@@ -155,7 +171,7 @@ def _render_section2(ctx: BriefingContext) -> str:
         body = highs + meds
     return f"""
 <div class="section">
-  <div class="sec-hdr"><div class="sec-num">2</div><div class="sec-ttl">Catalyseurs du Jour</div><div class="sec-sub">News qui peuvent invalider un setup</div></div>
+  <div class="sec-hdr"><div class="sec-num">2</div><div class="sec-ttl">{_e(sec_title)}</div><div class="sec-sub">{_e(sec_sub)}</div></div>
   <div class="sec-body">{body}
   </div>
 </div>"""
@@ -360,7 +376,7 @@ def _render_recap_row(s: AssetSetup) -> str:
             <td class="mono red sm">{_e(s.stop)}</td>
             <td class="mono amber sm">±{_e(s.expected_move)}</td>
             <td class="mono {s.squeeze_class} sm">{_e(s.squeeze_risk)}</td>
-            <td class="mono blue sm">{_e(s.sizing_factor)}</td>
+            <td class="mono blue sm">{_e(s.risk_reward)}</td>
             <td class="sm bold">{_e(s.action)}</td>
           </tr>"""
 
@@ -404,13 +420,168 @@ def _render_section5(ctx: BriefingContext) -> str:
     <div class="sub-lbl">📊 RÉCAPITULATIF FINAL — VUE DESK</div>
     <div class="tw">
       <table>
-        <thead><tr><th>Actif</th><th>Signal</th><th>Biais</th><th>Conviction</th><th>Achat Macro</th><th>Vente Macro</th><th>Stop</th><th>EM</th><th>Squeeze Risk</th><th>Sizing Factor</th><th>Action</th></tr></thead>
+        <thead><tr><th>Actif</th><th>Signal</th><th>Biais</th><th>Conviction</th><th>Achat</th><th>Vente</th><th>Stop</th><th>EM</th><th>Squeeze</th><th>R:R</th><th>Action</th></tr></thead>
         <tbody>{recap}
         </tbody>
       </table>
     </div>
     <div style="font-size:10px;color:var(--muted);margin-top:10px;font-family:var(--mono)">
-      Sizing Factor = ajustement heuristique de taille, PAS un Kelly réel (aucune base de gains/pertes historiques disponible) : conviction × 1/(1+VIX/30), arrondi. Squeeze Risk = Élevé si IPS&gt;80 ou &lt;20 sur une devise du setup, sinon Modéré/Faible. Figures COT Non-Commercials : {_e(ctx.cot_date)}.
+      R:R = ratio reward/risk (reward = distance entrée→objectif, risk = distance entrée→stop). Squeeze Risk = Élevé si IPS&gt;80 ou &lt;20 sur une devise du setup, sinon Modéré/Faible. ATR = Wilder EMA-14 (réconciliable avec MT4/TradingView). Figures COT Non-Commercials : {_e(ctx.cot_date)}.
+    </div>
+  </div>
+</div>"""
+
+
+# ---------------------------------------------------------------------------
+# Section 6 — Market Regime Engine (v9.0)
+# ---------------------------------------------------------------------------
+def _render_section6_regime(ctx: BriefingContext) -> str:
+    """Render the multi-factor regime assessment section."""
+    ra = getattr(ctx, 'regime_assessment', None)
+    if ra is None:
+        return ""
+    
+    # Supporting indicators
+    supporting_rows = ""
+    for ind in ra.supporting:
+        supporting_rows += (
+            f'<div class="rank-row"><span class="rank-lbl">✅ {_e(ind.name)}</span>'
+            f'<span style="font-size:11px;color:var(--green)">{_e(ind.value)} — {_e(ind.note)}</span></div>'
+        )
+    
+    # Contradicting indicators
+    contradicting_rows = ""
+    for ind in ra.contradicting:
+        contradicting_rows += (
+            f'<div class="rank-row"><span class="rank-lbl">❌ {_e(ind.name)}</span>'
+            f'<span style="font-size:11px;color:var(--red)">{_e(ind.value)} — {_e(ind.note)}</span></div>'
+        )
+    
+    # Transition triggers
+    trigger_rows = ""
+    for t in ra.transition_triggers:
+        trigger_rows += f'<div class="risk-row">→ {_e(t)}</div>'
+    
+    confidence_pct = int(ra.confidence * 100)
+    conf_color = "green" if ra.confidence >= 0.6 else "yellow" if ra.confidence >= 0.3 else "red"
+    
+    return f"""
+<div class="section">
+  <div class="sec-hdr"><div class="sec-num">6</div><div class="sec-ttl">Moteur de Régime</div><div class="sec-sub">Identification multi-facteur du régime de marché</div></div>
+  <div class="sec-body">
+    <div class="regime-bar">
+      <span class="regime-lbl">Régime identifié</span>
+      <span class="regime-val">{_e(ra.name)}</span>
+      <span style="margin-left:auto;font-size:11px;color:var(--muted)">Confiance : <span class="mono bold {conf_color}">{confidence_pct}%</span></span>
+    </div>
+    <div class="abox wait" style="font-size:12px;margin-bottom:12px">
+      <span>{_e(ra.description)}</span>
+    </div>
+    <div class="brief-grid" style="grid-template-columns:1fr;gap:8px">
+      <div><span class="brief-lbl">Narratif</span><span style="font-size:11px">{_e(ra.narrative)}</span></div>
+    </div>
+    <div class="sub-lbl">✅ INDICATEURS DE SOUTIEN</div>
+    <div style="font-family:var(--mono);font-size:11px;margin-bottom:12px">
+      {supporting_rows or '<div class="rank-row"><span class="rank-lbl">—</span><span>Aucun indicateur de soutien.</span></div>'}
+    </div>
+    <div class="sub-lbl">❌ INDICATEURS DE CONTRADICTION</div>
+    <div style="font-family:var(--mono);font-size:11px;margin-bottom:12px">
+      {contradicting_rows or '<div class="rank-row"><span class="rank-lbl">—</span><span>Aucun indicateur contradictoire.</span></div>'}
+    </div>
+    <div class="sub-lbl">🔄 DÉCLENCHEURS DE TRANSITION</div>
+    <div style="font-family:var(--mono);font-size:11px">
+      {trigger_rows or '<div class="risk-row">Aucun déclencheur identifié.</div>'}
+    </div>
+  </div>
+</div>"""
+
+
+# ---------------------------------------------------------------------------
+# Section 7 — Interpretation Engine (v9.0)
+# ---------------------------------------------------------------------------
+def _render_section7_interpretation(ctx: BriefingContext) -> str:
+    """Render the interpretation layer section."""
+    interp = getattr(ctx, 'interpretation', None)
+    if interp is None:
+        return ""
+    
+    # USD assessment
+    usd_block = (
+        f'<div class="abox" style="font-size:12px;margin-bottom:12px">'
+        f'<span class="bold">ANALYSE USD :</span> {_e(interp.usd_assessment)}</span></div>'
+    )
+    
+    # USD drivers
+    driver_rows = ""
+    for d in interp.usd_drivers:
+        driver_rows += f'<div class="risk-row">· {_e(d)}</div>'
+    
+    # Dominant factors
+    dominant_rows = ""
+    for f in interp.dominant_factors:
+        dominant_rows += f'<div class="risk-row">⭐ {_e(f)}</div>'
+    
+    # Reinforcing
+    reinforcing_rows = ""
+    for r in interp.reinforcing_indicators:
+        reinforcing_rows += f'<div class="risk-row">✅ {_e(r)}</div>'
+    
+    # Contradicting
+    contradicting_rows = ""
+    for c in interp.contradicting_indicators:
+        contradicting_rows += f'<div class="risk-row">❌ {_e(c)}</div>'
+    
+    # Invalidation risks
+    risk_rows = ""
+    for r in interp.invalidation_risks:
+        risk_rows += f'<div class="risk-row">⚠️ {_e(r)}</div>'
+    
+    # Narrative chain
+    chain_rows = ""
+    for link in interp.narrative_chain:
+        arrow = "→" if link.direction == "positive" else "←" if link.direction == "negative" else "↔"
+        chain_rows += (
+            f'<div class="rank-row">'
+            f'<span class="rank-lbl">{_e(link.upstream)}</span>'
+            f'<span style="font-size:11px">{arrow} {_e(link.downstream)}: {_e(link.mechanism)}</span></div>'
+        )
+    
+    # Asset explanations
+    asset_rows = ""
+    for asset, expl in interp.asset_explanations.items():
+        asset_rows += (
+            f'<div class="rank-row"><span class="rank-lbl">{_e(asset)}</span>'
+            f'<span style="font-size:11px">{_e(expl)}</span></div>'
+        )
+    
+    return f"""
+<div class="section">
+  <div class="sec-hdr"><div class="sec-num">7</div><div class="sec-ttl">Moteur d'Interprétation</div><div class="sec-sub">Pourquoi ce régime, quels facteurs dominent, quels risques</div></div>
+  <div class="sec-body">
+    {usd_block}
+    <div class="sub-lbl">🔑 FACTEURS DOMINANTS</div>
+    <div style="font-family:var(--mono);font-size:11px;margin-bottom:12px">
+      {dominant_rows or '<div class="risk-row">Aucun facteur dominant identifié.</div>'}
+    </div>
+    <div class="sub-lbl">✅ INDICATEURS QUI SE RENFORCENT</div>
+    <div style="font-family:var(--mono);font-size:11px;margin-bottom:12px">
+      {reinforcing_rows or '<div class="risk-row">Aucun renforcement détecté.</div>'}
+    </div>
+    <div class="sub-lbl">❌ INDICATEURS QUI SE CONTREDISENT</div>
+    <div style="font-family:var(--mono);font-size:11px;margin-bottom:12px">
+      {contradicting_rows or '<div class="risk-row">Aucune contradiction détectée.</div>'}
+    </div>
+    <div class="sub-lbl">🔗 CHAÎNE DE TRANSMISSION MACRO</div>
+    <div style="font-family:var(--mono);font-size:11px;margin-bottom:12px">
+      {chain_rows}
+    </div>
+    <div class="sub-lbl">📋 POURQUOI CES ACTIFS SONT SÉLECTIONNÉS</div>
+    <div style="font-family:var(--mono);font-size:11px;margin-bottom:12px">
+      {asset_rows or '<div class="risk-row">Aucun actif sélectionné.</div>'}
+    </div>
+    <div class="sub-lbl">⚠️ RISQUES D'INVALIDATION</div>
+    <div style="font-family:var(--mono);font-size:11px">
+      {risk_rows or '<div class="risk-row">Aucun risque identifié.</div>'}
     </div>
   </div>
 </div>"""
@@ -438,6 +609,8 @@ def render_html(ctx: BriefingContext) -> str:
         + _render_section3b(ctx)
         + _render_section4(ctx)
         + _render_section5(ctx)
+        + _render_section6_regime(ctx)
+        + _render_section7_interpretation(ctx)
         + '</div><!-- /wrap -->'
     )
     footer = (f'<div class="footer">CONFIDENTIEL — BLUESTAR SYSTEM · FX INSTITUTIONAL DESK · '
