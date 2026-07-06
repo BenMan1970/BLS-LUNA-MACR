@@ -477,20 +477,28 @@ def _render_section6_regime(ctx: BriefingContext) -> str:
     <div class="abox wait" style="font-size:12px;margin-bottom:12px">
       <span>{_e(ra.description)}</span>
     </div>
-    <div class="brief-grid" style="grid-template-columns:1fr;gap:8px">
-      <div><span class="brief-lbl">Narratif</span><span style="font-size:11px">{_e(ra.narrative)}</span></div>
+    <div class="brief">
+      <div class="brief-grid" style="grid-template-columns:130px 1fr;gap:6px 8px">
+        <div class="brief-lbl">Narratif</div><div style="font-size:11px">{_e(ra.narrative)}</div>
+      </div>
     </div>
-    <div class="sub-lbl">✅ INDICATEURS DE SOUTIEN</div>
-    <div style="font-family:var(--mono);font-size:11px;margin-bottom:12px">
-      {supporting_rows or '<div class="rank-row"><span class="rank-lbl">—</span><span>Aucun indicateur de soutien.</span></div>'}
+    <div class="brief">
+      <div class="sub-lbl" style="margin-top:0">✅ INDICATEURS DE SOUTIEN</div>
+      <div style="font-family:var(--mono);font-size:11px">
+        {supporting_rows or '<div class="rank-row"><span class="rank-lbl">—</span><span>Aucun indicateur de soutien.</span></div>'}
+      </div>
     </div>
-    <div class="sub-lbl">❌ INDICATEURS DE CONTRADICTION</div>
-    <div style="font-family:var(--mono);font-size:11px;margin-bottom:12px">
-      {contradicting_rows or '<div class="rank-row"><span class="rank-lbl">—</span><span>Aucun indicateur contradictoire.</span></div>'}
+    <div class="brief">
+      <div class="sub-lbl" style="margin-top:0">❌ INDICATEURS DE CONTRADICTION</div>
+      <div style="font-family:var(--mono);font-size:11px">
+        {contradicting_rows or '<div class="rank-row"><span class="rank-lbl">—</span><span>Aucun indicateur contradictoire.</span></div>'}
+      </div>
     </div>
-    <div class="sub-lbl">🔄 DÉCLENCHEURS DE TRANSITION</div>
-    <div style="font-family:var(--mono);font-size:11px">
-      {trigger_rows or '<div class="risk-row">Aucun déclencheur identifié.</div>'}
+    <div class="brief" style="margin-bottom:0">
+      <div class="sub-lbl" style="margin-top:0">🔄 DÉCLENCHEURS DE TRANSITION</div>
+      <div style="font-family:var(--mono);font-size:11px">
+        {trigger_rows or '<div class="risk-row">Aucun déclencheur identifié.</div>'}
+      </div>
     </div>
   </div>
 </div>"""
@@ -559,29 +567,41 @@ def _render_section7_interpretation(ctx: BriefingContext) -> str:
   <div class="sec-hdr"><div class="sec-num">7</div><div class="sec-ttl">Moteur d'Interprétation</div><div class="sec-sub">Pourquoi ce régime, quels facteurs dominent, quels risques</div></div>
   <div class="sec-body">
     {usd_block}
-    <div class="sub-lbl">🔑 FACTEURS DOMINANTS</div>
-    <div style="font-family:var(--mono);font-size:11px;margin-bottom:12px">
-      {dominant_rows or '<div class="risk-row">Aucun facteur dominant identifié.</div>'}
+    <div class="brief">
+      <div class="sub-lbl" style="margin-top:0">🔑 FACTEURS DOMINANTS</div>
+      <div style="font-family:var(--mono);font-size:11px">
+        {dominant_rows or '<div class="risk-row">Aucun facteur dominant identifié.</div>'}
+      </div>
     </div>
-    <div class="sub-lbl">✅ INDICATEURS QUI SE RENFORCENT</div>
-    <div style="font-family:var(--mono);font-size:11px;margin-bottom:12px">
-      {reinforcing_rows or '<div class="risk-row">Aucun renforcement détecté.</div>'}
+    <div class="brief">
+      <div class="sub-lbl" style="margin-top:0">✅ INDICATEURS QUI SE RENFORCENT</div>
+      <div style="font-family:var(--mono);font-size:11px">
+        {reinforcing_rows or '<div class="risk-row">Aucun renforcement détecté.</div>'}
+      </div>
     </div>
-    <div class="sub-lbl">❌ INDICATEURS QUI SE CONTREDISENT</div>
-    <div style="font-family:var(--mono);font-size:11px;margin-bottom:12px">
-      {contradicting_rows or '<div class="risk-row">Aucune contradiction détectée.</div>'}
+    <div class="brief">
+      <div class="sub-lbl" style="margin-top:0">❌ INDICATEURS QUI SE CONTREDISENT</div>
+      <div style="font-family:var(--mono);font-size:11px">
+        {contradicting_rows or '<div class="risk-row">Aucune contradiction détectée.</div>'}
+      </div>
     </div>
-    <div class="sub-lbl">🔗 CHAÎNE DE TRANSMISSION MACRO</div>
-    <div style="font-family:var(--mono);font-size:11px;margin-bottom:12px">
-      {chain_rows}
+    <div class="brief">
+      <div class="sub-lbl" style="margin-top:0">🔗 CHAÎNE DE TRANSMISSION MACRO</div>
+      <div style="font-family:var(--mono);font-size:11px">
+        {chain_rows}
+      </div>
     </div>
-    <div class="sub-lbl">📋 POURQUOI CES ACTIFS SONT SÉLECTIONNÉS</div>
-    <div style="font-family:var(--mono);font-size:11px;margin-bottom:12px">
-      {asset_rows or '<div class="risk-row">Aucun actif sélectionné.</div>'}
+    <div class="brief">
+      <div class="sub-lbl" style="margin-top:0">📋 POURQUOI CES ACTIFS SONT SÉLECTIONNÉS</div>
+      <div style="font-family:var(--mono);font-size:11px">
+        {asset_rows or '<div class="risk-row">Aucun actif sélectionné.</div>'}
+      </div>
     </div>
-    <div class="sub-lbl">⚠️ RISQUES D'INVALIDATION</div>
-    <div style="font-family:var(--mono);font-size:11px">
-      {risk_rows or '<div class="risk-row">Aucun risque identifié.</div>'}
+    <div class="brief" style="margin-bottom:0">
+      <div class="sub-lbl" style="margin-top:0">⚠️ RISQUES D'INVALIDATION</div>
+      <div style="font-family:var(--mono);font-size:11px">
+        {risk_rows or '<div class="risk-row">Aucun risque identifié.</div>'}
+      </div>
     </div>
   </div>
 </div>"""
