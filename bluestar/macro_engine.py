@@ -343,24 +343,13 @@ def build_currency_strength_ranking(
     """Qualitative 0-100 score per major currency. Always [PROXY]."""
     cb_by_ccy = {ccy: cb for (name, _f, ccy), cb in zip(_CB_DEFS, central_banks)}
     scores: dict[str, int] = {c: 50 for c in C.MAJOR_CURRENCIES}
-    drivers: dict[str, str] = {c: "" for c in C.MAJOR_CURRENCIES}
 
     for ccy in C.MAJOR_CURRENCIES:
         cb = cb_by_ccy.get(ccy)
         if cb is not None:
-            delta = _cb_bias_word(cb)
-            scores[ccy] += delta
-            if delta >= 12:
-                drivers[ccy] = ""
-            elif delta > 0:
-                drivers[ccy] = ""
-            elif delta <= -12:
-                drivers[ccy] = ""
-            elif delta < 0:
-                drivers[ccy] = ""
+            scores[ccy] += _cb_bias_word(cb)
         if regime_class == "regime-off" and ccy in C.SAFE_HAVENS:
             scores[ccy] += 10
-            drivers[ccy] = ""
         if regime_class == "regime-on" and ccy in C.SAFE_HAVENS:
             scores[ccy] -= 6
 
@@ -368,12 +357,8 @@ def build_currency_strength_ranking(
     rows: list[CurrencyStrength] = []
     for ccy in ranked:
         s = max(0, min(100, scores[ccy]))
-        # Tier by the score's own value, not by rank position. Previously a
-        # tie (e.g. two currencies both at 50) could still land in different
-        # thirds purely because of where they happened to fall in the sort,
-        # so identical scores rendered with different colours/widths.
         cls = "strong" if s >= 60 else "weak" if s <= 40 else "neutral"
-        rows.append(CurrencyStrength(ccy, s, drivers[ccy], cls))
+        rows.append(CurrencyStrength(ccy, s, "", cls))
     return rows
 
 
@@ -407,30 +392,99 @@ def _reference_cftc_friday(now_utc: datetime) -> datetime:
     return candidate
 
 
+def _ips_label_for(score: int) -> str:
+    """Map an IPS score to its label."""
+    if score >= C.IPS_CROWDED:
+        return "Crowded long"
+    if score <= C.IPS_CAPITULATION:
+        return "Crowded short / Capitul."
+    return "Normal"
+
+
+def _ips_from_institutional(ref_label: str) -> list[CotPositioning]:
+    """Path 1: real z-scores/percentiles from institutional layer."""
+    if _inst is None:
+        return []
+    try:
+        stats = _inst.fetch_positioning_stats()
+    except Exception as exc:
+        logger.warning("institutional.fetch_positioning_stats failed: %s", exc)
+        return []
+    if not stats:
+        return []
+    rows = []
+    for ccy in C.MAJOR_CURRENCIES:
+        stat = stats.get(ccy)
+        if stat is None:
+            continue
+        score = max(0, min(100, int(stat.percentile) if stat.percentile is not None else 50))
+        delta_str = f"Δ1s {stat.change_1w:+d}" if stat.change_1w is not None else "≈ stable"
+        rows.append(CotPositioning(
+            currency=ccy, net_contracts=stat.net, ips_score=score,
+            ips_label=_ips_label_for(score), delta_week=delta_str,
+            momentum="↑" if (stat.change_1w or 0) > 0 else "↓" if (stat.change_1w or 0) < 0 else "→",
+            stamp=SourceStamp(
+                f"OBSERVÉ — CFTC Non-Commercials | z={stat.zscore} | {int(stat.percentile)}e pct | {stat.report_date}",
+                Reliability.PRIMARY,
+                note=f"z-score {stat.zscore}, percentile {int(stat.percentile) if stat.percentile is not None else '?'}",
+            ),
+        ))
+    return rows
+
+
+def _ips_from_overrides(cot_over: dict, ref_label: str) -> list[CotPositioning]:
+    """Path 2: user overrides with linear scaling [PROXY]."""
+    rows = []
+    for ccy in C.MAJOR_CURRENCIES:
+        o = cot_over.get(ccy)
+        if o is None or o.get("net") is None:
+            continue
+        net = int(o["net"])
+        frac = max(-1.0, min(1.0, net / C.IPS_FULL_SCALE_CONTRACTS))
+        score = int(round(50 + frac * 50))
+        rows.append(CotPositioning(
+            currency=ccy, net_contracts=net, ips_score=score,
+            ips_label=_ips_label_for(score),
+            delta_week=o.get("delta", "≈ stable"), momentum=o.get("momentum", "→"),
+            stamp=SourceStamp(f"{ref_label} [PROXY · scaling linéaire]", Reliability.PROXY,
+                              note="scaling linéaire 150k contrats — PAS un vrai percentile"),
+        ))
+    return rows
+
+
+def _ips_from_scrape(ref_label: str) -> list[CotPositioning]:
+    """Path 3: live CFTC scrape with linear scaling [PROXY]."""
+    ext_net, external_date = fetch_cot_data()
+    if not ext_net:
+        return []
+    rows = []
+    for ccy in C.MAJOR_CURRENCIES:
+        net = ext_net.get(ccy)
+        if net is None:
+            continue
+        frac = max(-1.0, min(1.0, net / C.IPS_FULL_SCALE_CONTRACTS))
+        score = int(round(50 + frac * 50))
+        src_label = f"OBSERVÉ — CFTC Non-Commercials | {external_date or ref_label} [PROXY · scaling linéaire]"
+        rows.append(CotPositioning(
+            currency=ccy, net_contracts=net, ips_score=score,
+            ips_label=_ips_label_for(score), delta_week="≈ stable", momentum="→",
+            stamp=SourceStamp(src_label, Reliability.PROXY,
+                              note="scaling linéaire — PAS un vrai percentile"),
+        ))
+    return rows
+
+
 def build_ips_scores(overrides: Optional[dict],
                      now_utc: datetime) -> tuple[list[CotPositioning], str]:
-    """Build IPS rows from COT overrides (Non-Commercials net contracts).
+    """Build IPS rows from COT data — real z-scores/percentiles when available.
 
-    The 0-100 IPS score is a documented heuristic (bounded linear scaling) --
-    not a true CFTC percentile -- and is always tagged accordingly in the
-    ``ips_summary`` / ``positioning_link`` display strings (Constat n°8).
-
-    Sourcing rules (Règle Absolue n°3):
-    - The CFTC publishes Non-Commercials data every Friday ~15:30 ET.
-    - That report remains the authoritative reference until the NEXT Friday's
-      publication.  We therefore compute the reference Friday deterministically
-      via ``_reference_cftc_friday()`` rather than reading it from the override.
-    - Sourcing precedence: user override > live CFTC feed > [N/A].
-      When the user supplies figures in overrides["cot"], those take priority.
-      Otherwise the live CFTC scrape (``fetch_cot_data``) is attempted.
-    - ``[N/A]`` is used only when no COT data is supplied and the feed fails.
-
-    Returns (rows, cot_ref_label) -- the label is passed to ``build_context``
-    so every downstream string that cites COT uses the same computed reference.
+    Sourcing precedence (audit B4 fix):
+    1. ``institutional.fetch_positioning_stats`` — real z-scores/percentiles.
+    2. User override (``overrides["cot"]``) — linear scaling [PROXY].
+    3. Live CFTC scrape (``fetch_cot_data``) — linear scaling [PROXY].
+    4. [N/A] when no COT data is available.
     """
     ref = _reference_cftc_friday(now_utc)
-    # Full label as prescribed by Règle n°3:
-    # "OBSERVÉ — CFTC Non-Commercials | Friday 27 June 2026"
     ref_label = (
         f"OBSERVÉ — CFTC Non-Commercials | "
         f"{FR_DAYS[ref.weekday()]} "
@@ -439,44 +493,12 @@ def build_ips_scores(overrides: Optional[dict],
 
     cot_over = (overrides or {}).get("cot", {})
 
-    # If the user supplied no COT data, try the live CFTC feed.
-    external_used = False
-    external_date: Optional[str] = None
-    if not cot_over:
-        ext_net, external_date = fetch_cot_data()   # ({ccy: net}, date|None)
-        if ext_net:
-            external_used = True
-            cot_over = {ccy: {"net": net} for ccy, net in ext_net.items()}
+    rows = _ips_from_institutional(ref_label)
+    if not rows and cot_over:
+        rows = _ips_from_overrides(cot_over, ref_label)
+    if not rows:
+        rows = _ips_from_scrape(ref_label)
 
-    rows: list[CotPositioning] = []
-    for ccy in C.MAJOR_CURRENCIES:
-        o = cot_over.get(ccy)
-        if o is None or o.get("net") is None:
-            continue
-        net = int(o["net"])
-        frac = max(-1.0, min(1.0, net / C.IPS_FULL_SCALE_CONTRACTS))
-        score = int(round(50 + frac * 50))
-        label = (
-            "Crowded long"             if score >= C.IPS_CROWDED else
-            "Crowded short / Capitul." if score <= C.IPS_CAPITULATION else
-            "Normal"
-        )
-        # When data came from the live CFTC scrape, cite the report's own
-        # "as of" date; otherwise keep the deterministic reference-Friday label.
-        if external_used:
-            src_label = f"OBSERVÉ — CFTC Non-Commercials | {external_date or ref_label}"
-        else:
-            src_label = ref_label
-        rows.append(CotPositioning(
-            currency=ccy, net_contracts=net, ips_score=score, ips_label=label,
-            delta_week=o.get("delta", "≈ stable"),
-            momentum=o.get("momentum", "→"),
-            stamp=SourceStamp(
-                src_label,
-                Reliability.PRIMARY,
-                note=o.get("date", external_date or ""),
-            ),
-        ))
     return rows, ref_label
 
 
@@ -623,6 +645,66 @@ def _strength_map(cs: list[CurrencyStrength]) -> dict[str, int]:
     return {r.currency: r.score for r in cs}
 
 
+_PRICE_RELIABILITY_WEIGHT = {
+    Reliability.PRIMARY:  1.00,
+    Reliability.FALLBACK: 0.85,
+    Reliability.PROXY:    0.70,
+}
+
+
+def _compute_direction_edge(asset: str, ccys, smap: dict, regime_class: str) -> tuple[int, float]:
+    """Compute directional edge for an asset from currency strength or regime tilt."""
+    if ccys:
+        base, quote = ccys
+        diff = smap.get(base, 50) - smap.get(quote, 50)
+        edge = abs(diff) / 50.0
+        direction = 1 if diff > 0 else -1 if diff < 0 else 0
+        return direction, edge
+    # Commodities / indices: weak regime tilt only
+    if regime_class == "regime-off":
+        if asset == "XAU/USD":
+            return 1, 0.25
+        if asset in C.INDICES:
+            return -1, 0.25
+    elif regime_class == "regime-on" and asset in C.INDICES:
+        return 1, 0.2
+    return 0, 0.0
+
+
+def _compute_asset_score(edge: float, price, atr, ev: list) -> float:
+    """Compute the composite selection score for an asset."""
+    price_avail = _PRICE_RELIABILITY_WEIGHT.get(price.stamp.reliability, 0.85)
+    vol_ok = 1.0 if atr is not None else 0.6
+    catalyst_pen = 0.15 * len([e for e in ev if e.priority == "HIGH"])
+    score = 0.45 * edge + 0.25 * price_avail + 0.2 * vol_ok - min(0.3, catalyst_pen)
+    return max(0.0, min(1.0, score))
+
+
+def _apply_correlation_guard(
+    scored: list[tuple[float, AssetSetup]],
+) -> list[AssetSetup]:
+    """Select top assets with currency overlap guard (audit A4 fix)."""
+    priority: list[AssetSetup] = []
+    selected_ccys: set[str] = set()
+    for _score, setup in scored:
+        if len(priority) >= C.MAX_PRIORITY_ASSETS:
+            break
+        ccys_set = set(C.INSTRUMENT_CCYS.get(setup.asset, ()))
+        overlap = ccys_set & selected_ccys
+        if overlap and len(priority) > 0 and len(overlap) >= 2:
+            continue
+        priority.append(setup)
+        selected_ccys.update(ccys_set)
+    # Relax guard if too aggressive
+    if len(priority) < min(2, C.MAX_PRIORITY_ASSETS):
+        for _score, setup in scored:
+            if len(priority) >= C.MAX_PRIORITY_ASSETS:
+                break
+            if setup not in priority:
+                priority.append(setup)
+    return priority
+
+
 def select_priority_assets(
     market: MarketSnapshot,
     regime_class: str,
@@ -645,55 +727,24 @@ def select_priority_assets(
     for asset in C.UNIVERSE:
         price = market.price(asset)
         if not price.available:
-            continue  # cannot build a price-anchored setup -> silently skip
+            continue
 
         ccys = C.INSTRUMENT_CCYS.get(asset)
         ev = _events_for_ccys(events, ccys) if ccys else []
         critical_now = [e for e in ev if e.priority == "CRITICAL"]
 
-        # Binary-news guard: imminent critical event -> avoid (red).
         if critical_now:
             ename = critical_now[0].event_name or "événement majeur"
             avoid.append((asset, f"News binaire imminente ({ename}) — attendre la publication."))
             continue
 
-        # Directional macro edge (FX only, from currency strength).
-        direction = 0
-        edge = 0.0
-        if ccys:
-            base, quote = ccys
-            diff = smap.get(base, 50) - smap.get(quote, 50)
-            edge = abs(diff) / 50.0
-            direction = 1 if diff > 0 else -1 if diff < 0 else 0
-        else:
-            # Commodities / indices: only a weak regime tilt, no fabricated edge.
-            if regime_class == "regime-off":
-                if asset == "XAU/USD":
-                    direction, edge = 1, 0.25
-                elif asset in C.INDICES:
-                    direction, edge = -1, 0.25
-            elif regime_class == "regime-on" and asset in C.INDICES:
-                direction, edge = 1, 0.2
+        direction, edge = _compute_direction_edge(asset, ccys, smap, regime_class)
+        if direction == 0:
+            continue
 
         atr = market.atr.get(asset)
-        # Price availability weight: honour the reliability tier of the source
-        # (Oanda D1 = PRIMARY → 1.00 ; yfinance fallback = FALLBACK → 0.85 ;
-        # manual override = PROXY → 0.70).  The gate above already excludes
-        # UNAVAILABLE.  This makes the scoring formula's price_avail term
-        # genuinely discriminating rather than a constant shift.
-        _price_reliability_weight = {
-            Reliability.PRIMARY:     1.00,
-            Reliability.FALLBACK:    0.85,
-            Reliability.PROXY:       0.70,
-        }
-        price_avail = _price_reliability_weight.get(price.stamp.reliability, 0.85)
-        vol_ok = 1.0 if atr is not None else 0.6
-        catalyst_pen = 0.15 * len([e for e in ev if e.priority == "HIGH"])
-
-        score = 0.45 * edge + 0.25 * price_avail + 0.2 * vol_ok - min(0.3, catalyst_pen)
-        score = max(0.0, min(1.0, score))
-
-        if direction == 0 or score < min_score:
+        score = _compute_asset_score(edge, price, atr, ev)
+        if score < min_score:
             continue
 
         setup = _build_setup(asset, direction, score, market, allow_proxy_levels,
@@ -701,7 +752,7 @@ def select_priority_assets(
         scored.append((score, setup))
 
     scored.sort(key=lambda t: t[0], reverse=True)
-    priority = [s for _, s in scored[:C.MAX_PRIORITY_ASSETS]]
+    priority = _apply_correlation_guard(scored)
 
     no_setup = None
     if not priority:
@@ -712,77 +763,93 @@ def select_priority_assets(
     return priority, avoid, no_setup
 
 
+def _build_setup_levels(p: float, atr, direction: int, asset: str) -> tuple:
+    """Compute buy/sell/stop levels from ATR. Returns (buy, sell, stop, levels_proxy)."""
+    buy = p - C.LEVEL_ATR_MULT * atr if atr else None
+    sell = p + C.LEVEL_ATR_MULT * atr if atr else None
+    if direction > 0:
+        stop = (p - C.STOP_ATR_MULT * atr) if atr else None
+    else:
+        stop = (p + C.STOP_ATR_MULT * atr) if atr else None
+    return buy, sell, stop
+
+
+def _build_setup_positioning(ccys, ips_by_ccy: dict, cot_label: str) -> tuple:
+    """Compute positioning link, squeeze risk, IPS summary."""
+    pos_link = "Pas de COT chargé pour cet actif [N/A] — positionnement non pris en compte."
+    squeeze_risk, squeeze_cls = "Faible", "green"
+    ips_summary = "[N/A]"
+    if not ccys:
+        return pos_link, squeeze_risk, squeeze_cls, ips_summary
+    candidates = [(ccy, ips_by_ccy.get(ccy)) for ccy in ccys]
+    candidates = [(ccy, r) for ccy, r in candidates if r and r.ips_score is not None]
+    chosen = next((c for c in candidates if c[1].is_extreme),
+                  candidates[0] if candidates else None)
+    if not chosen:
+        return pos_link, squeeze_risk, squeeze_cls, ips_summary
+    ccy, r = chosen
+    ips_summary = f"{ccy} {r.ips_score} — {r.ips_label}"
+    if r.is_extreme:
+        squeeze_risk, squeeze_cls = f"Élevé ({ccy} IPS extrême)", "red"
+        pos_link = (f"{ccy} en zone extrême (IPS {r.ips_score} · {r.ips_label}). "
+                    f"[{cot_label}]. "
+                    "Le COT ne déclenche pas le trade ; il signale un risque de "
+                    "squeeze inverse si le catalyseur déçoit → conviction ±, stop strict.")
+    else:
+        pos_link = (f"{ccy} IPS {r.ips_score} — {r.ips_label}. "
+                    f"[{cot_label}]. "
+                    "Positionnement non extrême, n'amende pas la conviction.")
+    return pos_link, squeeze_risk, squeeze_cls, ips_summary
+
+
+def _compute_rr_ratio(p: float, stop, sell, direction: int, atr) -> str:
+    """Compute risk/reward ratio display string (audit B2 fix)."""
+    if atr is None:
+        return "[N/A]"
+    if direction > 0:
+        risk, reward = p - stop, sell - p
+    else:
+        risk, reward = stop - p, p - sell
+    if risk <= 0:
+        return "[N/A]"
+    return f"1:{fr_num(reward / risk, 1)}"
+
+
 def _build_setup(asset: str, direction: int, score: float, market: MarketSnapshot,
                  allow_proxy_levels: bool, ips_by_ccy: dict, ccys, ev,
                  cot_label: str = "[PROXY]") -> AssetSetup:
     price = market.price(asset)
     em_disp, em_method, atr = compute_expected_move(asset, market)
-    # Levels are ATR-derived -> [PROXY] origin (we have no real S/R feed).
     p = price.value
-    buy = p - C.LEVEL_ATR_MULT * atr if atr else None
-    sell = p + C.LEVEL_ATR_MULT * atr if atr else None
-    if direction > 0:  # long bias
-        stop = (p - C.STOP_ATR_MULT * atr) if atr else None
-        bias_class = action_class = "long"
-        arrow, action = "↑", "CHERCHER LONG"
-        bias = "🟢/🟡 LONG"
-    else:  # short bias
-        stop = (p + C.STOP_ATR_MULT * atr) if atr else None
-        bias_class = action_class = "short"
-        arrow, action = "↓", "CHERCHER SHORT"
-        bias = "🟢/🟡 SHORT"
 
+    buy, sell, stop = _build_setup_levels(p, atr, direction, asset)
     levels_proxy = atr is None or em_method.startswith("PROXY")
 
-    # Conviction: score -> stars, minus 1 if proxy levels.
-    conviction = 2 + int(round(score * 2))  # 2..4
+    if direction > 0:
+        bias_class = action_class = "long"
+        arrow, action, bias = "↑", "CHERCHER LONG", "🟢/🟡 LONG"
+    else:
+        bias_class = action_class = "short"
+        arrow, action, bias = "↓", "CHERCHER SHORT", "🟢/🟡 SHORT"
+
+    conviction = 2 + int(round(score * 2))
     if levels_proxy or not allow_proxy_levels:
         conviction = max(1, conviction - 1)
 
-    # Positioning link (COT adjusts only).
-    pos_link = "Pas de COT chargé pour cet actif [N/A] — positionnement non pris en compte."
-    squeeze_risk, squeeze_cls = "Faible", "green"
-    ips_summary = "[N/A]"
-    if ccys:
-        # Prefer an EXTREME currency (crowded/capitulation) among the pair's
-        # legs. Stopping at the first currency with *any* usable IPS score
-        # (previous behaviour) let a boring base-currency reading mask an
-        # extreme quote-currency reading -- e.g. GBP/JPY: GBP Normal (33)
-        # would be picked first and JPY Capitulation (7) never inspected.
-        candidates = [(ccy, ips_by_ccy.get(ccy)) for ccy in ccys]
-        candidates = [(ccy, r) for ccy, r in candidates if r and r.ips_score is not None]
-        chosen = next((c for c in candidates if c[1].is_extreme),
-                      candidates[0] if candidates else None)
-        if chosen:
-            ccy, r = chosen
-            # ips_summary: compact data-only string for the narrow top-card row.
-            # Source reference goes exclusively in positioning_link (Section 4 field 8).
-            ips_summary = f"{ccy} {r.ips_score} — {r.ips_label}"
-            if r.is_extreme:
-                squeeze_risk, squeeze_cls = f"Élevé ({ccy} IPS extrême)", "red"
-                pos_link = (f"{ccy} en zone extrême (IPS {r.ips_score} · {r.ips_label}). "
-                            f"[{cot_label}]. "
-                            "Le COT ne déclenche pas le trade ; il signale un risque de "
-                            "squeeze inverse si le catalyseur déçoit → conviction ±, stop strict.")
-            else:
-                pos_link = (f"{ccy} IPS {r.ips_score} — {r.ips_label}. "
-                            f"[{cot_label}]. "
-                            "Positionnement non extrême, n'amende pas la conviction.")
+    pos_link, squeeze_risk, squeeze_cls, ips_summary = _build_setup_positioning(
+        ccys, ips_by_ccy, cot_label)
 
-    # Reduce conviction by 1 if positioning is contra and extreme (squeeze).
-    color = "yellow"
-    if score >= 0.7 and not levels_proxy:
-        color = "green"
+    color = "green" if score >= 0.7 and not levels_proxy else "yellow"
 
     ev_names = ", ".join(sorted({e.event_name for e in ev})[:2]) if ev else "aucun catalyseur proche"
-    invalidation = (f"Retournement macro / catalyseur ({ev_names})")
-    inval_level = (f"clôture {'sous le' if direction>0 else 'au-dessus du'} stop "
+    invalidation = f"Retournement macro / catalyseur ({ev_names})"
+    inval_level = (f"clôture {'sous le' if direction > 0 else 'au-dessus du'} stop "
                    f"{_level(stop, asset)}" if stop is not None else "[N/A]")
 
     return AssetSetup(
         asset=asset, color=color, bias=bias, bias_class=bias_class,
-        reason_short=("force relative macro" if ccys else "tilt de régime"),
-        reason_macro=("Différentiel de force de devises [PROXY] favorable"
+        reason_short=("momentum prix D1" if ccys else "tilt de régime"),
+        reason_macro=("Différentiel de momentum prix D1 [PROXY] favorable"
                       if ccys else "Biais de régime (refuge / risque) [PROXY]"),
         conviction=conviction, action=action, action_class=action_class, arrow=arrow,
         zone_buy=_level(buy, asset) if buy is not None else "[N/A]",
@@ -797,6 +864,7 @@ def _build_setup(asset: str, direction: int, score: float, market: MarketSnapsho
         positioning_link=pos_link, correlation_key=compute_correlation(asset, market),
         ips_summary=ips_summary, squeeze_risk=squeeze_risk, squeeze_class=squeeze_cls,
         sizing_factor=compute_sizing_factor(conviction, market),
+        risk_reward=_compute_rr_ratio(p, stop, sell, direction, atr),
         price_display=price.display, levels_are_proxy=levels_proxy,
     )
 
@@ -990,6 +1058,18 @@ def build_context(
 
     regime, regime_cls, regime_since, _pen = determine_market_regime(market, events)
 
+    # v9.0: Enhanced regime assessment using the multi-factor regime engine.
+    # The original VIX-only regime is kept as the "headline" for backward
+    # compatibility, but the full RegimeAssessment is computed and attached
+    # for the interpretation layer and the new HTML sections.
+    try:
+        from .regime_engine import assess_regime as _assess_regime
+        # Need central_banks and cs first — but they're computed below.
+        # We'll compute the regime assessment after cs is ready.
+        _regime_pending = True
+    except Exception:
+        _regime_pending = False
+
     # A6 (perf): central_banks, ips and the liquidity spread are three
     # mutually independent network-backed layers -- different inputs, no
     # shared state (verified: none touch `market` or each other's output).
@@ -1031,6 +1111,26 @@ def build_context(
     priority, avoid, no_setup = select_priority_assets(
         market, regime_cls, central_banks, cs, ips, events, mode,
         allow_proxy_levels, cot_label=cot_ref_label)
+
+    # v9.0: Full regime assessment with the multi-factor engine.
+    regime_assessment = None
+    interpretation = None
+    if _regime_pending:
+        try:
+            regime_assessment = _assess_regime(
+                market, central_banks, cs, ips, upcoming, now_utc)
+        except Exception as exc:
+            logger.warning("regime_engine assessment failed: %s", exc)
+
+    # v9.0: Interpretation layer (Priority 3).
+    try:
+        from .interpretation import build_interpretation as _build_interp
+        if regime_assessment is not None:
+            interpretation = _build_interp(
+                market, central_banks, cs, ips, regime_assessment,
+                priority, now_utc)
+    except Exception as exc:
+        logger.warning("interpretation layer failed: %s", exc)
 
     risk_main, bull, bear, inval = build_risk_scenarios(upcoming, regime_cls, priority, central_banks)
 
@@ -1088,4 +1188,6 @@ def build_context(
         priority_assets=priority, avoid_assets=avoid, no_setup_reason=no_setup,
         risk_main=risk_main, bull=bull, bear=bear, invalidation_principal=inval,
         issues=[],
+        regime_assessment=regime_assessment,
+        interpretation=interpretation,
     )
