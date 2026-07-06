@@ -122,3 +122,8 @@ MODE_SELECTION_MIN_SCORE = {
     "Aggressive": 0.40,
 }
 MAX_PRIORITY_ASSETS = 3
+
+# ----------------------------------------------------------------------------
+# Staleness & coverage thresholds (v9.0 — audit C2/C3/C5 fix)
+# ----------------------------------------------------------------------------
+MIN_LIVE_COVERAGE_RATIO = 0.30   # minimum fraction of live fields to publish
