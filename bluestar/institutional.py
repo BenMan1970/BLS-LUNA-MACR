@@ -27,7 +27,7 @@ import logging
 import math
 import os
 import statistics
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -158,7 +158,8 @@ def _interp_move(v: float) -> str:
         return "Vol obligataire faible — marché de taux calme, portage favorisé."
     if v < 120:
         return "Vol obligataire modérée — sensibilité aux surprises d'inflation/Fed."
-    return "Le marché obligataire price une hausse importante de volatilité — risque de contagion FX/actions."
+    return ("Le marché obligataire price une hausse importante de volatilité "
+            "— risque de contagion FX/actions.")
 
 
 def _interp_skew(v: float) -> str:
@@ -190,14 +191,16 @@ def fetch_vol_complex() -> list[VolGauge]:
     for key, label, sym, interp in specs:
         val, ts = _yf_last(sym)
         if val is not None:
-            out.append(VolGauge(key, label, round(val, 2), "yfinance/CBOE" if key != "MOVE" else "yfinance/ICE",
+            out.append(VolGauge(key, label, round(val, 2),
+                             "yfinance/CBOE" if key != "MOVE" else "yfinance/ICE",
                                 ts, interp(val)))
     # Realized vols (derived — labelled)
     rv10 = _realized_vol("^TNX", 20)
     if rv10 is not None:
         out.append(VolGauge("US10Y_RV", "US10Y Realized Vol 20j", rv10, "dérivé ^TNX",
                             datetime.now(timezone.utc),
-                            "Volatilité réalisée des taux longs — comparer au MOVE (vol implicite)."))
+                            "Volatilité réalisée des taux longs — "
+                             "comparer au MOVE (vol implicite)."))
     # FX vol composite (self-branded derived metric — NOT Deutsche Bank CVIX)
     fx_rvs = [rv for rv in (_realized_vol(s, 20) for s in ("EURUSD=X", "USDJPY=X", "GBPUSD=X")) if rv is not None]
     if fx_rvs:
@@ -521,7 +524,8 @@ def fetch_gdpnow_full() -> Optional[GdpNow]:
             delta = round(cur - prev, 1)
         # Fiscal quarter label from the observation date
         try:
-            m = int(pub_date[5:7]); q = (m - 1) // 3 + 1
+            m = int(pub_date[5:7])
+            q = (m - 1) // 3 + 1
             quarter = f"T{q} {pub_date[:4]}"
         except Exception:
             quarter = ""
@@ -551,8 +555,8 @@ def _fred_key() -> Optional[str]:
             k = st.secrets.get("FRED_API_KEY")  # type: ignore
             if k:
                 return k
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Streamlit FRED key access failed: %s", exc)
     return os.environ.get("FRED_API_KEY")
 
 
@@ -600,7 +604,7 @@ def build_regime_dashboard() -> list[RegimeMetric]:
 
     # Funding stress: SOFR - EFFR (positive = funding pressure)
     sofr = _fred_latest("SOFR")
-    effr = _fred_latest("EFFR" if True else "DFF")
+    effr = _fred_latest("EFFR")
     if sofr and effr:
         basis = round((sofr[0] - effr[0]) * 100, 1)  # bp
         interp = ("Tension de financement USD — SOFR au-dessus de l'EFFR."
