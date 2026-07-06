@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Macro Briefing BLUESTAR — 06/07/2026</title>
+<title>Macro Briefing BLUESTAR — {{DATE}}</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
 :root{
@@ -139,8 +139,12 @@ tbody td{padding:8px 12px;vertical-align:middle}
 .tw table{border-radius:var(--r);overflow:hidden}
 .mono{font-family:var(--mono)}.bold{font-weight:700}.sm{font-size:11px}
 .green{color:var(--green)}.red{color:var(--red)}.amber{color:var(--royal)}.blue{color:var(--royal-mid)}
-.stars-1::before{content:'°5°6°6°6°6';color:var(--royal)}.stars-2::before{content:'°5°5°6°6°6';color:var(--royal)}
-.stars-3::before{content:'°5°5°5°6°6';color:var(--royal)}.stars-4::before{content:'°5°5°5°5°6';color:var(--royal)}.stars-5::before{content:'°5°5°5°5°5';color:var(--royal)}
+.stars-1::before,.stars-2::before,.stars-3::before,.stars-4::before,.stars-5::before{font-family:'Segoe UI Symbol','Apple Symbols','Noto Sans Symbols2','Noto Sans Symbols','DejaVu Sans',sans-serif;color:var(--royal);letter-spacing:1px}
+.stars-1::before{content:'★☆☆☆☆'}
+.stars-2::before{content:'★★☆☆☆'}
+.stars-3::before{content:'★★★☆☆'}
+.stars-4::before{content:'★★★★☆'}
+.stars-5::before{content:'★★★★★'}
 .footer{text-align:center;font-family:var(--mono);font-size:8px;color:var(--muted);border-top:1px solid var(--border);padding:12px 24px;margin-top:4px;letter-spacing:1.5px}
 .page-header{background:linear-gradient(135deg,#F8FAFF 0%,#EEF3FE 100%);border:1px solid var(--border);border-radius:var(--rl) var(--rl) 0 0;display:flex;align-items:center;justify-content:space-between;padding:16px 28px;margin-bottom:0;position:relative;box-shadow:var(--shadow-sm)}
 .page-header::after{content:'';position:absolute;bottom:0;left:24px;right:24px;height:2px;background:linear-gradient(90deg,var(--royal),var(--royal-dim),transparent);border-radius:2px}
