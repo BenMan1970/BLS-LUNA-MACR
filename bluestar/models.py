@@ -224,6 +224,7 @@ class AssetSetup:
     squeeze_risk: str = "Faible"
     squeeze_class: str = "green"
     sizing_factor: str = "[N/A]"
+    risk_reward: str = "[N/A]"     # R:R ratio (e.g. "1:2,5")
     price_display: str = "[N/A]"
     levels_are_proxy: bool = False
 
@@ -288,3 +289,6 @@ class BriefingContext:
     bear: RiskScenario
     invalidation_principal: str
     issues: list[ValidationIssue] = field(default_factory=list)
+    # v9.0: Enhanced regime and interpretation layers
+    regime_assessment: object = None  # RegimeAssessment (avoid circular import)
+    interpretation: object = None     # InterpretationLayer
