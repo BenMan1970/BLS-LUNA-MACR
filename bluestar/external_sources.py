@@ -110,8 +110,8 @@ def _fred_api_key() -> Optional[str]:
             key = st.secrets.get("FRED_API_KEY") or st.secrets.get("fred_api_key")
             if key:
                 return str(key)
-        except Exception:  # pragma: no cover
-            pass
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Streamlit FRED key access failed: %s", exc)
     env = os.environ.get("FRED_API_KEY") or os.environ.get("fred_api_key")
     return str(env) if env else None
 
