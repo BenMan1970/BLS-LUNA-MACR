@@ -181,7 +181,17 @@ def _trend_str(last: float, prev: float, pct_decimals: int = 1) -> str:
 # ---------------------------------------------------------------------------
 def _atr(highs: list[float], lows: list[float],
          closes: list[float], period: int = 14) -> Optional[float]:
-    """Classic ATR. Returns None if fewer than period+1 bars available."""
+    """Wilder ATR (EMA-recursive smoothing).
+
+    Uses the original Welles Wilder (1978) recursive formula:
+      ATR_t = (ATR_{t-1} × (period-1) + TR_t) / period
+
+    This is the same formula that MetaTrader and TradingView label "ATR".
+    The previous implementation used a plain SMA of the last 14 TRs, which
+    differed by 5-15% from platform ATRs in high-vol regimes (audit B1 fix).
+
+    Returns None if fewer than period+1 bars available.
+    """
     n = len(closes)
     if n < period + 1:
         return None
@@ -193,8 +203,11 @@ def _atr(highs: list[float], lows: list[float],
             abs(lows[i] - closes[i - 1]),
         )
         trs.append(tr)
-    window = trs[-period:]
-    return sum(window) / len(window) if window else None
+    # Wilder smoothing: seed with SMA of first `period` TRs, then EMA-recursive.
+    atr = sum(trs[:period]) / period
+    for i in range(period, len(trs)):
+        atr = (atr * (period - 1) + trs[i]) / period
+    return atr
 
 
 # ---------------------------------------------------------------------------
