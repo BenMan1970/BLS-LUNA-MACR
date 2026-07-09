@@ -803,13 +803,24 @@ def _build_setup_positioning(ccys, ips_by_ccy: dict, cot_label: str) -> tuple:
 
 
 def _compute_rr_ratio(p: float, stop, sell, direction: int, atr) -> str:
-    """Compute risk/reward ratio display string (audit B2 fix)."""
+    """Compute risk/reward ratio display string (audit B2 fix).
+
+    C1 (certification, cause racine R-1): directional R:R measured from the
+    macro ENTRY zone to the OPPOSITE (objective) zone, exactly as the recap
+    footnote defines it (reward = entrée->objectif, risk = entrée->stop). For a
+    long the entry is the buy zone and the objective is the sell zone; for a
+    short the entry is the sell zone and the objective is the buy zone. The buy
+    zone is reconstructed from the same construction as ``_build_setup_levels``
+    (buy = p - LEVEL_ATR_MULT*atr), so the signature and the call site stay
+    unchanged.
+    """
     if atr is None:
         return "[N/A]"
+    buy = p - C.LEVEL_ATR_MULT * atr
     if direction > 0:
-        risk, reward = p - stop, sell - p
+        risk, reward = buy - stop, sell - buy
     else:
-        risk, reward = stop - p, p - sell
+        risk, reward = stop - sell, sell - buy
     if risk <= 0:
         return "[N/A]"
     return f"1:{fr_num(reward / risk, 1)}"
