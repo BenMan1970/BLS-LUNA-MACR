@@ -154,11 +154,14 @@ def _render_event_medium(e: MacroEvent) -> str:
 def _render_section2(ctx: BriefingContext) -> str:
     # Audit A1 fix: adapt the section title to the actual time context.
     # On a weekend or outside live session, events are "à venir" not "du jour".
+    # C2 (certification, cause racine R-2): the section title is a Contract
+    # invariant (table 1.5 / STR-11, IMMUABLE) and MUST stay constant. The
+    # live/closed nuance is carried by the sub-title only, which the Contract
+    # does not constrain.
+    sec_title = "Catalyseurs du Jour"
     if ctx.is_live_session:
-        sec_title = "Catalyseurs du Jour"
         sec_sub = "News qui peuvent invalider un setup"
     else:
-        sec_title = "Catalyseurs à Venir"
         sec_sub = "Calendrier macro — fenêtre glissante 72h (marché fermé)"
 
     if not ctx.catalysts_high and not ctx.catalysts_medium:
@@ -390,8 +393,11 @@ def _render_section5(ctx: BriefingContext) -> str:
     if ctx.priority_assets:
         recap = "".join(_render_recap_row(s) for s in ctx.priority_assets)
     else:
-        recap = ('<tr><td class="mono bold" colspan="11" style="text-align:center;color:var(--muted)">'
-                 'Aucun setup — bloc no-setup actif (voir Sections 1 et 4).</td></tr>')
+        # C2 (certification, cause racine R-2): in the no-setup case Sections 1
+        # and 4 emit zero cards/fiches; the recap <tbody> must therefore contain
+        # zero data rows so that STR-20 (top-card = asset = recap rows) holds
+        # (0 = 0 = 0). The no-setup message already appears in Sections 1 and 4.
+        recap = ""
 
     return f"""
 <div class="section">
@@ -439,7 +445,17 @@ def _render_section6_regime(ctx: BriefingContext) -> str:
     """Render the multi-factor regime assessment section."""
     ra = getattr(ctx, 'regime_assessment', None)
     if ra is None:
-        return ""
+        # C2 (certification, cause racine R-2): Section 6 is a Contract-mandated
+        # section (table 1.5 / STR-11, IMMUABLE). It must ALWAYS be emitted; when
+        # the regime assessment is unavailable it degrades to a present [N/A]
+        # block instead of disappearing (preserving the 8-section structure).
+        return """
+<div class="section">
+  <div class="sec-hdr"><div class="sec-num">6</div><div class="sec-ttl">Moteur de Régime</div><div class="sec-sub">Identification multi-facteur du régime de marché</div></div>
+  <div class="sec-body">
+    <div class="abox wait" style="font-size:12px"><span>[N/A] — évaluation de régime indisponible pour cette génération.</span></div>
+  </div>
+</div>"""
     
     # Supporting indicators
     supporting_rows = ""
@@ -511,12 +527,22 @@ def _render_section7_interpretation(ctx: BriefingContext) -> str:
     """Render the interpretation layer section."""
     interp = getattr(ctx, 'interpretation', None)
     if interp is None:
-        return ""
+        # C2 (certification, cause racine R-2): Section 7 is a Contract-mandated
+        # section (table 1.5 / STR-11, IMMUABLE). It must ALWAYS be emitted; when
+        # the interpretation layer is unavailable it degrades to a present [N/A]
+        # block instead of disappearing (preserving the 8-section structure).
+        return """
+<div class="section">
+  <div class="sec-hdr"><div class="sec-num">7</div><div class="sec-ttl">Moteur d'Interprétation</div><div class="sec-sub">Pourquoi ce régime, quels facteurs dominent, quels risques</div></div>
+  <div class="sec-body">
+    <div class="abox wait" style="font-size:12px"><span>[N/A] — couche d'interprétation indisponible pour cette génération.</span></div>
+  </div>
+</div>"""
     
     # USD assessment
     usd_block = (
         f'<div class="abox" style="font-size:12px;margin-bottom:12px">'
-        f'<span class="bold">ANALYSE USD :</span> {_e(interp.usd_assessment)}</span></div>'
+        f'<span class="bold">ANALYSE USD :</span> {_e(interp.usd_assessment)}</div>'
     )
     
     # USD drivers
