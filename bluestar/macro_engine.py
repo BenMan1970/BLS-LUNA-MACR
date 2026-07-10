@@ -150,9 +150,8 @@ def build_central_bank_context(overrides: Optional[dict]) -> list[CentralBankSna
     """
     cb_over = (overrides or {}).get("central_banks", {})
 
-    # A6-revert: sequential calls — ThreadPoolExecutor nested inside
-    # ThreadPoolExecutor caused SIGSEGV with curl_cffi/libcurl
-    # (non-thread-safe C extension). Same two values feed the logic below.
+    # A6-fix: sequential calls — ThreadPoolExecutor nested inside
+    # ThreadPoolExecutor caused SIGSEGV with curl_cffi/libcurl (non-thread-safe).
     fred_rates = fetch_central_bank_rates()     # {name: pct} or {}
     fedwatch = fetch_fedwatch_probabilities()   # {pause/cut/hike} or None
 
@@ -1090,7 +1089,7 @@ def build_context(
     except Exception:
         _regime_pending = False
 
-    # A6-revert: sequential execution to avoid SIGSEGV from nested
+    # A6-fix: sequential execution to avoid SIGSEGV from nested
     # ThreadPoolExecutor + curl_cffi/libcurl thread-unsafety.
     central_banks = build_central_bank_context(overrides)
     ips, cot_ref_label = build_ips_scores(overrides, now_utc)
