@@ -41,7 +41,7 @@ class SourceStamp:
     def render(self) -> str:
         """Return the bracket tag shown in the briefing."""
         if self.reliability is Reliability.UNAVAILABLE:
-            return "[N/A]"
+            return f"[N/A · {self.note}]" if self.note else "[N/A]"
         if self.reliability is Reliability.PROXY:
             label = self.source_name or "PROXY"
             return f"[PROXY · {label}]" if self.source_name else "[PROXY]"
