@@ -374,6 +374,12 @@ def fetch_macro_surprise(currency: str = "USD", raw_events: Optional[list] = Non
         if ccy != currency:
             continue
         impact = str(_ev_get(e, "impact") or "").lower()
+        # NOTE: "medium" is currently unreachable via the production call path --
+        # calendar_layer.build_calendar() only keeps impact == "High" upstream,
+        # so `events`/`events_engine` never contain medium-impact events. This
+        # filter stays permissive on purpose (e.g. for callers that pass their
+        # own raw_events with medium included), but do not assume it widens
+        # coverage today without also relaxing the upstream calendar filter.
         if impact not in ("high", "medium"):
             continue
         title = _ev_get(e, "title", "event_name") or "?"
