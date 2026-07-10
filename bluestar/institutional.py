@@ -45,11 +45,17 @@ try:
 except Exception:  # pragma: no cover
     _YF_OK = False
 
+# --------------------------------------------------------------------------
+# FRED key — read ONCE at module level (st.secrets is NOT thread-safe)
+# --------------------------------------------------------------------------
+_FRED_API_KEY: Optional[str] = None
 try:
     import streamlit as st  # type: ignore
-    _ST_OK = True
-except Exception:  # pragma: no cover
-    _ST_OK = False
+    _FRED_API_KEY = st.secrets.get("FRED_API_KEY")  # type: ignore
+except Exception:
+    pass
+if not _FRED_API_KEY:
+    _FRED_API_KEY = os.environ.get("FRED_API_KEY")
 
 
 def _get(url: str, **kw) -> Optional[requests.Response]:
@@ -501,6 +507,15 @@ class GdpNow:
     interpretation: str = ""
 
 
+def _fred_key() -> Optional[str]:
+    """Return the FRED API key cached at module level.
+
+    Previously this read st.secrets dynamically, which is NOT thread-safe
+    and caused SIGSEGV when called from ThreadPoolExecutor workers.
+    """
+    return _FRED_API_KEY
+
+
 def fetch_gdpnow_full() -> Optional[GdpNow]:
     """Latest GDPNow estimate + prior + delta from FRED series ``GDPNOW``.
 
@@ -555,17 +570,6 @@ def fetch_gdpnow_full() -> Optional[GdpNow]:
 # ===========================================================================
 # 6. Market Regime Dashboard building blocks (FRED via production key)
 # ===========================================================================
-def _fred_key() -> Optional[str]:
-    if _ST_OK:
-        try:
-            k = st.secrets.get("FRED_API_KEY")  # type: ignore
-            if k:
-                return k
-        except Exception as exc:
-            logger.warning("Streamlit FRED key access failed: %s", exc)
-    return os.environ.get("FRED_API_KEY")
-
-
 def _fred_latest(series: str) -> Optional[tuple[float, str]]:
     key = _fred_key()
     if not key:
@@ -619,7 +623,12 @@ def build_regime_dashboard() -> list[RegimeMetric]:
                                 f"FRED · {sofr[1]}", interp))
 
     # Vol regime headline from the vol complex
-    vc = {g.key: g for g in fetch_vol_complex()}
+    # Guard: yfinance/pandas under Python 3.14 can segfault on network failure.
+    try:
+        vc = {g.key: g for g in fetch_vol_complex()}
+    except Exception as exc:
+        logger.warning("fetch_vol_complex crashed, skipping vol regime: %s", exc)
+        vc = {}
     if "VIX" in vc and "MOVE" in vc:
         vix, move = vc["VIX"].value, vc["MOVE"].value
         if vix < 18 and move < 100:
