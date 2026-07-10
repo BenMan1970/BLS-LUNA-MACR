@@ -1064,8 +1064,21 @@ def build_context(
                     SourceStamp("BLUESTAR · Forex Factory", Reliability.PRIMARY, timestamp=now_utc),
                     disp, f"{si.trend} {gauge_mode} · n={si.n}",
                 )
+            else:
+                # No USD high-impact event in the current calendar window -- honest
+                # N/A with an accurate reason (replaces the generic default set
+                # upstream in build_market_snapshot, which wrongly implies a
+                # missing API key).
+                market.gauges["SURPRISE_IDX"] = Datum(
+                    None,
+                    na_stamp("aucun évènement USD high-impact dans la fenêtre calendrier courante"),
+                    "N/A",
+                )
         except Exception as exc:  # pragma: no cover - never break the pipeline
             logger.warning("surprise gauge injection failed: %s", exc)
+            market.gauges["SURPRISE_IDX"] = Datum(
+                None, na_stamp("erreur interne pendant le calcul du surprise index (voir logs)"), "N/A",
+            )
 
     regime, regime_cls, regime_since, _pen = determine_market_regime(market, events)
 
