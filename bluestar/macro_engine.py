@@ -150,15 +150,11 @@ def build_central_bank_context(overrides: Optional[dict]) -> list[CentralBankSna
     """
     cb_over = (overrides or {}).get("central_banks", {})
 
-    # External feeds fetched once; each is best-effort ({} / None on failure).
-    # FRED (rates) and CME FedWatch (probabilities) are independent sources
-    # with no shared state -- fetched concurrently (A6 perf fix) rather than
-    # sequentially. Same two values feed the exact same logic below.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as _ex:
-        _fut_rates = _ex.submit(fetch_central_bank_rates)
-        _fut_fw = _ex.submit(fetch_fedwatch_probabilities)
-        fred_rates = _fut_rates.result()        # {name: pct} or {}
-        fedwatch = _fut_fw.result()              # {pause/cut/hike} or None
+    # A6-revert: sequential calls — ThreadPoolExecutor nested inside
+    # ThreadPoolExecutor caused SIGSEGV with curl_cffi/libcurl
+    # (non-thread-safe C extension). Same two values feed the logic below.
+    fred_rates = fetch_central_bank_rates()     # {name: pct} or {}
+    fedwatch = fetch_fedwatch_probabilities()   # {pause/cut/hike} or None
 
     out: list[CentralBankSnapshot] = []
     for name, flag, _ccy in _CB_DEFS:
@@ -1094,18 +1090,11 @@ def build_context(
     except Exception:
         _regime_pending = False
 
-    # A6 (perf): central_banks, ips and the liquidity spread are three
-    # mutually independent network-backed layers -- different inputs, no
-    # shared state (verified: none touch `market` or each other's output).
-    # Fired concurrently instead of sequentially; every parsing/business-logic
-    # line that follows is unchanged, only the wall-clock ordering changes.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as _ex:
-        _fut_cb = _ex.submit(build_central_bank_context, overrides)
-        _fut_ips = _ex.submit(build_ips_scores, overrides, now_utc)
-        _fut_liq = _ex.submit(fetch_liquidity_stress)
-        central_banks = _fut_cb.result()
-        ips, cot_ref_label = _fut_ips.result()
-        sofr_effr_bp = _fut_liq.result()
+    # A6-revert: sequential execution to avoid SIGSEGV from nested
+    # ThreadPoolExecutor + curl_cffi/libcurl thread-unsafety.
+    central_banks = build_central_bank_context(overrides)
+    ips, cot_ref_label = build_ips_scores(overrides, now_utc)
+    sofr_effr_bp = fetch_liquidity_stress()
 
     cs = build_currency_strength_ranking(central_banks, regime_cls)
     cs = _oanda_strength_scores(market, cs)   # BLUESTAR-PATCH v10.0
