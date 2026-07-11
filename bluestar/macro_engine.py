@@ -36,6 +36,7 @@ from .external_sources import (
     fetch_fedwatch_probabilities,
     fetch_cot_data,
     fetch_liquidity_stress,
+    fetch_pc_ratio,                      # C1: VIX × P/C composite signal
 )
 
 logger = logging.getLogger(__name__)
@@ -917,7 +918,8 @@ def _pairs_for_ccy(ccy: str) -> list[str]:
 # ---------------------------------------------------------------------------
 def build_macro_overlay(market: MarketSnapshot, regime: str,
                         events: list[MacroEvent],
-                        liquidity_msg: str) -> dict:
+                        liquidity_msg: str,
+                        pc_data: Optional[dict] = None) -> dict:
     vix = market.gauge("VIX")
     move = market.gauge("MOVE")
     dxy = market.gauge("DXY")
@@ -939,6 +941,24 @@ def build_macro_overlay(market: MarketSnapshot, regime: str,
         vol_impl = (f"Méthode : {method}. "
                     + ("Vol comprimée → stops plus serrés viables." if vix.value < 18
                        else "Vol modérée à élevée → réduire la taille, élargir les stops."))
+        # C1/M2 FIX: enrich vol_regime and vol_impl with P/C data when available.
+        # Fully additive — original strings unchanged when pc_data is None.
+        if pc_data is not None:
+            eq        = pc_data.get("equity") or {}
+            idx       = pc_data.get("index")  or {}
+            eq_pc     = eq.get("pc_ratio")
+            idx_pc    = idx.get("pc_ratio")
+            composite = pc_data.get("composite_signal", "")
+            stale     = pc_data.get("stale", False)
+            if eq_pc is not None and idx_pc is not None:
+                stale_flag = " [STALE]" if stale else ""
+                vol_regime = (
+                    f"VIX {vix.display} · MOVE {move.display if move.available else 'N/A'}"
+                    f" · Eq.P/C {eq_pc} · Idx.P/C {idx_pc}{stale_flag}"
+                )
+            if composite:
+                stale_note = " · données P/C potentiellement périmées" if stale else ""
+                vol_impl += f" Signal P/C : {composite}{stale_note}."
     else:
         vol_regime = "VIX [N/A]"
         vol_impl = "Méthode indisponible — régime vol non évaluable [N/A]."
@@ -1094,6 +1114,17 @@ def build_context(
     central_banks = build_central_bank_context(overrides)
     ips, cot_ref_label = build_ips_scores(overrides, now_utc)
     sofr_effr_bp = fetch_liquidity_stress()
+    # C1: P/C ratio — true VIX × P/C composite (external_sources §5).
+    # vix_value injecté → _vix_pc_composite() actif (pas le fallback P/C-only).
+    # Best-effort : pc_data = None si CBOE indisponible — overlay dégrade silencieusement.
+    try:
+        _vix_gauge = market.gauge("VIX")
+        pc_data = fetch_pc_ratio(
+            vix_value=_vix_gauge.value if _vix_gauge.available else None
+        )
+    except Exception as exc:   # pragma: no cover — jamais casser le pipeline
+        logger.warning("fetch_pc_ratio failed: %s", exc)
+        pc_data = None
 
     cs = build_currency_strength_ranking(central_banks, regime_cls)
     cs = _oanda_strength_scores(market, cs)   # BLUESTAR-PATCH v10.0
@@ -1118,7 +1149,7 @@ def build_context(
         liquidity_msg = ("Stress de financement USD non sourcé [N/A]. "
                          "Surveiller les flux de fin de mois/trimestre si applicable.")
 
-    overlay = build_macro_overlay(market, regime, upcoming, liquidity_msg)
+    overlay = build_macro_overlay(market, regime, upcoming, liquidity_msg, pc_data)
 
     priority, avoid, no_setup = select_priority_assets(
         market, regime_cls, central_banks, cs, ips, events, mode,
