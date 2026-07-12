@@ -1206,7 +1206,7 @@ def build_context(
         try:
             regime_assessment = _assess_regime(market, central_banks, cs, ips, events, now_utc, pc_data)
             from .interpretation import build_interpretation
-            interpretation = build_interpretation(market, regime_assessment, central_banks, cs, ips, priority, events)
+            interpretation = build_interpretation(market, central_banks, cs, ips, regime_assessment, priority, now_utc, pc_data)
         except Exception as exc:
             logger.warning("Regime/Interpretation engine failed: %s", exc)
 
