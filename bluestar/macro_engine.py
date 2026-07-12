@@ -764,4 +764,488 @@ def select_priority_assets(
 def _build_setup_levels(p: float, atr, direction: int, asset: str) -> tuple:
     """Compute buy/sell/stop levels from ATR. Returns (buy, sell, stop, levels_proxy)."""
     buy = p - C.LEVEL_ATR_MULT * atr if atr else None
-    sell
+    sell = p + C.LEVEL_ATR_MULT * atr if atr else None
+    if direction > 0:
+        stop = (p - C.STOP_ATR_MULT * atr) if atr else None
+    else:
+        stop = (p + C.STOP_ATR_MULT * atr) if atr else None
+    return buy, sell, stop
+
+
+def _build_setup_positioning(ccys, ips_by_ccy: dict, cot_label: str) -> tuple:
+    """Compute positioning link, squeeze risk, IPS summary."""
+    pos_link = "Pas de COT chargé pour cet actif [N/A] — positionnement non pris en compte."
+    squeeze_risk, squeeze_cls = "Faible", "green"
+    ips_summary = "[N/A]"
+    if not ccys:
+        return pos_link, squeeze_risk, squeeze_cls, ips_summary
+    candidates = [(ccy, ips_by_ccy.get(ccy)) for ccy in ccys]
+    candidates = [(ccy, r) for ccy, r in candidates if r and r.ips_score is not None]
+    chosen = next((c for c in candidates if c[1].is_extreme),
+                  candidates[0] if candidates else None)
+    if not chosen:
+        return pos_link, squeeze_risk, squeeze_cls, ips_summary
+    ccy, r = chosen
+    ips_summary = f"{ccy} {r.ips_score} — {r.ips_label}"
+    if r.is_extreme:
+        squeeze_risk, squeeze_cls = f"Élevé ({ccy} IPS extrême)", "red"
+        pos_link = (f"{ccy} en zone extrême (IPS {r.ips_score} · {r.ips_label}). "
+                    f"[{cot_label}]. "
+                    "Le COT ne déclenche pas le trade ; il signale un risque de "
+                    "squeeze inverse si le catalyseur déçoit → conviction ±, stop strict.")
+    else:
+        pos_link = (f"{ccy} IPS {r.ips_score} — {r.ips_label}. "
+                    f"[{cot_label}]. "
+                    "Positionnement non extrême, n'amende pas la conviction.")
+    return pos_link, squeeze_risk, squeeze_cls, ips_summary
+
+
+def _compute_rr_ratio(p: float, stop, sell, direction: int, atr) -> str:
+    """Compute risk/reward ratio display string (audit B2 fix).
+
+    C1 (certification, cause racine R-1): directional R:R measured from the
+    macro ENTRY zone to the OPPOSITE (objective) zone, exactly as the recap
+    footnote defines it (reward = entrée->objectif, risk = entrée->stop). For a
+    long the entry is the buy zone and the objective is the sell zone; for a
+    short the entry is the sell zone and the objective is the buy zone. The buy
+    zone is reconstructed from the same construction as ``_build_setup_levels``
+    (buy = p - LEVEL_ATR_MULT*atr), so the signature and the call site stay
+    unchanged.
+    """
+    if atr is None:
+        return "[N/A]"
+    buy = p - C.LEVEL_ATR_MULT * atr
+    if direction > 0:
+        risk, reward = buy - stop, sell - buy
+    else:
+        risk, reward = stop - sell, sell - buy
+    if risk <= 0:
+        return "[N/A]"
+    return f"1:{fr_num(reward / risk, 1)}"
+
+
+def _build_setup(asset: str, direction: int, score: float, market: MarketSnapshot,
+                 allow_proxy_levels: bool, ips_by_ccy: dict, ccys, ev,
+                 cot_label: str = "[PROXY]") -> AssetSetup:
+    price = market.price(asset)
+    em_disp, em_method, atr = compute_expected_move(asset, market)
+    p = price.value
+
+    buy, sell, stop = _build_setup_levels(p, atr, direction, asset)
+    levels_proxy = atr is None or em_method.startswith("PROXY")
+
+    if direction > 0:
+        bias_class = action_class = "long"
+        arrow, action, bias = "↑", "CHERCHER LONG", "🟢/🟡 LONG"
+    else:
+        bias_class = action_class = "short"
+        arrow, action, bias = "↓", "CHERCHER SHORT", "🟢/🟡 SHORT"
+
+    conviction = 2 + int(round(score * 2))
+    if levels_proxy or not allow_proxy_levels:
+        conviction = max(1, conviction - 1)
+
+    pos_link, squeeze_risk, squeeze_cls, ips_summary = _build_setup_positioning(
+        ccys, ips_by_ccy, cot_label)
+
+    color = "green" if score >= 0.7 and not levels_proxy else "yellow"
+
+    ev_names = ", ".join(sorted({e.event_name for e in ev})[:2]) if ev else "aucun catalyseur proche"
+    invalidation = f"Retournement macro / catalyseur ({ev_names})"
+    inval_level = (f"clôture {'sous le' if direction > 0 else 'au-dessus du'} stop "
+                   f"{_level(stop, asset)}" if stop is not None else "[N/A]")
+
+    return AssetSetup(
+        asset=asset, color=color, bias=bias, bias_class=bias_class,
+        reason_short=("momentum prix D1" if ccys else "tilt de régime"),
+        reason_macro=("Différentiel de momentum prix D1 [PROXY] favorable"
+                      if ccys else "Biais de régime (refuge / risque) [PROXY]"),
+        conviction=conviction, action=action, action_class=action_class, arrow=arrow,
+        zone_buy=_level(buy, asset) if buy is not None else "[N/A]",
+        origin_buy="[ATR 14j · support implicite]" if buy is not None else "[N/A]",
+        zone_sell=_level(sell, asset) if sell is not None else "[N/A]",
+        origin_sell="[ATR 14j · résistance implicite]" if sell is not None else "[N/A]",
+        stop=_level(stop, asset) if stop is not None else "[N/A]",
+        origin_stop="[ATR 14j · stop dynamique]" if stop is not None else "[N/A]",
+        expected_move=em_disp, em_method=em_method,
+        session="Londres / New York", session_reason="liquidité maximale",
+        invalidation_risk=invalidation, invalidation_level=inval_level,
+        positioning_link=pos_link, correlation_key=compute_correlation(asset, market),
+        ips_summary=ips_summary, squeeze_risk=squeeze_risk, squeeze_class=squeeze_cls,
+        sizing_factor=compute_sizing_factor(conviction, market),
+        risk_reward=_compute_rr_ratio(p, stop, sell, direction, atr),
+        price_display=price.display, levels_are_proxy=levels_proxy,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Step 3 -- Catalysts
+# ---------------------------------------------------------------------------
+def build_catalysts(events: list[MacroEvent]) -> tuple[list[MacroEvent], list[MacroEvent], dict]:
+    """Split events into 🔴 ÉLEVÉ and 🟡 MODÉRÉ, build beat/miss scenarios."""
+    high = [e for e in events if e.priority in ("CRITICAL", "HIGH") and e.is_upcoming]
+    medium = [e for e in events if e.priority == "MEDIUM" and e.is_upcoming]
+    high.sort(key=lambda e: e.hours_until)
+    medium.sort(key=lambda e: e.hours_until)
+
+    scenarios: dict[str, dict] = {}
+    for e in high:
+        key = e.datetime_utc + e.event_name
+        # Never emit "[N/A]" for affected pairs: derive them from the event
+        # currency against the traded universe when the feed omits them.
+        pairs = e.pairs_affected[:4] if e.pairs_affected else _pairs_for_ccy(e.currency)
+        affected = " · ".join(pairs) if pairs else f"les paires {e.currency}"
+        scenarios[key] = {
+            "prev": e.previous, "cons": e.forecast,
+            "beat_impact": (f"{e.currency} plus fort → pression sur {affected}. "
+                            "Ampleur proportionnelle à l'écart au consensus "
+                            "(voir move attendu par actif)."),
+            "beat_action": f"Renforce les setups short {e.currency}-quote / long {e.currency}-base.",
+            "miss_impact": (f"{e.currency} plus faible → soutien inverse sur {affected}. "
+                            "Ampleur proportionnelle à l'écart au consensus."),
+            "miss_action": f"Invalide les biais alignés sur un {e.currency} fort.",
+            "advice": ("Ne pas ouvrir taille pleine avant la publication ; "
+                       "attendre la confirmation post-chiffre."),
+        }
+    return high[:6], medium[:6], scenarios
+
+
+def _pairs_for_ccy(ccy: str) -> list[str]:
+    """Traded pairs that contain a given currency (deterministic, no [N/A])."""
+    return [p for p, ccys in C.INSTRUMENT_CCYS.items() if ccy in ccys][:4]
+
+
+# ---------------------------------------------------------------------------
+# Step -- Macro overlay text blocks
+# ---------------------------------------------------------------------------
+def build_macro_overlay(market: MarketSnapshot, regime: str,
+                        events: list[MacroEvent],
+                        liquidity_msg: str,
+                        pc_data: Optional[dict] = None) -> dict:
+    vix = market.gauge("VIX")
+    move = market.gauge("MOVE")
+    dxy = market.gauge("DXY")
+
+    nearest = events[0].event_name if events else "—"
+    theme = (f"Semaine pilotée par le calendrier macro (prochain catalyseur : {nearest}). "
+             f"Régime : {regime}.")
+
+    if dxy.available:
+        dxy_ctx = f"DXY {dxy.display} ({dxy.trend or 'tendance n/d'}) — impacte EUR/USD, USD/JPY, USD/CAD."
+        dxy_src = dxy.stamp.render()
+    else:
+        dxy_ctx = "DXY [N/A] — contexte dollar non sourcé."
+        dxy_src = "[N/A]"
+
+    if vix.available:
+        method = "niveau absolu + position vs seuils (15 / 22)"
+        vol_regime = f"VIX {vix.display} · MOVE {move.display if move.available else 'N/A'}"
+        vol_impl = (f"Méthode : {method}. "
+                    + ("Vol comprimée → stops plus serrés viables." if vix.value < 18
+                       else "Vol modérée à élevée → réduire la taille, élargir les stops."))
+        # C1/M2 FIX: enrich vol_regime and vol_impl with P/C data when available.
+        # Fully additive — original strings unchanged when pc_data is None.
+        if pc_data is not None:
+            eq        = pc_data.get("equity") or {}
+            idx       = pc_data.get("index")  or {}
+            eq_pc     = eq.get("pc_ratio")
+            idx_pc    = idx.get("pc_ratio")
+            composite = pc_data.get("composite_signal", "")
+            stale     = pc_data.get("stale", False)
+            if eq_pc is not None and idx_pc is not None:
+                stale_flag = " [STALE]" if stale else ""
+                vol_regime = (
+                    f"VIX {vix.display} · MOVE {move.display if move.available else 'N/A'}"
+                    f" · Eq.P/C {eq_pc} · Idx.P/C {idx_pc}{stale_flag}"
+                )
+            if composite:
+                stale_note = " · données P/C potentiellement périmées" if stale else ""
+                vol_impl += f" Signal P/C : {composite}{stale_note}."
+    else:
+        vol_regime = "VIX [N/A]"
+        vol_impl = "Méthode indisponible — régime vol non évaluable [N/A]."
+
+    return {
+        "theme": theme, "theme_src": "[Forex Factory | calendrier]",
+        "dxy_ctx": dxy_ctx, "dxy_src": dxy_src,
+        "vol_regime": vol_regime, "vol_impl": vol_impl,
+        "correlation": f"{_correlation_short('EUR/USD', market)} · {_correlation_short('USD/JPY', market)}",
+        "liquidity": liquidity_msg,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Step -- Risk scenarios
+# ---------------------------------------------------------------------------
+def build_risk_scenarios(events: list[MacroEvent], regime_class: str,
+                         priority: list[AssetSetup],
+                         central_banks: Optional[list[CentralBankSnapshot]] = None
+                         ) -> tuple[dict, RiskScenario, RiskScenario, str]:
+    anchor = events[0] if events else None
+    if anchor is not None:
+        anchor_name = anchor.event_name
+        anchor_src = "[Forex Factory | calendrier]"
+        bull_trig = f"{anchor_name} sous le consensus → détente des taux/vol"
+        bear_trig = f"{anchor_name} au-dessus du consensus → repricing hawkish / fuite vers la qualité"
+        inval_txt = (f"Désamorçage du catalyseur principal ({anchor_name}) ou retour de la "
+                     "volatilité dans sa fourchette → révision du scénario dominant.")
+    else:
+        # No dated catalyst in the residual window: anchor the scenario on the
+        # prevailing volatility/risk regime instead of emitting "[N/A]".
+        anchor_name = "régime de volatilité (pas de catalyseur daté dans la fenêtre)"
+        anchor_src = "[BLUESTAR · régime de marché]"
+        bull_trig = "Compression de la volatilité / détente des taux → rotation risk-on"
+        bear_trig = "Choc de volatilité / repricing hawkish → fuite vers la qualité"
+        inval_txt = ("Rupture du régime de volatilité actuel (VIX/MOVE hors fourchette) "
+                     "→ révision du scénario dominant.")
+
+    # A8 fix: reuse the FedWatch pause/cut/hike odds already sourced onto the
+    # Fed's CentralBankSnapshot (see build_central_bank_context) instead of a
+    # fixed qualitative placeholder -- but only when the anchor catalyst is
+    # actually USD-denominated (NFP/CPI/FOMC etc.); a Fed rate-path
+    # distribution isn't the relevant probability for e.g. a EUR or GBP
+    # catalyst. Falls back to the original qualitative text otherwise.
+    proba = "qualitative — équilibré"
+    proba_src = anchor_src
+    if anchor is not None and anchor.currency == "USD" and central_banks:
+        fed = next((cb for cb in central_banks if cb.name == "FED"), None)
+        if fed and fed.pause_pct is not None and fed.cut_pct is not None and fed.hike_pct is not None:
+            proba = (f"Pause {fed.pause_pct}% · Baisse {fed.cut_pct}% "
+                     f"· Hausse {fed.hike_pct}%")
+            # MACRO-B2 FIX : L'attribution de source doit refléter le stamp réel de la donnée.
+            # Un "[CME FedWatch]" codé en dur ment si la donnée provient d'un override manuel.
+            fed_reliability = getattr(getattr(fed, "stamp", None), "reliability", None)
+            if fed_reliability is Reliability.PRIMARY:
+                proba_src = "[CME FedWatch]"
+            elif fed_reliability is Reliability.PROXY:
+                proba_src = "[PROXY · override manuel]"
+            else:
+                proba_src = anchor_src
+
+    risk_main = {
+        "desc": ("Surprise macro sur le principal catalyseur de la semaine "
+                 f"({anchor_name}) déclenchant un repricing brutal." if events else
+                 f"Repricing brutal piloté par le {anchor_name}."),
+        "asset": priority[0].asset if priority else "—",
+        # Use the primary asset's computed invalidation level when available.
+        # [PROXY] is wrong here: we either have a real level or we don't.
+        # [N/A] is the honest tag when the level cannot be determined.
+        "level": (priority[0].invalidation_level
+                  if priority and priority[0].invalidation_level not in ("[N/A]", "", None)
+                  else "seuil de bascule = sortie du régime de volatilité courant (VIX/MOVE)"),
+        "proba": proba,
+        "source": proba_src,
+    }
+    bull = RiskScenario(
+        title="Scénario BULL (risk-on)", proba="favori si données molles",
+        trigger=bull_trig,
+        trigger_source=anchor_src,
+        rows=[f"{s.asset} → mouvement aligné risk-on" for s in priority[:3]] or
+             ["USD faible → EUR/USD ↑ · Or ↑ · US10Y ↓"],
+    )
+    bear = RiskScenario(
+        title="Scénario BEAR (risk-off)", proba="favori si données chaudes / choc",
+        trigger=bear_trig,
+        trigger_source=anchor_src,
+        rows=["Refuges : Or · JPY · CHF"] +
+             ([f"{s.asset} → mouvement aligné risk-off" for s in priority[:3]]
+              or ["USD fort → US10Y ↑ · JPY faible → Or ↓"]),
+    )
+    return risk_main, bull, bear, inval_txt
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
+def build_context(
+    now_utc: datetime,
+    market: MarketSnapshot,
+    calendar: dict,
+    overrides: Optional[dict],
+    mode: str = "Normal",
+    allow_proxy_levels: bool = True,
+) -> BriefingContext:
+    """Assemble the full :class:`BriefingContext` from all layers."""
+    overrides = overrides or {}
+    now_cet = now_utc.astimezone(C.TZ_CET)
+    _, is_live = session_label(now_cet)
+
+    raw_engine = calendar.get("events_engine") or calendar.get("events") or []
+    events = [MacroEvent.from_enriched(e) for e in raw_engine]
+    upcoming = [e for e in events if e.is_upcoming]
+
+    # Surprise / Momentum gauge — BLUESTAR free substitute for the proprietary
+    # Citi CESI. Uses released actuals when present, else consensus-vs-previous
+    # momentum, so the KPI is never blank. Populated here because this is where
+    # the enriched calendar events (with actuals) are available.
+    if _inst is not None and "SURPRISE_IDX" not in (overrides.get("market") or {}):
+        try:
+            si = _inst.fetch_macro_surprise("USD", raw_events=events)
+            if si is not None:
+                disp = f"{'+' if si.value >= 0 else ''}{si.value:.0f}"
+                gauge_mode = "US Macro Surprise" if "Surprise" in si.source else "US Macro Momentum"
+                market.gauges["SURPRISE_IDX"] = Datum(
+                    si.value,
+                    SourceStamp("BLUESTAR · Forex Factory", Reliability.PRIMARY, timestamp=now_utc),
+                    disp, f"{si.trend} {gauge_mode} · n={si.n}",
+                )
+            else:
+                # No USD high-impact event in the current calendar window -- honest
+                # N/A with an accurate reason (replaces the generic default set
+                # upstream in build_market_snapshot, which wrongly implies a
+                # missing API key).
+                market.gauges["SURPRISE_IDX"] = Datum(
+                    None,
+                    na_stamp("aucun évènement USD high-impact dans la fenêtre calendrier courante"),
+                    "N/A",
+                )
+        except Exception as exc:  # pragma: no cover - never break the pipeline
+            logger.warning("surprise gauge injection failed: %s", exc)
+            market.gauges["SURPRISE_IDX"] = Datum(
+                None, na_stamp("erreur interne pendant le calcul du surprise index (voir logs)"), "N/A",
+            )
+
+    regime, regime_cls, regime_since, _pen = determine_market_regime(market, events)
+
+    # v9.0: Enhanced regime assessment using the multi-factor regime engine.
+    # The original VIX-only regime is kept as the "headline" for backward
+    # compatibility, but the full RegimeAssessment is computed and attached
+    # for the interpretation layer and the new HTML sections.
+    try:
+        from .regime_engine import assess_regime as _assess_regime
+        # Need central_banks and cs first — but they're computed below.
+        # We'll compute the regime assessment after cs is ready.
+        _regime_pending = True
+    except Exception:
+        _regime_pending = False
+
+    # A6-fix: sequential execution to avoid SIGSEGV from nested
+    # ThreadPoolExecutor + curl_cffi/libcurl thread-unsafety.
+    central_banks = build_central_bank_context(overrides)
+    ips, cot_ref_label = build_ips_scores(overrides, now_utc)
+    sofr_effr_bp = fetch_liquidity_stress()
+    # C1: P/C ratio — true VIX × P/C composite (external_sources §5).
+    # vix_value injecté → _vix_pc_composite() actif (pas le fallback P/C-only).
+    # Best-effort : pc_data = None si CBOE indisponible — overlay dégrade silencieusement.
+    try:
+        _vix_gauge = market.gauge("VIX")
+        pc_data = fetch_pc_ratio(
+            vix_value=_vix_gauge.value if _vix_gauge.available else None
+        )
+    except Exception as exc:   # pragma: no cover — jamais casser le pipeline
+        logger.warning("fetch_pc_ratio failed: %s", exc)
+        pc_data = None
+
+    cs = build_currency_strength_ranking(central_banks, regime_cls)
+    cs = _oanda_strength_scores(market, cs)   # BLUESTAR-PATCH v10.0
+    high, medium, scenarios = build_catalysts(events)
+
+    # Liquidity / funding stress — SOFR−EFFR spread (bp) via FRED, else [N/A].
+    # NOTE: TEDRATE was discontinued (2022-01-31); the gauge is now the
+    # SOFR−EFFR spread expressed in basis points. Thresholds below (8 bp /
+    # 15 bp) are HEURISTIC and must be backtested against SOFR/EFFR history
+    # before production use. (sofr_effr_bp fetched concurrently above.)
+    if sofr_effr_bp is not None:
+        if sofr_effr_bp >= 15.0:
+            tone = "tension de financement USD notable"
+        elif sofr_effr_bp >= 8.0:
+            tone = "légère tension de financement USD"
+        else:
+            tone = "pas de stress de financement USD"
+        liquidity_msg = (f"Spread SOFR−EFFR {fr_num(sofr_effr_bp, 1)} bp → {tone} "
+                         "[FRED · SOFR/EFFR]. Surveiller les flux de fin de "
+                         "journée et les rebalancings de fonds monétaires.")
+    else:
+        liquidity_msg = "[N/A] — spread SOFR−EFFR non sourcé."
+
+    overlay = build_macro_overlay(market, regime, upcoming, liquidity_msg, pc_data)
+    
+    # MACRO-B3 FIX: le suffixe [PROXY · scaling linéaire] apparaît dès qu'un chemin
+    # heuristique (overrides/scrape) alimente l'IPS. "OBSERVÉ" nu est réservé
+    # au chemin z-score/percentile réel (institutional/Socrata).
+    if not ips:
+        cot_date = "[N/A]"
+    else:
+        reliabs = {r.stamp.reliability for r in ips if r.stamp is not None}
+        if Reliability.PRIMARY in reliabs and Reliability.PROXY not in reliabs:
+            cot_date = cot_ref_label
+        else:
+            cot_date = cot_ref_label + " [PROXY · scaling linéaire]"
+
+    priority, avoid, no_setup = select_priority_assets(
+        market, regime_cls, central_banks, cs, ips, events, mode,
+        allow_proxy_levels, cot_label=cot_date,
+    )
+    
+    risk_main, bull, bear, inval_txt = build_risk_scenarios(
+        events, regime_cls, priority, central_banks
+    )
+
+    # Diff rate
+    diff_dominant, diff_implication = _build_rate_differential(central_banks)
+
+    # Positioning alert (checks if any prioritized asset has an extreme IPS)
+    positioning_alert = ""
+    for s in priority:
+        ccys_s = C.INSTRUMENT_CCYS.get(s.asset)
+        if not ccys_s:
+            continue
+        for ccy in ccys_s:
+            ips_r = next((r for r in ips if r.currency == ccy), None)
+            if ips_r and ips_r.is_extreme:
+                positioning_alert = (f"{ccy} en zone extrême (IPS {ips_r.ips_score}) — "
+                                     f"risque de squeeze si catalyseur déçoit.")
+                break
+        if positioning_alert:
+            break
+
+    # v9.0 regime assessment (delayed until cs is ready)
+    regime_assessment = None
+    interpretation = None
+    if _regime_pending:
+        try:
+            regime_assessment = _assess_regime(market, regime_cls, central_banks, cs, ips, events, now_utc)
+            from .interpretation import build_interpretation
+            interpretation = build_interpretation(market, regime_assessment, central_banks, cs, ips, priority, events)
+        except Exception as exc:
+            logger.warning("Regime/Interpretation engine failed: %s", exc)
+
+    return BriefingContext(
+        generated_cet=now_cet,
+        is_live_session=is_live,
+        market=market,
+        events=events,
+        regime=regime,
+        regime_class=regime_cls,
+        regime_since=regime_since,
+        regime_assessment=regime_assessment,
+        interpretation=interpretation,
+        operational_note=overrides.get("operational_note"),
+        priority_assets=priority,
+        avoid_assets=avoid,
+        no_setup_reason=no_setup,
+        catalysts_high=high,
+        catalysts_medium=medium,
+        catalyst_scenarios=scenarios,
+        central_banks=central_banks,
+        currency_strength=cs,
+        ips_scores=ips,
+        diff_dominant=diff_dominant,
+        diff_implication=diff_implication,
+        macro_theme=overlay["theme"],
+        macro_theme_src=overlay["theme_src"],
+        cot_summary=overlay.get("cot_summary", ""),
+        cot_date=cot_date,
+        dxy_context=overlay["dxy_ctx"],
+        dxy_src=overlay["dxy_src"],
+        vol_regime=overlay["vol_regime"],
+        vol_implication=overlay["vol_impl"],
+        correlation_summary=overlay["correlation"],
+        liquidity_flow=overlay["liquidity"],
+        squeeze_currency=positioning_alert.split(" ")[0] if positioning_alert else None,
+        positioning_alert=positioning_alert,
+        risk_main=risk_main,
+        bull=bull,
+        bear=bear,
+        invalidation_principal=inval_txt,
+    )
