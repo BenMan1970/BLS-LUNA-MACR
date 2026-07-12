@@ -753,18 +753,79 @@ def _cboe_parse(text: str, ratio_type: str, ma_days: int) -> Optional[dict]:
         return None
 
 
+
+
+# yfinance ticker for P/C fallback when CBOE direct fetch is blocked.
+# ^PCALL = CBOE Total Put/Call (equity-weighted) — closest to equity P/C distribution.
+# Index P/C has no reliable yfinance equivalent — returns None (partial degradation).
+_CBOE_YF_TICKERS: dict[str, str | None] = {
+    "equity": "^PCALL",   # CBOE Total P/C — approximation acceptable
+    "index":  None,        # no reliable yfinance source for index-only P/C
+}
+
+
+def _cboe_fetch_yf(ratio_type: str, ma_days: int) -> Optional[dict]:
+    """yfinance fallback when CBOE direct fetch is blocked (e.g. Streamlit Cloud IP).
+
+    yfinance is already in requirements.txt — zero new dependency.
+    Returns None on any failure; contract unchanged vs direct fetch.
+    """
+    ticker_sym = _CBOE_YF_TICKERS.get(ratio_type)
+    if not ticker_sym:
+        return None   # index P/C: no yfinance equivalent
+    try:
+        import yfinance as yf   # lazy import — only on fallback path
+        hist = yf.Ticker(ticker_sym).history(period=f"{ma_days * 3}d")
+        if hist.empty or "Close" not in hist.columns:
+            logger.warning("CBOE yfinance %s: empty history for %s",
+                           ratio_type, ticker_sym)
+            return None
+        values = [float(v) for v in hist["Close"].dropna() if v > 0]
+        if not values:
+            return None
+        latest = values[-1]
+        window = values[-ma_days:]
+        ma     = sum(window) / len(window)
+        return {
+            "pc_ratio":           round(latest, 2),
+            f"ma_{ma_days}d":     round(ma, 2),
+            "signal":             _cboe_signal(ratio_type, ma),
+            "signal_raw":         _cboe_signal(ratio_type, latest),
+            "ma_incomplete":      len(window) < ma_days,
+            f"ma_{ma_days}d_obs": len(window),
+            "observation_date":   hist.index[-1].strftime("%m/%d/%Y"),
+            "source":             (
+                f"CBOE TOTAL P/C · yfinance {ticker_sym} [fallback — CBOE bloqué]"
+            ),
+        }
+    except Exception as exc:
+        logger.warning("CBOE %s yfinance fallback failed: %s", ratio_type, exc)
+        return None
+
+
 def _cboe_fetch_one(ratio_type: str, ma_days: int) -> Optional[dict]:
-    """Fetch + parse one CBOE P/C series. Returns a dict or None."""
+    """Fetch + parse one CBOE P/C series.
+
+    Priority:
+      1. Direct CBOE fetch  (browser-like headers — nominal path)
+      2. yfinance fallback  (^PCALL for equity — when CBOE IP-blocked)
+      3. None               → caller degrades gracefully
+    Signature and return schema identical in all three cases.
+    """
     url = _CBOE_URLS.get(ratio_type)
     if not url:
         logger.warning("CBOE: unknown ratio_type '%s'", ratio_type)
         return None
-    # extra_headers: browser-like UA + Referer to bypass CBOE Cloudflare WAF.
-    # Falls back to graceful None if CBOE is IP-blocked on the host network.
     r = _get(url, extra_headers=_CBOE_HEADERS)
-    if r is None:
-        return None   # _get already logged the HTTP failure
-    return _cboe_parse(r.text, ratio_type, ma_days)
+    if r is not None:
+        result = _cboe_parse(r.text, ratio_type, ma_days)
+        if result is not None:
+            return result                      # live CBOE — nominal path
+        logger.warning(
+            "CBOE %s: live fetch unparseable (bot-challenge?) "
+            "— falling back to yfinance", ratio_type
+        )
+    return _cboe_fetch_yf(ratio_type, ma_days)
 
 
 def fetch_pc_ratio(
