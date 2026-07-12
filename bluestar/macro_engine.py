@@ -1204,7 +1204,7 @@ def build_context(
     interpretation = None
     if _regime_pending:
         try:
-            regime_assessment = _assess_regime(market, regime_cls, central_banks, cs, ips, events, now_utc)
+            regime_assessment = _assess_regime(market, central_banks, cs, ips, events, now_utc, pc_data)
             from .interpretation import build_interpretation
             interpretation = build_interpretation(market, regime_assessment, central_banks, cs, ips, priority, events)
         except Exception as exc:
