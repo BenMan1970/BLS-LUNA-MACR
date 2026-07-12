@@ -99,12 +99,30 @@ def _get(url: str, extra_headers: dict | None = None,
 # ===========================================================================
 _FRED_BASE = "https://api.stlouisfed.org/fred/series/observations"
 
+# ---------------------------------------------------------------------------
+# Audit A1 FIX : Séries vérifiées live 2026-07-12.
+# - FEDFUNDS : mensuel, remplacé par DFEDTARU (quotidien, borne haute).
+# - IRSTCB01JPM156N : coquille 'B', discontinuée. Remplacé par IRSTCI01JPM156N.
+# - BOERUKM : gelée depuis jan. 2017. AUCUNE série BoE fiable sur FRED.
+#   -> BoE retirée du mapping. Le pipeline dégradera honnêtement en [N/A]
+#      jusqu'à fourniture via override ou intégration API BoE officielle.
+# ---------------------------------------------------------------------------
 _CB_RATE_SERIES: dict[str, str] = {
-    "FED": "FEDFUNDS",
+    "FED": "DFEDTARU",
     "BCE": "ECBDFR",
-    "BoJ": "IRSTCB01JPM156N",
-    "BoE": "BOERUKM",
+    "BoJ": "IRSTCI01JPM156N",
 }
+
+# Plausibilité : bornes larges pour détecter les sentinelles FRED (-999, .)
+# et les valeurs aberrantes. Un taux hors bornes est écarté.
+_CB_RATE_BOUNDS: dict[str, tuple[float, float]] = {
+    "FED": (-0.5, 15.0),
+    "BCE": (-0.5, 15.0),
+    "BoJ": (-1.0, 10.0),
+}
+
+# Staleness max : au-delà, la série est considérée potentiellement gelée.
+_CB_MAX_STALENESS_DAYS: int = 70
 
 _SOFR_SERIES = "SOFR"
 _EFFR_SERIES = "EFFR"
@@ -149,19 +167,103 @@ def _fred_series(series_id: str) -> Optional[float]:
         return None
 
 
+def _fred_series_dated(series_id: str) -> Optional[tuple[float, str]]:
+    """Comme _fred_series mais renvoie (valeur, date_obs ISO) ou None."""
+    api_key = _fred_api_key()
+    if not api_key:
+        return None
+    params = {
+        "series_id": series_id,
+        "api_key": api_key,
+        "file_type": "json",
+        "sort_order": "desc",
+        "limit": 1,
+    }
+    r = _get(_FRED_BASE, params=params)
+    if r is None:
+        return None
+    try:
+        obs = r.json().get("observations", [])
+        if not obs:
+            return None
+        raw = obs[0].get("value", ".")
+        if raw in (".", "", None):
+            return None
+        return float(raw), obs[0].get("date", "")
+    except (ValueError, KeyError, TypeError) as exc:
+        logger.warning("FRED dated parse error for %s: %s", series_id, exc)
+        return None
+
+
 def fetch_central_bank_rates() -> dict[str, float]:
-    """Return ``{cb_name: rate_pct}`` for every rate FRED can serve."""
+    """Return ``{cb_name: rate_pct}`` for every rate FRED can serve.
+    
+    Audit A1 FIX: chaque série résolue est contrôlée en fraîcheur (date d'observation)
+    et en plausibilité (bornes _CB_RATE_BOUNDS). Une série qui échoue est écartée
+    avec un WARNING, dégradant proprement vers [N/A] en aval.
+    """
     out: dict[str, float] = {}
+
+    def _resolve(name: str, series_id: str) -> Optional[float]:
+        res = _fred_series_dated(series_id)
+        if res is None:
+            logger.warning("CB rate: %s (%s) — aucune observation FRED", name, series_id)
+            return None
+
+        val, dt_iso = res
+
+        # --- Contrôle 1 : fraîcheur ---
+        try:
+            obs_date = datetime.date.fromisoformat(dt_iso)
+            age_days = (datetime.date.today() - obs_date).days
+            if age_days > _CB_MAX_STALENESS_DAYS:
+                logger.warning(
+                    "CB rate: %s (%s) — observation datée du %s (%d j) "
+                    "→ série potentiellement gelée, valeur écartée",
+                    name, series_id, dt_iso, age_days,
+                )
+                return None
+        except (ValueError, TypeError):
+            # Date illisible → on NE GARDE PAS la valeur (élimine le risque de sentinelle)
+            logger.warning(
+                "CB rate: %s (%s) — date illisible '%s', valeur écartée",
+                name, series_id, dt_iso,
+            )
+            return None
+
+        # --- Contrôle 2 : plausibilité ---
+        bounds = _CB_RATE_BOUNDS.get(name)
+        if bounds is not None:
+            lo, hi = bounds
+            if not (lo <= val <= hi):
+                logger.warning(
+                    "CB rate: %s (%s) — valeur %.4f hors bornes [%.1f, %.1f], écartée",
+                    name, series_id, val, lo, hi,
+                )
+                return None
+
+        return val
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(_CB_RATE_SERIES)) as ex:
-        future_to_name = {ex.submit(_fred_series, series_id): name
+        future_to_name = {ex.submit(_resolve, name, series_id): name
                           for name, series_id in _CB_RATE_SERIES.items()}
         for future in concurrent.futures.as_completed(future_to_name):
             name = future_to_name[future]
-            val = future.result()
+            try:
+                val = future.result()
+            except Exception:
+                logger.exception("CB rate: exception imprévue pour %s", name)
+                val = None
             if val is not None:
                 out[name] = val
+                
     if not out:
-        logger.warning("fetch_central_bank_rates: no CB rate resolved (no key?)")
+        logger.error("CB rate: AUCUN taux résolu — différentiels indisponibles")
+    else:
+        missing = set(_CB_RATE_SERIES) - set(out)
+        if missing:
+            logger.warning("CB rate: taux manquants pour %s — dégradation [N/A] attendue", ", ".join(sorted(missing)))
+
     return out
 
 
