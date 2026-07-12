@@ -75,6 +75,7 @@ def build_interpretation(
     regime: RegimeAssessment,
     priority_assets: list[AssetSetup],
     now_utc,
+    pc_data: Optional[dict] = None,
 ) -> InterpretationLayer:
     """Build the full interpretation layer from pipeline data."""
     
@@ -85,13 +86,13 @@ def build_interpretation(
     currency_rationale = _currency_rationale(currency_strength, central_banks, ips, regime)
     
     # --- Factor Dominance ---
-    dominant, reinforcing, contradicting = _factor_analysis(market, central_banks, regime)
+    dominant, reinforcing, contradicting = _factor_analysis(market, central_banks, regime, pc_data)
     
     # --- Invalidation Risks ---
     invalidation = _invalidation_risks(market, ips, regime, priority_assets)
     
     # --- Narrative Chain ---
-    chain, narrative_text = _build_narrative_chain(market, central_banks, currency_strength, regime)
+    chain, narrative_text = _build_narrative_chain(market, central_banks, currency_strength, regime, pc_data)
     
     # --- Asset Explanations ---
     asset_explanations = _asset_explanations(priority_assets, currency_strength, ips, regime)
@@ -279,6 +280,7 @@ def _factor_analysis(
     market: MarketSnapshot,
     central_banks: list[CentralBankSnapshot],
     regime: RegimeAssessment,
+    pc_data: Optional[dict] = None,
 ) -> tuple[list[str], list[str], list[str]]:
     """Identify dominant factors, reinforcing and contradicting indicators."""
     dominant = []
@@ -305,6 +307,21 @@ def _factor_analysis(
         elif (vix.value < 18) != (move.value < 100):
             contradicting.append("VIX et MOVE divergent : tension sur un marché, calme sur l'autre.")
     
+    # P/C sentiment — enrichit reinforcing_indicators (S7) ──────────────────
+    if pc_data is not None:
+        equity    = pc_data.get("equity") or {}
+        index_pc  = pc_data.get("index")  or {}
+        composite = pc_data.get("composite_signal", "")
+        eq_ma     = equity.get("ma_5d")
+        idx_ma    = index_pc.get("ma_5d")
+        stale     = pc_data.get("stale", False)
+        if composite and eq_ma is not None and idx_ma is not None:
+            stale_note = " [données périmées]" if stale else ""
+            reinforcing.append(
+                f"P/C Ratio : Eq.MA5j {eq_ma} · Idx.MA5j {idx_ma}"
+                f" — {composite}{stale_note}."
+            )
+
     return dominant, reinforcing, contradicting
 
 
@@ -414,8 +431,11 @@ def _liquidity_link(cb_dir: str) -> FactorLink:
                       cb_dir, "medium")
 
 
-def _volatility_link(market: MarketSnapshot) -> FactorLink:
-    """Liquidity → Volatility link."""
+def _volatility_link(
+    market: MarketSnapshot,
+    pc_data: Optional[dict] = None,
+) -> FactorLink:
+    """Liquidity → Volatility link. Enriched with CBOE P/C flow (C1)."""
     vix = market.gauge("VIX")
     vol_val = f"VIX {vix.value:.1f}" if vix.available else "[N/A]"
     if vix.available and vix.value < 18:
@@ -424,6 +444,14 @@ def _volatility_link(market: MarketSnapshot) -> FactorLink:
         direction, mech = "positive", "liquidité restreinte augmente la vol"
     else:
         direction, mech = "neutral", "vol modérée"
+    # Enrich with options flow when available (additive — never alters direction)
+    if pc_data is not None:
+        composite = pc_data.get("composite_signal", "")
+        eq_ma  = (pc_data.get("equity") or {}).get("ma_5d")
+        idx_ma = (pc_data.get("index")  or {}).get("ma_5d")
+        if composite and eq_ma is not None and idx_ma is not None:
+            mech += (f" · Options flow : Eq.P/C {eq_ma} / Idx.P/C {idx_ma}"
+                     f" ({composite})")
     return FactorLink("Liquidité", "Volatilité", f"{vol_val} — {mech}",
                       direction, "high" if vix.available else "low")
 
@@ -467,6 +495,7 @@ def _build_narrative_chain(
     central_banks: list[CentralBankSnapshot],
     currency_strength: list[CurrencyStrength],
     regime: RegimeAssessment,
+    pc_data: Optional[dict] = None,
 ) -> tuple[list[FactorLink], str]:
     """Build the causal chain: Growth → Inflation → CB → Rates → Liquidity →
     Vol → Sentiment → Flows → Currencies → Assets."""
@@ -477,7 +506,7 @@ def _build_narrative_chain(
         _inflation_link(market),
         cb_link,
         _liquidity_link(cb_dir),
-        _volatility_link(market),
+        _volatility_link(market, pc_data),   # C1: P/C enrichi la chaîne
         _sentiment_link(regime),
         _flows_link(regime),
         _currencies_link(currency_strength),
