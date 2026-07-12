@@ -17,7 +17,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 import streamlit as st
-import streamlit.components.v1 as components
+import base64
 
 from bluestar import __version__
 from bluestar.calendar_layer import build_calendar, fetch_raw
@@ -186,7 +186,19 @@ if st.session_state.html:
     st.caption("Astuce PDF : ouvrir le HTML → bouton « 📥 Télécharger PDF » (window.print) "
                "→ Chrome → activer « Graphiques d'arrière-plan ».")
 
-    components.html(st.session_state.html, height=900, scrolling=True)
+    # Rendu via data-URI base64 — remplace st.components.v1.html() retiré
+    # en Streamlit 1.59.1 (deadline 2026-06-01 dépassée → segfault).
+    # Avantages : iframe sandbox, scripts exécutés (window.print), no segfault.
+    _b64 = base64.b64encode(
+        st.session_state.html.encode("utf-8")
+    ).decode("ascii")
+    st.markdown(
+        f'<iframe src="data:text/html;base64,{_b64}" '
+        f'width="100%" height="900px" scrolling="yes" '
+        f'style="border:1px solid #dde3f5;border-radius:8px;'
+        f'box-shadow:0 2px 8px rgba(0,0,0,.06);"></iframe>',
+        unsafe_allow_html=True,
+    )
 
     if show_diagnostics:
         st.divider()
@@ -234,4 +246,3 @@ if show_raw_json:
 
 st.caption("BLUESTAR SYSTEM · MACRO BRIEFING ENGINE · "
            "Aucune donnée inventée — [N/A]/[PROXY] partout où la source manque.")
-
