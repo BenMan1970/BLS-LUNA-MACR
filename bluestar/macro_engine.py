@@ -1211,10 +1211,10 @@ def build_context(
             logger.warning("Regime/Interpretation engine failed: %s", exc)
 
     return BriefingContext(
+        generated_utc=now_utc,
         generated_cet=now_cet,
         is_live_session=is_live,
         market=market,
-        events=events,
         regime=regime,
         regime_class=regime_cls,
         regime_since=regime_since,
