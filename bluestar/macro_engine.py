@@ -1161,7 +1161,8 @@ def build_context(
     if _regime_pending:
         try:
             regime_assessment = _assess_regime(
-                market, central_banks, cs, ips, upcoming, now_utc)
+                market, central_banks, cs, ips, upcoming, now_utc,
+                pc_data=pc_data)
         except Exception as exc:
             logger.warning("regime_engine assessment failed: %s", exc)
 
@@ -1171,7 +1172,7 @@ def build_context(
         if regime_assessment is not None:
             interpretation = _build_interp(
                 market, central_banks, cs, ips, regime_assessment,
-                priority, now_utc)
+                priority, now_utc, pc_data=pc_data)
     except Exception as exc:
         logger.warning("interpretation layer failed: %s", exc)
 
