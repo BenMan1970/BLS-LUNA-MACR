@@ -252,6 +252,47 @@ def _gdp_indicator(market: MarketSnapshot) -> RegimeIndicator | None:
     return None
 
 
+
+def _pc_indicator(pc_data: Optional[dict]) -> RegimeIndicator | None:
+    """CBOE Put/Call ratio sentiment indicator.
+
+    Translates the VIX × P/C composite signal into a RegimeIndicator.
+    Weight 0.05 — informative but never regime-determining alone.
+    Signal type mapping:
+      COMPLACENCE* → risk_on   (options market confirms risk appetite)
+      COUVERTURE*  → risk_off  (hedging flow confirms caution)
+      DANGER ZONE / PEUR EXTREME / DIVERGENCE / NEUTRE → neutral
+    Never raises — returns None on any missing or incomplete data.
+    """
+    if pc_data is None:
+        return None
+    equity    = pc_data.get("equity") or {}
+    index     = pc_data.get("index")  or {}
+    composite = pc_data.get("composite_signal", "")
+    eq_ma     = equity.get("ma_5d")
+    idx_ma    = index.get("ma_5d")
+    stale     = pc_data.get("stale", False)
+
+    if not composite or eq_ma is None or idx_ma is None:
+        return None
+
+    value_str  = f"Eq.P/C {eq_ma} · Idx.P/C {idx_ma}"
+    stale_note = " [STALE]" if stale else ""
+    note       = f"{composite}{stale_note}"
+
+    # Signal type — minimal weight, additive only
+    if "COMPLACENCE" in composite and "DANGER" not in composite:
+        signal = "risk_on"
+    elif any(x in composite for x in ("COUVERTURE GENERALISEE", "COUVERTURE ÉLEVÉE")):
+        signal = "risk_off"
+    else:
+        signal = "neutral"   # NEUTRE / DANGER ZONE / PEUR EXTREME / DIVERGENCE
+
+    return RegimeIndicator(
+        "P/C Ratio", value_str, signal, 0.05, True, note
+    )
+
+
 def assess_regime(
     market: MarketSnapshot,
     central_banks: list[CentralBankSnapshot],
@@ -259,6 +300,7 @@ def assess_regime(
     ips: list[CotPositioning],
     events: list,
     now_utc,
+    pc_data: Optional[dict] = None,
 ) -> RegimeAssessment:
     """Assess the current market regime from all available indicators.
 
@@ -275,6 +317,7 @@ def assess_regime(
             _positioning_indicator(ips),
             _catalyst_indicator(events),
             _gdp_indicator(market),
+            _pc_indicator(pc_data),          # C1: VIX × P/C sentiment
         ] if ind is not None
     ]
 
@@ -429,6 +472,9 @@ def _build_narrative(
     move_ind = next((i for i in indicators if i.name == "MOVE"), None)
     if move_ind:
         vol_parts.append(f"MOVE {move_ind.value}")
+    pc_ind = next((i for i in indicators if i.name == "P/C Ratio"), None)
+    if pc_ind:
+        vol_parts.append(pc_ind.value)       # "Eq.P/C 0.69 · Idx.P/C 0.88"
     if vol_parts:
         parts.append(f"Volatilité : {' · '.join(vol_parts)} — régime {regime_name}.")
     else:
