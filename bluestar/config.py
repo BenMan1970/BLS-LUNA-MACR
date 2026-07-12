@@ -91,6 +91,14 @@ SAFE_HAVENS = ["USD", "JPY", "CHF"]
 VIX_RISK_ON_MAX = 15.0     # VIX below -> calm / risk-on tilt
 VIX_RISK_OFF_MIN = 22.0    # VIX above -> stress / risk-off tilt
 
+# MOVE (ICE BofA bond-vol index) thresholds used alongside VIX in the
+# multi-factor regime engine (regime_engine.py). Values unchanged from the
+# figures that were previously hardcoded inline there (90 / 120) — centralised
+# here only so both the classification and the trigger-explainer text share a
+# single source of truth instead of independently hardcoded numbers.
+MOVE_RISK_ON_MAX = 90.0    # MOVE below -> calm bond-vol / risk-on tilt
+MOVE_RISK_OFF_MIN = 120.0  # MOVE above -> stressed bond-vol / risk-off tilt
+
 # ----------------------------------------------------------------------------
 # Positioning / IPS heuristic (Non-Commercials only) -- always [PROXY]
 # ----------------------------------------------------------------------------
