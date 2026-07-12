@@ -76,13 +76,17 @@ _HEADERS = {
 }
 
 
-def _get(url: str, **kwargs) -> Optional[requests.Response]:
+def _get(url: str, extra_headers: dict | None = None,
+         **kwargs) -> Optional[requests.Response]:
     """Single GET with unified timeout / headers / error handling.
 
+    ``extra_headers`` overrides / extends ``_HEADERS`` for caller-specific
+    needs (e.g. CBOE bot-bypass) without touching the module-level default.
     Returns the Response on HTTP 200, else ``None`` (logged). Never raises.
     """
+    headers = {**_HEADERS, **(extra_headers or {})}
     try:
-        r = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT, **kwargs)
+        r = requests.get(url, headers=headers, timeout=_TIMEOUT, **kwargs)
         r.raise_for_status()
         return r
     except requests.RequestException as exc:
@@ -465,6 +469,23 @@ def fetch_gdp_nowcast() -> Optional[float]:
 # Audit patch 2026-07-11 — corrections C1/C2/C3/C4/M1/M2/M3/m1/m2 applied.
 # ===========================================================================
 
+# Browser-like headers for CBOE — Cloudflare WAF bypasses plain Python-requests
+# User-Agent. Streamlit Cloud IPs may still be IP-blocked; in that case the
+# graceful-degradation path (pc_data = None) applies automatically.
+_CBOE_HEADERS: dict[str, str] = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36"
+    ),
+    "Accept":          "text/csv,text/plain,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Referer": "https://www.cboe.com/us/equities/market_statistics/historical_data/",
+    "Origin":          "https://www.cboe.com",
+    "Connection":      "keep-alive",
+}
+
 _CBOE_URLS: dict[str, str] = {
     "equity": "https://www.cboe.com/publish/scheduledtask/mktdata/datahouse/equitypc.csv",
     "index":  "https://www.cboe.com/publish/scheduledtask/mktdata/datahouse/indexpc.csv",
@@ -738,7 +759,9 @@ def _cboe_fetch_one(ratio_type: str, ma_days: int) -> Optional[dict]:
     if not url:
         logger.warning("CBOE: unknown ratio_type '%s'", ratio_type)
         return None
-    r = _get(url)
+    # extra_headers: browser-like UA + Referer to bypass CBOE Cloudflare WAF.
+    # Falls back to graceful None if CBOE is IP-blocked on the host network.
+    r = _get(url, extra_headers=_CBOE_HEADERS)
     if r is None:
         return None   # _get already logged the HTTP failure
     return _cboe_parse(r.text, ratio_type, ma_days)
