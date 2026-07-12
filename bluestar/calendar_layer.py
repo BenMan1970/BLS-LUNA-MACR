@@ -98,6 +98,12 @@ def enrich(event: Dict, event_time_ref: datetime) -> Optional[Dict]:
         t = datetime.fromisoformat(event.get("date", "").replace("Z", "+00:00"))
         if t.tzinfo is None:
             t = t.replace(tzinfo=pytz.UTC)
+            
+        # MACRO-A2 FIX : strftime formate les composantes locales, il ne convertit pas.
+        # Projection explicite en UTC AVANT tout formatage pour garantir l'exactitude
+        # de l'affichage (ex: 04:45 ET devient bien 08:45 UTC et non 04:45 UTC).
+        t_utc = t.astimezone(pytz.UTC)
+        
         h = (t - event_time_ref).total_seconds() / 3600
         ccy = event.get("country", "")
         prio = (
@@ -109,10 +115,10 @@ def enrich(event: Dict, event_time_ref: datetime) -> Optional[Dict]:
         return {
             "currency": ccy,
             "event_name": event.get("title", "").strip(),
-            "datetime_utc": t.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "date_display": t.strftime("%Y-%m-%d"),
-            "time_display": t.strftime("%H:%M UTC"),
-            "day_of_week": t.strftime("%A").upper(),
+            "datetime_utc": t_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "date_display": t_utc.strftime("%Y-%m-%d"),
+            "time_display": t_utc.strftime("%H:%M UTC"),
+            "day_of_week": t_utc.strftime("%A").upper(),
             "impact": (event.get("impact") or "High").lower(),
             "forecast": event.get("forecast", "") or "—",
             "previous": event.get("previous", "") or "—",
@@ -121,7 +127,7 @@ def enrich(event: Dict, event_time_ref: datetime) -> Optional[Dict]:
             "hours_until_display": fmt_until(h),
             "is_upcoming": h > 0,
             "priority": prio,
-            "session": get_session(t),
+            "session": get_session(t_utc),
             "pairs_affected": PAIRS_MAP.get(ccy, []),
         }
     except (ValueError, KeyError, AttributeError) as e:
@@ -148,9 +154,12 @@ def build_calendar(now_utc: Optional[datetime] = None,
     if raw_data is None:
         raw_data = fetch_raw()
 
+    # MACRO-A3 FIX : .lower() rend le filtre robuste à un changement de casse
+    # du flux Forex Factory (ex: "High" vs "high"). Ne peut pas causer de régression
+    # car il élargit le périmètre de capture au lieu de le rétrécir.
     all_events = [
         e for ev in raw_data
-        if ev.get("impact") == "High"
+        if (ev.get("impact") or "").strip().lower() == "high"
         for e in [enrich(ev, now_utc)] if e
     ]
     all_events.sort(key=lambda x: (not x["is_upcoming"], x["datetime_utc"]))
