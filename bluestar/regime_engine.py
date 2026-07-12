@@ -149,10 +149,10 @@ def _move_indicator(market: MarketSnapshot) -> RegimeIndicator | None:
     if not move.available:
         return None
     m = move.value
-    if m < 90:
+    if m < C.MOVE_RISK_ON_MAX:
         return RegimeIndicator("MOVE", f"{m:.1f}", "risk_on", 0.10, True,
                                "Volatilité taux comprimée — pas de stress rates.")
-    if m > 120:
+    if m > C.MOVE_RISK_OFF_MIN:
         return RegimeIndicator("MOVE", f"{m:.1f}", "risk_off", 0.10, True,
                                "Volatilité taux élevée — stress sur le marché obligataire.")
     return RegimeIndicator("MOVE", f"{m:.1f}", "neutral", 0.05, True,
@@ -252,45 +252,35 @@ def _gdp_indicator(market: MarketSnapshot) -> RegimeIndicator | None:
     return None
 
 
+def _resolve_support(indicators: list[RegimeIndicator]) -> None:
+    """Resolve each indicator's ``supports`` flag against the regime that was
+    actually chosen (audit fix — see note below).
 
-def _pc_indicator(pc_data: Optional[dict]) -> RegimeIndicator | None:
-    """CBOE Put/Call ratio sentiment indicator.
+    Every ``_*_indicator`` function above constructs its ``RegimeIndicator``
+    with ``supports=True`` hardcoded, because at construction time the
+    dominant regime is not known yet (``_classify`` runs afterwards). Left
+    as-is, ``ra.contradicting`` in ``assess_regime`` can never contain
+    anything, for any input: the "guardrails" this module's docstring
+    promises (audit finding A4) were never actually enforced.
 
-    Translates the VIX × P/C composite signal into a RegimeIndicator.
-    Weight 0.05 — informative but never regime-determining alone.
-    Signal type mapping:
-      COMPLACENCE* → risk_on   (options market confirms risk appetite)
-      COUVERTURE*  → risk_off  (hedging flow confirms caution)
-      DANGER ZONE / PEUR EXTREME / DIVERGENCE / NEUTRE → neutral
-    Never raises — returns None on any missing or incomplete data.
+    This mutates ``ind.supports`` in place, after the risk_on/risk_off vote
+    is known, so an indicator on the losing side of that vote is correctly
+    flagged as contradicting. Only the risk_on/risk_off axis is judged this
+    way — it is the one axis this whole engine is anchored on (see module
+    docstring) and the only one with an unambiguous opposite. Other signal
+    families (inflation/deflation, dollar_strong/weak, policy_divergence,
+    neutral) are left as supporting context rather than guessed at, since
+    mis-flagging a legitimate contributing factor as "wrong" would be a
+    worse failure mode than under-flagging.
     """
-    if pc_data is None:
-        return None
-    equity    = pc_data.get("equity") or {}
-    index     = pc_data.get("index")  or {}
-    composite = pc_data.get("composite_signal", "")
-    eq_ma     = equity.get("ma_5d")
-    idx_ma    = index.get("ma_5d")
-    stale     = pc_data.get("stale", False)
-
-    if not composite or eq_ma is None or idx_ma is None:
-        return None
-
-    value_str  = f"Eq.P/C {eq_ma} · Idx.P/C {idx_ma}"
-    stale_note = " [STALE]" if stale else ""
-    note       = f"{composite}{stale_note}"
-
-    # Signal type — minimal weight, additive only
-    if "COMPLACENCE" in composite and "DANGER" not in composite:
-        signal = "risk_on"
-    elif any(x in composite for x in ("COUVERTURE GENERALISEE", "COUVERTURE ÉLEVÉE")):
-        signal = "risk_off"
-    else:
-        signal = "neutral"   # NEUTRE / DANGER ZONE / PEUR EXTREME / DIVERGENCE
-
-    return RegimeIndicator(
-        "P/C Ratio", value_str, signal, 0.05, True, note
-    )
+    risk_on_w = sum(i.weight for i in indicators if i.signal == "risk_on")
+    risk_off_w = sum(i.weight for i in indicators if i.signal == "risk_off")
+    for ind in indicators:
+        if ind.signal == "risk_on":
+            ind.supports = risk_on_w >= risk_off_w
+        elif ind.signal == "risk_off":
+            ind.supports = risk_off_w >= risk_on_w
+        # else: left as the True set by the constructor above.
 
 
 def assess_regime(
@@ -300,7 +290,6 @@ def assess_regime(
     ips: list[CotPositioning],
     events: list,
     now_utc,
-    pc_data: Optional[dict] = None,
 ) -> RegimeAssessment:
     """Assess the current market regime from all available indicators.
 
@@ -317,11 +306,11 @@ def assess_regime(
             _positioning_indicator(ips),
             _catalyst_indicator(events),
             _gdp_indicator(market),
-            _pc_indicator(pc_data),          # C1: VIX × P/C sentiment
         ] if ind is not None
     ]
 
     regime_name, category, confidence = _classify(indicators)
+    _resolve_support(indicators)
     supporting = [i for i in indicators if i.supports]
     contradicting = [i for i in indicators if not i.supports]
     triggers = _build_triggers(regime_name, events, indicators)
@@ -418,13 +407,13 @@ def _build_triggers(regime_name: str, events: list, indicators: list[RegimeIndic
     # Indicator-based triggers
     vix_ind = next((i for i in indicators if i.name == "VIX"), None)
     if vix_ind and "risk_on" in vix_ind.signal:
-        triggers.append("VIX au-dessus de 22 → bascule vers Risk-Off / Late Cycle.")
+        triggers.append(f"VIX au-dessus de {C.VIX_RISK_OFF_MIN:.0f} → bascule vers Risk-Off / Late Cycle.")
     elif vix_ind and "risk_off" in vix_ind.signal:
-        triggers.append("VIX sous 15 → compression de vol, potentiel retour vers Risk-On.")
+        triggers.append(f"VIX sous {C.VIX_RISK_ON_MAX:.0f} → compression de vol, potentiel retour vers Risk-On.")
 
     move_ind = next((i for i in indicators if i.name == "MOVE"), None)
     if move_ind and "risk_on" in move_ind.signal:
-        triggers.append("MOVE au-dessus de 120 → stress rates, dégradation du régime.")
+        triggers.append(f"MOVE au-dessus de {C.MOVE_RISK_OFF_MIN:.0f} → stress rates, dégradation du régime.")
 
     return triggers[:5]  # cap at 5 for readability
 
@@ -472,9 +461,6 @@ def _build_narrative(
     move_ind = next((i for i in indicators if i.name == "MOVE"), None)
     if move_ind:
         vol_parts.append(f"MOVE {move_ind.value}")
-    pc_ind = next((i for i in indicators if i.name == "P/C Ratio"), None)
-    if pc_ind:
-        vol_parts.append(pc_ind.value)       # "Eq.P/C 0.69 · Idx.P/C 0.88"
     if vol_parts:
         parts.append(f"Volatilité : {' · '.join(vol_parts)} — régime {regime_name}.")
     else:
