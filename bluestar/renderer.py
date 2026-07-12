@@ -145,8 +145,10 @@ def _render_event_medium(e: MacroEvent) -> str:
       <div class="event-hdr">
         <span class="ev-time">{time_label}</span>
         <span class="ev-name">{_e(e.event_name)} [{_e(e.currency)}]</span>
-        <span class="ev-tag"><span class="badge badge-yellow">🟡 MODÉRÉ</span></span>
-        <span style="margin-left:auto;font-size:11px;color:var(--muted)">Impact : {_e(pairs)}</span>
+        <!-- MACRO-A3 FIX : Le flux FF n'a pas de "Medium". Ces events sont "High" à >48h. -->
+        <!-- Remplacement de "🟡 MODÉRÉ" par "🟡 ÉLEVÉ · >48h" pour honnêteté du risque. -->
+        <span class="ev-tag"><span class="badge badge-yellow">🟡 ÉLEVÉ · &gt;48h</span></span>
+        <span style="margin-left:auto;font-size:11px;color:var(--muted)">{_e(pairs)}</span>
       </div>
     </div>"""
 
