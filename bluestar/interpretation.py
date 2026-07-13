@@ -116,64 +116,65 @@ def build_interpretation(
 # ---------------------------------------------------------------------------
 # USD Assessment
 # ---------------------------------------------------------------------------
-def _usd_rate_driver(central_banks: list[CentralBankSnapshot]) -> str:
-    """Factor 1: Fed rate carry driver."""
+def _usd_rate_driver(central_banks: list[CentralBankSnapshot]) -> tuple[str, int]:
+    """Factor 1: Fed rate carry driver. Returns ``(text, polarity)``;
+    polarity is +1 soutien USD / -1 pression USD / 0 pas de lecture."""
     fed = next((cb for cb in central_banks if cb.name == "FED"), None)
     if fed and fed.stamp.ok:
         try:
             fed_rate = float(fed.rate_display.replace("%", "").replace(",", ".").strip().split("–")[0])
             if fed_rate > 3.0:
-                return f"Taux Fed élevés ({fed_rate:.2f}%) — soutien au USD via le carry."
+                return f"Taux Fed élevés ({fed_rate:.2f}%) — soutien au USD via le carry.", 1
             if fed_rate < 1.0:
-                return f"Taux Fed bas ({fed_rate:.2f}%) — pression sur le USD."
+                return f"Taux Fed bas ({fed_rate:.2f}%) — pression sur le USD.", -1
         except (ValueError, IndexError):
             pass
-    return ""
+    return "", 0
 
 
-def _usd_vix_driver(vix: Datum) -> str:
-    """Factor 2: Risk sentiment driver."""
+def _usd_vix_driver(vix: Datum) -> tuple[str, int]:
+    """Factor 2: Risk sentiment driver. Returns ``(text, polarity)``."""
     if not vix.available:
-        return ""
+        return "", 0
     if vix.value >= C.VIX_RISK_OFF_MIN:
-        return f"VIX élevé ({vix.value:.1f}) — flight-to-safety vers le USD (refuge)."
+        return f"VIX élevé ({vix.value:.1f}) — flight-to-safety vers le USD (refuge).", 1
     if vix.value <= C.VIX_RISK_ON_MAX:
-        return f"VIX bas ({vix.value:.1f}) — appétit de risque réduit la demande de USD refuge."
-    return ""
+        return f"VIX bas ({vix.value:.1f}) — appétit de risque réduit la demande de USD refuge.", -1
+    return "", 0
 
 
-def _usd_yield_driver(us10y: Datum) -> str:
-    """Factor 3: Yield attraction driver."""
+def _usd_yield_driver(us10y: Datum) -> tuple[str, int]:
+    """Factor 3: Yield attraction driver. Returns ``(text, polarity)``."""
     if not us10y.available:
-        return ""
+        return "", 0
     if us10y.value > 4.0:
-        return f"US10Y élevé ({us10y.value:.2f}%) — attractivité des rendements USD."
+        return f"US10Y élevé ({us10y.value:.2f}%) — attractivité des rendements USD.", 1
     if us10y.value < 3.0:
-        return f"US10Y bas ({us10y.value:.2f}%) — rendements USD moins attractifs."
-    return ""
+        return f"US10Y bas ({us10y.value:.2f}%) — rendements USD moins attractifs.", -1
+    return "", 0
 
 
-def _usd_dxy_driver(dxy: Datum) -> str:
-    """Factor 4: DXY level driver."""
+def _usd_dxy_driver(dxy: Datum) -> tuple[str, int]:
+    """Factor 4: DXY level driver. Returns ``(text, polarity)``."""
     if not dxy.available:
-        return ""
+        return "", 0
     d = dxy.value
     if d > 105:
-        return f"DXY à {d:.1f} — dollar structurellement fort (Dollar Smile potentiel)."
+        return f"DXY à {d:.1f} — dollar structurellement fort (Dollar Smile potentiel).", 1
     if d < 100:
-        return f"DXY à {d:.1f} — dollar faible, soutien aux actifs non-USD."
-    return f"DXY à {d:.1f} — dollar dans sa fourchette neutre."
+        return f"DXY à {d:.1f} — dollar faible, soutien aux actifs non-USD.", -1
+    return f"DXY à {d:.1f} — dollar dans sa fourchette neutre.", 0
 
 
-def _usd_strength_driver(usd_strength) -> str:
-    """Factor 5: Currency strength ranking driver."""
+def _usd_strength_driver(usd_strength) -> tuple[str, int]:
+    """Factor 5: Currency strength ranking driver. Returns ``(text, polarity)``."""
     if not usd_strength:
-        return ""
+        return "", 0
     if usd_strength.score >= 60:
-        return f"USD classé fort (score {usd_strength.score}/100) dans le ranking multi-devises."
+        return f"USD classé fort (score {usd_strength.score}/100) dans le ranking multi-devises.", 1
     if usd_strength.score <= 40:
-        return f"USD classé faible (score {usd_strength.score}/100) dans le ranking multi-devises."
-    return f"USD neutre (score {usd_strength.score}/100)."
+        return f"USD classé faible (score {usd_strength.score}/100) dans le ranking multi-devises.", -1
+    return f"USD neutre (score {usd_strength.score}/100).", 0
 
 
 def _assess_usd(
@@ -182,26 +183,35 @@ def _assess_usd(
     currency_strength: list[CurrencyStrength],
     regime: RegimeAssessment,
 ) -> tuple[str, list[str]]:
-    """Explain why the USD is strong or weak."""
+    """Explain why the USD is strong or weak.
+
+    Audit fix (BLUESTAR v9.x correction pass, July 2026): polarity used to be
+    re-derived by scanning each generated French sentence for hardcoded
+    keyword substrings (``strong_kw``/``weak_kw``). That scan was not
+    mutually exclusive and could double-count a single driver — e.g. the
+    DXY "faible" driver's text also contains "soutien" (it refers to support
+    for *non-USD* assets, not the USD), so it matched both the weak and the
+    strong keyword lists at once and was tallied on both sides. Each
+    ``_usd_*_driver`` helper already knows its own polarity from the branch
+    it took; that polarity is now returned directly instead of being
+    reconstructed from text. Display strings are unchanged.
+    """
     usd_strength = next((r for r in currency_strength if r.currency == "USD"), None)
 
-    drivers = [
-        d for d in [
-            _usd_rate_driver(central_banks),
-            _usd_vix_driver(market.gauge("VIX")),
-            _usd_yield_driver(market.gauge("US10Y")),
-            _usd_dxy_driver(market.gauge("DXY")),
-            _usd_strength_driver(usd_strength),
-        ] if d
+    factor_results = [
+        _usd_rate_driver(central_banks),
+        _usd_vix_driver(market.gauge("VIX")),
+        _usd_yield_driver(market.gauge("US10Y")),
+        _usd_dxy_driver(market.gauge("DXY")),
+        _usd_strength_driver(usd_strength),
     ]
+    drivers = [text for text, _ in factor_results if text]
 
     if not drivers:
         return "Données insuffisantes pour évaluer le USD [N/A].", []
 
-    strong_kw = ("fort", "élevé", "soutien", "attractiv")
-    weak_kw = ("faible", "bas", "pression", "réduit")
-    strong_signals = sum(1 for d in drivers if any(k in d for k in strong_kw))
-    weak_signals = sum(1 for d in drivers if any(k in d for k in weak_kw))
+    strong_signals = sum(1 for text, pol in factor_results if text and pol > 0)
+    weak_signals = sum(1 for text, pol in factor_results if text and pol < 0)
 
     if strong_signals > weak_signals:
         direction = "Le USD est actuellement soutenu par"
