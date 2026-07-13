@@ -575,7 +575,23 @@ def _render_section7_interpretation(ctx: BriefingContext) -> str:
     # Narrative chain
     chain_rows = ""
     for link in interp.narrative_chain:
-        arrow = "→" if link.direction == "positive" else "←" if link.direction == "negative" else "↔"
+        # Audit fix (BLUESTAR v9.x correction pass, July 2026): this used to
+        # re-derive the connector's orientation from link.direction
+        # ("positive"->"→", "negative"->"←", else "↔"). That conflates two
+        # different things: link.upstream/link.downstream already encode the
+        # FIXED, always-accurate pipeline sequence documented in
+        # interpretation.py::_build_narrative_chain (Growth -> Inflation ->
+        # Central Banks -> Rates -> Liquidity -> Volatility -> Sentiment ->
+        # Flows -> Currencies -> Assets); link.direction encodes the SIGN of
+        # that step's effect (amplifying vs dampening), not the direction of
+        # causality. Reversing the arrow on "negative" produced lines like
+        # "Liquidité ← Volatilité: ... liquidité abondante comprime la vol",
+        # which visually contradicts both the fixed pipeline order and the
+        # mechanism text itself (liquidity is the cause, volatility the
+        # effect, in every case). The connector now always reads left to
+        # right; link.direction remains on the object for a separate visual
+        # treatment (e.g. colour) if the sign still needs to be surfaced.
+        arrow = "→"
         chain_rows += (
             f'<div class="rank-row">'
             f'<span class="rank-lbl">{_e(link.upstream)}</span>'
