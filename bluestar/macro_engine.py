@@ -1009,6 +1009,45 @@ def build_macro_overlay(market: MarketSnapshot, regime: str,
 # ---------------------------------------------------------------------------
 # Step -- Risk scenarios
 # ---------------------------------------------------------------------------
+def _setup_regime_alignment(setup: AssetSetup) -> Optional[str]:
+    """Return "risk-on", "risk-off", or None for a priority setup.
+
+    AUDIT-FIX (institutional review, 13/07/2026): build_risk_scenarios used
+    to print every priority asset into *both* the BULL and the BEAR row
+    list with "-> mouvement aligne risk-on" / "risk-off" unconditionally --
+    i.e. the same asset, same direction, claimed aligned with two opposite
+    regimes in the same document. That is a direct self-contradiction, not
+    just an unproven claim.
+
+    This does not invent a new model. It reuses the only risk-regime signal
+    already load-bearing elsewhere in this file: C.SAFE_HAVENS (the set
+    build_currency_strength_ranking already nudges +10/-6 for regime-off/on)
+    for FX pairs, and the regime-tilt convention _compute_direction_edge
+    already applies to XAU/USD and C.INDICES. When neither leg of an FX
+    pair is a safe haven, or both are, this engine has no signal either way
+    -- so it returns None instead of guessing, and the caller falls back to
+    a neutral, non-contradictory line.
+    """
+    is_long = setup.bias_class == "long"
+    ccys = C.INSTRUMENT_CCYS.get(setup.asset)
+    if ccys:
+        base, quote = ccys
+        base_haven = base in C.SAFE_HAVENS
+        quote_haven = quote in C.SAFE_HAVENS
+        if base_haven == quote_haven:          # both or neither -> no signal here
+            return None
+        if base_haven:
+            # long the pair == long the haven leg == risk-off aligned
+            return "risk-off" if is_long else "risk-on"
+        # quote is the haven leg
+        return "risk-on" if is_long else "risk-off"
+    if setup.asset == "XAU/USD":
+        return "risk-off" if is_long else "risk-on"
+    if setup.asset in C.INDICES:
+        return "risk-on" if is_long else "risk-off"
+    return None
+
+
 def build_risk_scenarios(events: list[MacroEvent], regime_class: str,
                          priority: list[AssetSetup],
                          central_banks: Optional[list[CentralBankSnapshot]] = None
@@ -1068,20 +1107,39 @@ def build_risk_scenarios(events: list[MacroEvent], regime_class: str,
         "proba": proba,
         "source": proba_src,
     }
+    # AUDIT-FIX (institutional review, 13/07/2026): each priority asset is now
+    # placed in exactly one of bull_extra/bear_extra when _setup_regime_alignment
+    # can tell (see that function's docstring for why this isn't a new model,
+    # just reuse of C.SAFE_HAVENS / C.INDICES / the XAU convention already
+    # driving direction elsewhere in this file). When it can't tell, the
+    # asset gets one neutral line in *both* lists instead of the old
+    # "aligned risk-on" / "aligned risk-off" claims that directly
+    # contradicted each other for the same asset. Empty-priority fallback
+    # text is unchanged from before this fix.
+    bull_extra: list[str] = []
+    bear_extra: list[str] = []
+    for s in priority[:3]:
+        alignment = _setup_regime_alignment(s)
+        if alignment == "risk-on":
+            bull_extra.append(f"{s.asset} → mouvement aligné risk-on")
+        elif alignment == "risk-off":
+            bear_extra.append(f"{s.asset} → mouvement aligné risk-off")
+        else:
+            note = f"{s.asset} — sensibilité au régime non déterminable par ce modèle"
+            bull_extra.append(note)
+            bear_extra.append(note)
+
     bull = RiskScenario(
         title="Scénario BULL (risk-on)", proba="favori si données molles",
         trigger=bull_trig,
         trigger_source=anchor_src,
-        rows=[f"{s.asset} → mouvement aligné risk-on" for s in priority[:3]] or
-             ["USD faible → EUR/USD ↑ · Or ↑ · US10Y ↓"],
+        rows=bull_extra or ["USD faible → EUR/USD ↑ · Or ↑ · US10Y ↓"],
     )
     bear = RiskScenario(
         title="Scénario BEAR (risk-off)", proba="favori si données chaudes / choc",
         trigger=bear_trig,
         trigger_source=anchor_src,
-        rows=["Refuges : Or · JPY · CHF"] +
-             ([f"{s.asset} → mouvement aligné risk-off" for s in priority[:3]]
-              or ["USD fort → US10Y ↑ · JPY faible → Or ↓"]),
+        rows=["Refuges : Or · JPY · CHF"] + (bear_extra or ["USD fort → US10Y ↑ · JPY faible → Or ↓"]),
     )
     return risk_main, bull, bear, inval_txt
 
