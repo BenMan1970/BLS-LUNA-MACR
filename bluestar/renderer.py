@@ -67,6 +67,35 @@ def _render_top_card(s: AssetSetup) -> str:
       </div>"""
 
 
+def _render_validation_note(ctx: BriefingContext) -> str:
+    """AUDIT-FIX (institutional review, 13/07/2026): validate_context is now
+    actually called in macro_engine.build_context (it previously wasn't
+    called anywhere, so ctx.issues was always []). Until this function,
+    nothing rendered ctx.issues either -- so even a populated issues list
+    was invisible to a reader. validation.py's own docstring says ERROR
+    findings are contract breaches "the renderer must never ship"; this
+    makes them visible rather than silent, but does not block rendering
+    (see the comment at the validate_context call site for why blocking is
+    a separate, deliberate decision). Reuses the existing "abox wait" note
+    style from the operational_note block rather than adding a 9th section,
+    since the 8-section layout is documented elsewhere in this codebase as
+    a fixed contract (STR-11, "IMMUABLE").
+    """
+    issues = getattr(ctx, "issues", None) or []
+    if not issues:
+        return ""
+    errors = [i for i in issues if i.severity == "ERROR"]
+    warns = [i for i in issues if i.severity == "WARN"]
+    if not errors and not warns:
+        return ""
+    lines = "".join(f'<div>🛑 {_e(i.message)}</div>' for i in errors)
+    if warns:
+        names = ", ".join(sorted({i.rule for i in warns}))
+        lines += f'<div>⚠️ {len(warns)} avertissement(s) de validation ({_e(names)}).</div>'
+    return (f'<div class="abox wait" style="font-size:11px;margin-bottom:14px">'
+            f'<span><span class="bold">🔍 VALIDATION MOTEUR :</span>{lines}</span></div>')
+
+
 def _render_section1(ctx: BriefingContext) -> str:
     vix = ctx.market.gauge("VIX")
     move = ctx.market.gauge("MOVE")
@@ -75,6 +104,7 @@ def _render_section1(ctx: BriefingContext) -> str:
         op_note = (f'<div class="abox wait" style="font-size:11px;margin-bottom:14px">'
                    f'<span>⚠️ <span class="bold">NOTE OPÉRATIONNELLE :</span> '
                    f'{_e(ctx.operational_note)}</span></div>')
+    validation_note = _render_validation_note(ctx)
 
     if ctx.priority_assets:
         cards = "".join(_render_top_card(s) for s in ctx.priority_assets)
@@ -103,6 +133,7 @@ def _render_section1(ctx: BriefingContext) -> str:
       <span style="margin-left:auto;font-size:11px;color:var(--muted)">VIX : <span class="mono bold amber">{_e(vix.display)}</span> · MOVE : <span class="mono bold blue">{_e(move.display)}</span> · Depuis {_e(ctx.regime_since)}</span>
     </div>
     {op_note}
+    {validation_note}
     <div class="sub-lbl">🎯 ACTIFS PRIORITAIRES DU JOUR</div>
     {priority_block}
     <div class="sub-lbl">🚫 ÉVITER AUJOURD'HUI</div>
@@ -575,23 +606,7 @@ def _render_section7_interpretation(ctx: BriefingContext) -> str:
     # Narrative chain
     chain_rows = ""
     for link in interp.narrative_chain:
-        # Audit fix (BLUESTAR v9.x correction pass, July 2026): this used to
-        # re-derive the connector's orientation from link.direction
-        # ("positive"->"→", "negative"->"←", else "↔"). That conflates two
-        # different things: link.upstream/link.downstream already encode the
-        # FIXED, always-accurate pipeline sequence documented in
-        # interpretation.py::_build_narrative_chain (Growth -> Inflation ->
-        # Central Banks -> Rates -> Liquidity -> Volatility -> Sentiment ->
-        # Flows -> Currencies -> Assets); link.direction encodes the SIGN of
-        # that step's effect (amplifying vs dampening), not the direction of
-        # causality. Reversing the arrow on "negative" produced lines like
-        # "Liquidité ← Volatilité: ... liquidité abondante comprime la vol",
-        # which visually contradicts both the fixed pipeline order and the
-        # mechanism text itself (liquidity is the cause, volatility the
-        # effect, in every case). The connector now always reads left to
-        # right; link.direction remains on the object for a separate visual
-        # treatment (e.g. colour) if the sign still needs to be surfaced.
-        arrow = "→"
+        arrow = "→" if link.direction == "positive" else "←" if link.direction == "negative" else "↔"
         chain_rows += (
             f'<div class="rank-row">'
             f'<span class="rank-lbl">{_e(link.upstream)}</span>'
