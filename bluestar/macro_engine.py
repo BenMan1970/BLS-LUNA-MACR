@@ -1200,15 +1200,35 @@ def build_context(
             break
 
     # v9.0 regime assessment (delayed until cs is ready)
+    #
+    # Audit fix (BLUESTAR v9.x correction pass, July 2026): this used to be
+    # one try/except wrapping both calls, logged at "warning" with no
+    # traceback and no indication of which stage failed. In practice a
+    # regime_assessment failure and an interpretation failure look identical
+    # to an operator (both leave "interpretation" None), which previously
+    # masked at least three distinct root causes (missing module, signature
+    # mismatch, internal exception) behind the same ambiguous log line. Each
+    # stage is now isolated: interpretation is only attempted once
+    # regime_assessment has actually succeeded (it depends on it), and each
+    # failure is logged at "error" with a full traceback and an explicit
+    # statement of which layer degraded.
     regime_assessment = None
     interpretation = None
     if _regime_pending:
         try:
             regime_assessment = _assess_regime(market, central_banks, cs, ips, events, now_utc, pc_data)
-            from .interpretation import build_interpretation
-            interpretation = build_interpretation(market, central_banks, cs, ips, regime_assessment, priority, now_utc, pc_data)
         except Exception as exc:
-            logger.warning("Regime/Interpretation engine failed: %s", exc)
+            logger.error("Regime engine failed — regime_assessment stays [N/A]: %s",
+                        exc, exc_info=True)
+
+        if regime_assessment is not None:
+            try:
+                from .interpretation import build_interpretation
+                interpretation = build_interpretation(market, central_banks, cs, ips,
+                                                       regime_assessment, priority, now_utc, pc_data)
+            except Exception as exc:
+                logger.error("Interpretation engine failed — interpretation stays [N/A]: %s",
+                            exc, exc_info=True)
 
     return BriefingContext(
         generated_utc=now_utc,
