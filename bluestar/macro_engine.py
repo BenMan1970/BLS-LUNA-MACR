@@ -713,6 +713,7 @@ def select_priority_assets(
     mode: str,
     allow_proxy_levels: bool,
     cot_label: str = "[PROXY]",
+    regime_penalty: int = 0,
 ) -> tuple[list[AssetSetup], list[tuple[str, str]], Optional[str]]:
     """Score the universe, return (priority[<=3], avoid, no_setup_reason)."""
     smap = _strength_map(currency_strength)
@@ -741,12 +742,28 @@ def select_priority_assets(
             continue
 
         atr = market.atr.get(asset)
+
+        # AUDIT-FIX (institutional review, 13/07/2026): allow_proxy_levels=False
+        # used to only dock conviction by 1 in _build_setup -- the asset still
+        # received a full setup with entry/target/stop synthesized from a
+        # fixed-percentage-of-price proxy ATR (see compute_expected_move's
+        # PROXY_ATR_PCT branch). The parameter's name promises the opposite
+        # of what it did. An asset with no real 14-day ATR is now excluded
+        # outright, the same way a CRITICAL-event asset already is, instead
+        # of silently fabricating levels for it. Zero-regression for the
+        # default allow_proxy_levels=True: this branch never fires, so every
+        # existing caller that doesn't pass the flag is unaffected.
+        if not allow_proxy_levels and atr is None:
+            avoid.append((asset, "Pas d'ATR 14j réel disponible et allow_proxy_levels=False "
+                                 "— aucun niveau proxy n'est fabriqué pour cet actif."))
+            continue
+
         score = _compute_asset_score(edge, price, atr, ev)
         if score < min_score:
             continue
 
         setup = _build_setup(asset, direction, score, market, allow_proxy_levels,
-                             ips_by_ccy, ccys, ev, cot_label)
+                             ips_by_ccy, ccys, ev, cot_label, regime_penalty=regime_penalty)
         scored.append((score, setup))
 
     scored.sort(key=lambda t: t[0], reverse=True)
@@ -826,7 +843,7 @@ def _compute_rr_ratio(p: float, stop, sell, direction: int, atr) -> str:
 
 def _build_setup(asset: str, direction: int, score: float, market: MarketSnapshot,
                  allow_proxy_levels: bool, ips_by_ccy: dict, ccys, ev,
-                 cot_label: str = "[PROXY]") -> AssetSetup:
+                 cot_label: str = "[PROXY]", regime_penalty: int = 0) -> AssetSetup:
     price = market.price(asset)
     em_disp, em_method, atr = compute_expected_move(asset, market)
     p = price.value
@@ -841,12 +858,27 @@ def _build_setup(asset: str, direction: int, score: float, market: MarketSnapsho
         bias_class = action_class = "short"
         arrow, action, bias = "↓", "CHERCHER SHORT", "🟢/🟡 SHORT"
 
-    conviction = 2 + int(round(score * 2))
-    if levels_proxy or not allow_proxy_levels:
-        conviction = max(1, conviction - 1)
-
     pos_link, squeeze_risk, squeeze_cls, ips_summary = _build_setup_positioning(
         ccys, ips_by_ccy, cot_label)
+
+    # AUDIT-FIX (institutional review, 13/07/2026): the module docstring has
+    # always stated "the COT/IPS module only adjusts conviction, squeeze risk
+    # and sizing" and positioning_link even reads "-> conviction +/-, stop
+    # strict" -- but until this fix squeeze_cls only changed a CSS colour and
+    # regime_penalty (see determine_market_regime) was silently discarded
+    # upstream. Both are now applied. Sizing needs no separate change: it is
+    # already `compute_sizing_factor(conviction, market)`, so it inherits
+    # this automatically. Zero-regression: when there is no extreme IPS on a
+    # traded currency (squeeze_cls stays "green", the pre-existing default)
+    # and no imminent CRITICAL event (regime_penalty stays 0, the pre-
+    # existing default), conviction is computed exactly as before.
+    conviction = 2 + int(round(score * 2))
+    if levels_proxy or not allow_proxy_levels:
+        conviction -= 1                       # proxy / degraded levels
+    if squeeze_cls == "red":
+        conviction -= 1                       # extreme IPS on a traded currency
+    conviction -= regime_penalty              # CRITICAL event imminent, regime unsettled
+    conviction = max(1, conviction)
 
     color = "green" if score >= 0.7 and not levels_proxy else "yellow"
 
@@ -1105,7 +1137,12 @@ def build_context(
                 None, na_stamp("erreur interne pendant le calcul du surprise index (voir logs)"), "N/A",
             )
 
-    regime, regime_cls, regime_since, _pen = determine_market_regime(market, events)
+    # AUDIT-FIX (institutional review, 13/07/2026): this penalty used to be
+    # captured as `_pen` and never read again -- a CRITICAL event imminent
+    # in a non-off regime changed the headline regime text but had zero
+    # effect on any trade. It is now threaded through to conviction via
+    # select_priority_assets -> _build_setup (see regime_penalty below).
+    regime, regime_cls, regime_since, regime_penalty = determine_market_regime(market, events)
 
     # v9.0: Enhanced regime assessment using the multi-factor regime engine.
     # The original VIX-only regime is kept as the "headline" for backward
@@ -1174,7 +1211,7 @@ def build_context(
 
     priority, avoid, no_setup = select_priority_assets(
         market, regime_cls, central_banks, cs, ips, events, mode,
-        allow_proxy_levels, cot_label=cot_date,
+        allow_proxy_levels, cot_label=cot_date, regime_penalty=regime_penalty,
     )
     
     risk_main, bull, bear, inval_txt = build_risk_scenarios(
