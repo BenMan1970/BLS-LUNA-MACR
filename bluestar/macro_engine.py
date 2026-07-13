@@ -30,6 +30,20 @@ try:
     from . import institutional as _inst  # type: ignore
 except Exception:  # pragma: no cover
     _inst = None
+
+# AUDIT-FIX (institutional review, 13/07/2026): validation.py already existed
+# with real checks (max-3-assets, required fields, R:R sanity, directional
+# concentration, staleness...) but nothing in this pipeline ever imported or
+# called it -- BriefingContext.issues stayed [] unconditionally regardless of
+# what validate_context would have found. Wired in the same best-effort way
+# as every other optional layer in this file: a bug or missing dependency
+# inside validation.py degrades to an empty issue list (logged), it never
+# prevents a briefing from being produced.
+try:
+    from .validation import validate_context as _validate_context  # type: ignore
+except Exception:  # pragma: no cover
+    _validate_context = None
+
 from .oanda_data import fr_num
 from .external_sources import (
     fetch_central_bank_rates,
@@ -681,7 +695,29 @@ def _compute_asset_score(edge: float, price, atr, ev: list) -> float:
 def _apply_correlation_guard(
     scored: list[tuple[float, AssetSetup]],
 ) -> list[AssetSetup]:
-    """Select top assets with currency overlap guard (audit A4 fix)."""
+    """Select top assets with currency overlap guard (audit A4 fix,
+    tightened institutional review 13/07/2026).
+
+    AUDIT-FIX: the old rule only rejected a candidate that shared BOTH
+    currencies with an already-selected asset (len(overlap) >= 2). Two
+    different FX pairs essentially never share both legs, so this was close
+    to a no-op for cross-pair concentration: EUR/USD + GBP/USD + AUD/USD
+    (or, in the 13/07/2026 live briefing, GBP/JPY + USD/JPY) could all be
+    selected as "N diversified priority setups" while actually being the
+    same single-currency bet repeated. The primary pass now rejects on ANY
+    shared currency (len(overlap) >= 1): each currency drives the direction
+    of at most one setup in the primary selection. No new magic threshold.
+
+    The old "top up to >= 2, ignoring the guard entirely" relaxation would
+    otherwise undo this fix in exactly the case it targets (the best pick
+    uses up the dominant currency; every other decent candidate shares it).
+    It is kept -- forcing the desk down to a single idea on a single-theme
+    day is a real behaviour change of its own, and AssetSetup is a plain
+    (non-frozen) dataclass so labelling in place is safe -- but a backfilled
+    pick is no longer presented as if it were independent: its reason_macro
+    gets an explicit concentration note naming which already-selected asset
+    it shares a currency with. Nothing is silently misrepresented either way.
+    """
     priority: list[AssetSetup] = []
     selected_ccys: set[str] = set()
     for _score, setup in scored:
@@ -689,17 +725,30 @@ def _apply_correlation_guard(
             break
         ccys_set = set(C.INSTRUMENT_CCYS.get(setup.asset, ()))
         overlap = ccys_set & selected_ccys
-        if overlap and len(priority) > 0 and len(overlap) >= 2:
+        if overlap and len(priority) > 0:
             continue
         priority.append(setup)
         selected_ccys.update(ccys_set)
-    # Relax guard if too aggressive
+
     if len(priority) < min(2, C.MAX_PRIORITY_ASSETS):
+        selected_assets = {s.asset for s in priority}
         for _score, setup in scored:
             if len(priority) >= C.MAX_PRIORITY_ASSETS:
                 break
-            if setup not in priority:
-                priority.append(setup)
+            if setup.asset in selected_assets:
+                continue
+            ccys_set = set(C.INSTRUMENT_CCYS.get(setup.asset, ()))
+            shared = ccys_set & selected_ccys
+            if shared:
+                driver = "/".join(sorted(shared))
+                sibling = next((s.asset for s in priority
+                                if set(C.INSTRUMENT_CCYS.get(s.asset, ())) & shared), "?")
+                note = (f" ⚠️ Concentration : partage {driver} avec {sibling} "
+                        "— pas un second pari indépendant, même thème devise.")
+                setup.reason_macro = (setup.reason_macro or "") + note
+            priority.append(setup)
+            selected_ccys.update(ccys_set)
+            selected_assets.add(setup.asset)
     return priority
 
 
@@ -1325,7 +1374,7 @@ def build_context(
                 logger.error("Interpretation engine failed — interpretation stays [N/A]: %s",
                             exc, exc_info=True)
 
-    return BriefingContext(
+    ctx = BriefingContext(
         generated_utc=now_utc,
         generated_cet=now_cet,
         is_live_session=is_live,
@@ -1364,3 +1413,23 @@ def build_context(
         bear=bear,
         invalidation_principal=inval_txt,
     )
+
+    # AUDIT-FIX (institutional review, 13/07/2026): see the import comment
+    # above -- this is the call that was always missing. Note this makes
+    # ERROR findings *visible* (renderer.py now surfaces them, see that
+    # file's changelog), it does not make them *blocking*: a validation bug
+    # must never be able to take briefing generation down with it, so this
+    # stays best-effort like every other optional layer here. Making ERROR
+    # issues hard-block publication, which validation.py's own docstring
+    # arguably calls for ("the renderer must never ship" a contract breach),
+    # is a deliberate further step left for a separate decision -- it changes
+    # operational behaviour (a run that used to succeed could now abort)
+    # rather than just adding visibility, so it shouldn't be bundled in
+    # silently with this fix.
+    if _validate_context is not None:
+        try:
+            ctx.issues = _validate_context(ctx)
+        except Exception:
+            logger.error("validate_context failed — ctx.issues stays empty", exc_info=True)
+
+    return ctx
