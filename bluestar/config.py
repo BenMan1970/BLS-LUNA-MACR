@@ -99,6 +99,26 @@ VIX_RISK_OFF_MIN = 22.0    # VIX above -> stress / risk-off tilt
 MOVE_RISK_ON_MAX = 90.0    # MOVE below -> calm bond-vol / risk-on tilt
 MOVE_RISK_OFF_MIN = 120.0  # MOVE above -> stressed bond-vol / risk-off tilt
 
+# Minimum cumulative weight (see RegimeIndicator.weight) a signal bucket must
+# reach in regime_engine._classify() before it is allowed to steer the regime
+# decision tree. Set to 0.10, the weight of a single primary directional
+# indicator (MOVE/US10Y/DXY/Rate-Differential outright reading). Below this
+# bar a signal is treated as present-but-immaterial and cannot, on its own,
+# flip the regime.
+#
+# Audit fix (BLUESTAR v9.x correction pass, July 2026): the previous rule
+# ("has_X = scores.get(X, 0) > 0") let ANY signal with weight > 0 gate the
+# decision tree regardless of magnitude, so a single 0.05-weight confirmatory
+# indicator (P/C Ratio, COT Positioning, GDPNow) could unilaterally set the
+# regime even while outweighed 2:1 by a "neutral" reading from a primary
+# indicator (documented reproduction: VIX=15.03 -> neutral/0.10, P/C
+# complacence -> risk_on/0.05, dominant bucket is "neutral" yet the old code
+# returned "Risk-On" at a displayed 67% confidence). This directly violates
+# _pc_indicator's own documented contract ("Weight 0.05 — informative but
+# never regime-determining alone"). Heuristic value, not backtested — revisit
+# if/when the regime engine gets a proper calibration pass.
+REGIME_MATERIAL_SIGNAL_WEIGHT = 0.10
+
 # ----------------------------------------------------------------------------
 # Positioning / IPS heuristic (Non-Commercials only) -- always [PROXY]
 # ----------------------------------------------------------------------------
