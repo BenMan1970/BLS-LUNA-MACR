@@ -323,7 +323,26 @@ def assess_regime(
         ] if ind is not None
     ]
 
-    regime_name, category, confidence = _classify(indicators)
+    regime_name, category, confidence, opposing_signal = _classify(indicators)
+
+    # Audit fix ("Mixed sans contradiction"): every RegimeIndicator is built
+    # with supports=True hardcoded at construction time (the individual
+    # _xxx_indicator() helpers cannot know the final regime yet), so
+    # `contradicting` was structurally always empty regardless of what the
+    # data actually showed. _classify() now reports, alongside the regime,
+    # which single signal had to be absent/sub-material for that regime to
+    # be selected (derived directly from the existing has_X preconditions —
+    # no new heuristic). Any indicator carrying exactly that signal is
+    # flagged here as contradicting. Scope is deliberately narrow: only the
+    # unambiguous risk_on/risk_off/inflation/deflation antonym pairs used by
+    # the decision tree are covered; transitional/policy_divergence regimes
+    # with no clean antonym are left untouched (supports stays True, i.e.
+    # unchanged prior behaviour).
+    if opposing_signal is not None:
+        for ind in indicators:
+            if ind.signal == opposing_signal:
+                ind.supports = False
+
     supporting = [i for i in indicators if i.supports]
     contradicting = [i for i in indicators if not i.supports]
     triggers = _build_triggers(regime_name, events, indicators)
@@ -341,10 +360,43 @@ def assess_regime(
     )
 
 
-def _classify(indicators: list[RegimeIndicator]) -> tuple[str, str, float]:
-    """Classify the regime from the weighted indicator signals."""
+def _classify(indicators: list[RegimeIndicator]) -> tuple[str, str, float, Optional[str]]:
+    """Classify the regime from the weighted indicator signals.
+
+    Returns ``(regime_name, category, confidence, opposing_signal)``.
+
+    ``opposing_signal`` is the ``RegimeIndicator.signal`` value that had to
+    be absent/sub-material for this particular regime to be selected (e.g.
+    "risk_off" for a "Risk-On" regime). It is derived directly from the
+    ``has_X`` preconditions of the branch that fired below — it is not a new
+    independent judgement — and lets the caller (``assess_regime``) flag any
+    indicator carrying that signal as contradicting instead of the previous
+    hardcoded "always supports" behaviour. ``None`` for regimes without a
+    single clean antonym (Mixed / Selective, Dollar Smile, Policy
+    Divergence): those are left exactly as before.
+
+    Audit fix (BLUESTAR v9.x correction pass, July 2026) — two independent
+    defects in the previous implementation:
+
+    1. ``has_X = scores.get(X, 0) > 0`` tested mere *presence* of a signal,
+       not its materiality. A single 0.05-weight confirmatory indicator
+       (P/C Ratio, COT, GDPNow) could therefore single-handedly set
+       has_risk_on/has_risk_off even when heavily outweighed by a "neutral"
+       reading from a primary indicator, in violation of _pc_indicator's own
+       documented contract. Fixed by requiring each bucket's cumulative
+       weight to clear ``config.REGIME_MATERIAL_SIGNAL_WEIGHT`` before it
+       can gate the tree.
+    2. The confidence figure returned to the caller was
+       ``scores[dominant] / total_weight`` — the market share of whichever
+       bucket happened to be the largest, even when that bucket was NOT the
+       one that determined the regime (e.g. "neutral" dominant by weight,
+       "risk_on" determining the regime via defect #1). Fixed by reporting
+       the normalised margin between the top and second signal instead,
+       which collapses toward zero exactly when the vote is contested —
+       the previous formula did not.
+    """
     if not indicators:
-        return "Mixed / Selective", "transitional", 0.0
+        return "Mixed / Selective", "transitional", 0.0, None
 
     # Weighted vote
     scores: dict[str, float] = {}
@@ -354,55 +406,67 @@ def _classify(indicators: list[RegimeIndicator]) -> tuple[str, str, float]:
         total_weight += ind.weight
 
     if total_weight == 0:
-        return "Mixed / Selective", "transitional", 0.0
+        return "Mixed / Selective", "transitional", 0.0, None
 
-    # Find dominant signal
+    # Find dominant signal (used only for the internal 0.4 dominance
+    # threshold below — kept as pure "market share" for that purpose).
     dominant = max(scores, key=scores.get)
     dominant_score = scores[dominant] / total_weight
 
-    # Map signal combinations to regime names
-    has_risk_on = scores.get("risk_on", 0) > 0
-    has_risk_off = scores.get("risk_off", 0) > 0
-    has_inflation = scores.get("inflation", 0) > 0
-    has_deflation = scores.get("deflation", 0) > 0
-    has_dollar_strong = scores.get("dollar_strong", 0) > 0
-    has_policy_div = scores.get("policy_divergence", 0) > 0
+    # Confidence actually returned/displayed: margin between the top signal
+    # and its runner-up, normalised by total weight. Honest about contested
+    # votes (two near-equal opposing buckets -> confidence near zero) in a
+    # way the raw market-share figure was not.
+    sorted_weights = sorted(scores.values(), reverse=True)
+    top1 = sorted_weights[0]
+    top2 = sorted_weights[1] if len(sorted_weights) > 1 else 0.0
+    confidence = (top1 - top2) / total_weight
 
-    # Decision tree
+    # Map signal combinations to regime names. A bucket only "counts" once
+    # its cumulative weight clears the materiality bar (see docstring).
+    has_risk_on = scores.get("risk_on", 0) >= C.REGIME_MATERIAL_SIGNAL_WEIGHT
+    has_risk_off = scores.get("risk_off", 0) >= C.REGIME_MATERIAL_SIGNAL_WEIGHT
+    has_inflation = scores.get("inflation", 0) >= C.REGIME_MATERIAL_SIGNAL_WEIGHT
+    has_deflation = scores.get("deflation", 0) >= C.REGIME_MATERIAL_SIGNAL_WEIGHT
+    has_dollar_strong = scores.get("dollar_strong", 0) >= C.REGIME_MATERIAL_SIGNAL_WEIGHT
+    has_policy_div = scores.get("policy_divergence", 0) >= C.REGIME_MATERIAL_SIGNAL_WEIGHT
+
+    # Decision tree (unchanged branch structure/order; only the guards above
+    # and the two return values documented in the docstring changed).
     if has_risk_off and has_risk_on:
         # Contradictory signals
         if dominant_score > 0.4:
             if dominant == "risk_off":
-                return "Late Cycle", "risk_off", dominant_score
+                return "Late Cycle", "risk_off", confidence, "risk_on"
             else:
-                return "Mixed / Selective", "transitional", dominant_score
-        return "Mixed / Selective", "transitional", dominant_score
+                return "Mixed / Selective", "transitional", confidence, None
+        return "Mixed / Selective", "transitional", confidence, None
 
     if has_risk_off and not has_risk_on:
         if has_inflation:
-            return "Late Cycle", "risk_off", dominant_score
-        return "Risk-Off", "risk_off", dominant_score
+            return "Late Cycle", "risk_off", confidence, "risk_on"
+        return "Risk-Off", "risk_off", confidence, "risk_on"
 
     if has_risk_on and not has_risk_off:
         if has_inflation:
-            return "Reflation", "transitional", dominant_score
+            return "Reflation", "transitional", confidence, "risk_off"
         if has_deflation:
-            return "Goldilocks", "risk_on", dominant_score
-        return "Risk-On", "risk_on", dominant_score
+            return "Goldilocks", "risk_on", confidence, "risk_off"
+        return "Risk-On", "risk_on", confidence, "risk_off"
 
     if has_policy_div and has_dollar_strong:
-        return "Policy Divergence", "policy_divergence", dominant_score
+        return "Policy Divergence", "policy_divergence", confidence, None
 
     if has_dollar_strong and not has_risk_on:
-        return "Dollar Smile", "policy_divergence", dominant_score
+        return "Dollar Smile", "policy_divergence", confidence, None
 
     if has_deflation and not has_risk_on:
-        return "Disinflation", "transitional", dominant_score
+        return "Disinflation", "transitional", confidence, "risk_on"
 
     if has_inflation and not has_risk_on and not has_risk_off:
-        return "Reflation", "transitional", dominant_score
+        return "Reflation", "transitional", confidence, "risk_off"
 
-    return "Mixed / Selective", "transitional", dominant_score
+    return "Mixed / Selective", "transitional", confidence, None
 
 
 def _build_triggers(regime_name: str, events: list, indicators: list[RegimeIndicator]) -> list[str]:
