@@ -1194,6 +1194,22 @@ def build_context(
     cs = _oanda_strength_scores(market, cs)   # BLUESTAR-PATCH v10.0
     high, medium, scenarios = build_catalysts(events)
 
+    # Audit fix (residual regime mismatch): regime_assessment only needs
+    # market/central_banks/cs/ips/events/pc_data, all of which are ready
+    # here — so it's computed now, BEFORE build_macro_overlay, instead of
+    # after priority/setups. This lets Section 3's "Thème macro" cite the
+    # same reconciled regime name as Section 1 and Section 6, rather than
+    # the stale VIX-only `regime` string (previously the last place in the
+    # document still showing e.g. "MIXTE" while everywhere else said
+    # "Mixed / Selective").
+    regime_assessment = None
+    if _regime_pending:
+        try:
+            regime_assessment = _assess_regime(market, central_banks, cs, ips, events, now_utc, pc_data)
+        except Exception as exc:
+            logger.warning("Regime engine failed: %s", exc)
+    headline_regime_name = regime_assessment.name if regime_assessment is not None else regime
+
     # Liquidity / funding stress — SOFR−EFFR spread (bp) via FRED, else [N/A].
     # NOTE: TEDRATE was discontinued (2022-01-31); the gauge is now the
     # SOFR−EFFR spread expressed in basis points. Thresholds below (8 bp /
@@ -1212,7 +1228,7 @@ def build_context(
     else:
         liquidity_msg = "[N/A] — spread SOFR−EFFR non sourcé."
 
-    overlay = build_macro_overlay(market, regime, upcoming, liquidity_msg, pc_data)
+    overlay = build_macro_overlay(market, headline_regime_name, upcoming, liquidity_msg, pc_data)
     
     # MACRO-B3 FIX: le suffixe [PROXY · scaling linéaire] apparaît dès qu'un chemin
     # heuristique (overrides/scrape) alimente l'IPS. "OBSERVÉ" nu est réservé
@@ -1253,16 +1269,16 @@ def build_context(
         if positioning_alert:
             break
 
-    # v9.0 regime assessment (delayed until cs is ready)
-    regime_assessment = None
+    # v9.0 interpretation layer (needs `priority`, computed just above; the
+    # regime assessment itself was already computed earlier — see note near
+    # build_macro_overlay).
     interpretation = None
-    if _regime_pending:
+    if regime_assessment is not None:
         try:
-            regime_assessment = _assess_regime(market, central_banks, cs, ips, events, now_utc, pc_data)
             from .interpretation import build_interpretation
             interpretation = build_interpretation(market, central_banks, cs, ips, regime_assessment, priority, now_utc, pc_data)
         except Exception as exc:
-            logger.warning("Regime/Interpretation engine failed: %s", exc)
+            logger.warning("Interpretation engine failed: %s", exc)
 
     return BriefingContext(
         generated_utc=now_utc,
