@@ -62,17 +62,34 @@ except Exception:  # pragma: no cover
     _ST_OK = False
 
 # ---------------------------------------------------------------------------
-# Currency strength bridge (requests-based, no oandapyV20)
+# Currency strength engine (requests-based, no oandapyV20)
 # BLUESTAR-PATCH v10.0
+#
+# AUDIT-FIX (14/07/2026): oanda_strength.py's own docstring documents that
+# oanda_strength_bridge.py was consolidated INTO oanda_strength.py and no
+# longer exists as a separate module. The import below used to point at the
+# now-deleted bridge module; that import silently failed (caught by the
+# except below), which forced _STRENGTH_OK = False on every run and made
+# build_market_snapshot() never attach `currency_strength_oanda` to the
+# snapshot. Downstream, macro_engine._oanda_strength_scores() reads that
+# attribute via getattr(..., None) and falls back to the CB-bias [PROXY]
+# ranking whenever it's absent — so the entire z-score-rescaled Oanda
+# strength engine (PAIRS/MAJORS/_aggregate in oanda_strength.py) was dead
+# code in production, and every currency-strength-driven setup was quietly
+# running on the qualitative [PROXY] fallback instead. Fixed by importing
+# from the consolidated module. Contract unchanged (see oanda_strength.py:
+# "Public contract (unchanged — macro_engine.py needs no changes)") —
+# compute_scores(access_token) -> Optional[Dict[str, float]], so nothing
+# downstream of this import needs to change.
 # ---------------------------------------------------------------------------
 try:
-    from .oanda_strength_bridge import compute_scores as _bridge_compute_scores
+    from .oanda_strength import compute_scores as _strength_compute_scores
     _STRENGTH_OK = True
 except Exception as _imp_exc:  # pragma: no cover
     _STRENGTH_OK = False
-    _bridge_compute_scores = None  # type: ignore
+    _strength_compute_scores = None  # type: ignore
     logger.warning(
-        "oanda_strength_bridge import failed — currency strength will be [PROXY]: %s",
+        "oanda_strength import failed — currency strength will be [PROXY]: %s",
         _imp_exc,
     )
 
@@ -552,24 +569,24 @@ def build_market_snapshot(
         snap.gauges["SURPRISE_IDX"] = Datum(
             None, na_stamp("source sans cle API"), "N/A")
 
-    # BLUESTAR-PATCH v10.0: attach Oanda price-derived currency strength via the
-    # requests-based bridge. macro_engine reads this attribute via getattr;
-    # absent/None → documented CB-bias [PROXY] fallback.
+    # BLUESTAR-PATCH v10.0: attach Oanda price-derived currency strength via
+    # the requests-based oanda_strength engine. macro_engine reads this
+    # attribute via getattr; absent/None → documented CB-bias [PROXY] fallback.
     # models.py is untouched (optional attribute set via assignment).
     # Token resolution is broadened here because _oanda_creds() (→ api_key)
     # only checks OANDA_API_KEY, but the strength source may be under
     # OANDA_ACCESS_TOKEN. Every outcome is logged.
     if not _STRENGTH_OK:
-        logger.warning("Oanda strength bridge unavailable at import — CB-bias [PROXY]")
+        logger.warning("Oanda strength engine unavailable at import — CB-bias [PROXY]")
     else:
         _strength_token = _strength_access_token() or api_key
         if not _strength_token:
-            logger.warning("No Oanda token for strength bridge — CB-bias [PROXY]")
+            logger.warning("No Oanda token for strength engine — CB-bias [PROXY]")
         else:
             try:
-                _scores = _bridge_compute_scores(_strength_token)
-            except Exception as _exc:  # defensive: bridge should not raise
-                logger.warning("Oanda strength bridge raised — CB-bias [PROXY]: %s", _exc)
+                _scores = _strength_compute_scores(_strength_token)
+            except Exception as _exc:  # defensive: compute_scores should not raise
+                logger.warning("Oanda strength engine raised — CB-bias [PROXY]: %s", _exc)
                 _scores = None
             if _scores:
                 snap.currency_strength_oanda = _scores
