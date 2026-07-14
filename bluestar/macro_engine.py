@@ -657,6 +657,25 @@ def _strength_map(cs: list[CurrencyStrength]) -> dict[str, int]:
     return {r.currency: r.score for r in cs}
 
 
+def _strength_source_map(cs: list[CurrencyStrength]) -> dict[str, bool]:
+    """True where a currency's score came from live Oanda D1 data.
+
+    AUDIT-FIX (15/07/2026): companion to ``_strength_map``. Before this,
+    ``_strength_map`` collapsed each ``CurrencyStrength`` row down to just
+    its int score, discarding the ``driver`` field that distinguishes a
+    live Oanda D1 row (``driver == "Oanda D1"``, set in
+    ``_oanda_strength_scores``) from a CB-bias ``[PROXY]`` fallback row
+    (``driver == ""``, set in ``build_currency_strength_ranking``). That
+    meant ``_build_setup`` had no way to know the real source of the data
+    behind an asset's directional edge, and hardcoded the "[PROXY]" tag on
+    every setup card regardless — mislabeling genuinely live PRIMARY data
+    as an approximation. This map restores that visibility without
+    changing ``_strength_map`` itself (zero-regression: existing caller
+    unaffected, this is purely additive).
+    """
+    return {r.currency: (r.driver == "Oanda D1") for r in cs}
+
+
 _PRICE_RELIABILITY_WEIGHT = {
     Reliability.PRIMARY:  1.00,
     Reliability.FALLBACK: 0.85,
@@ -664,23 +683,34 @@ _PRICE_RELIABILITY_WEIGHT = {
 }
 
 
-def _compute_direction_edge(asset: str, ccys, smap: dict, regime_class: str) -> tuple[int, float]:
-    """Compute directional edge for an asset from currency strength or regime tilt."""
+def _compute_direction_edge(
+    asset: str, ccys, smap: dict, regime_class: str,
+    smap_src: Optional[dict] = None,
+) -> tuple[int, float, bool]:
+    """Compute directional edge for an asset from currency strength or regime tilt.
+
+    Returns ``(direction, edge, source_is_live)``. ``source_is_live`` is
+    True only when *both* legs of the pair are scored from live Oanda D1
+    data (AUDIT-FIX 15/07/2026 — see ``_strength_source_map``); regime-tilt
+    edges (commodities/indices, no ``ccys``) are never Oanda-sourced and
+    stay False, matching their existing "[PROXY]" label unchanged.
+    """
     if ccys:
         base, quote = ccys
         diff = smap.get(base, 50) - smap.get(quote, 50)
         edge = abs(diff) / 50.0
         direction = 1 if diff > 0 else -1 if diff < 0 else 0
-        return direction, edge
+        source_is_live = bool(smap_src) and smap_src.get(base, False) and smap_src.get(quote, False)
+        return direction, edge, source_is_live
     # Commodities / indices: weak regime tilt only
     if regime_class == "regime-off":
         if asset == "XAU/USD":
-            return 1, 0.25
+            return 1, 0.25, False
         if asset in C.INDICES:
-            return -1, 0.25
+            return -1, 0.25, False
     elif regime_class == "regime-on" and asset in C.INDICES:
-        return 1, 0.2
-    return 0, 0.0
+        return 1, 0.2, False
+    return 0, 0.0, False
 
 
 def _compute_asset_score(edge: float, price, atr, ev: list) -> float:
@@ -730,6 +760,7 @@ def select_priority_assets(
 ) -> tuple[list[AssetSetup], list[tuple[str, str]], Optional[str]]:
     """Score the universe, return (priority[<=3], avoid, no_setup_reason)."""
     smap = _strength_map(currency_strength)
+    smap_src = _strength_source_map(currency_strength)  # AUDIT-FIX 15/07/2026
     ips_by_ccy = {r.currency: r for r in ips}
     min_score = C.MODE_SELECTION_MIN_SCORE.get(mode, 0.5)
 
@@ -750,7 +781,8 @@ def select_priority_assets(
             avoid.append((asset, f"News binaire imminente ({ename}) — attendre la publication."))
             continue
 
-        direction, edge = _compute_direction_edge(asset, ccys, smap, regime_class)
+        direction, edge, strength_is_live = _compute_direction_edge(
+            asset, ccys, smap, regime_class, smap_src)
         if direction == 0:
             continue
 
@@ -760,7 +792,7 @@ def select_priority_assets(
             continue
 
         setup = _build_setup(asset, direction, score, market, allow_proxy_levels,
-                             ips_by_ccy, ccys, ev, cot_label)
+                             ips_by_ccy, ccys, ev, cot_label, strength_is_live)
         scored.append((score, setup))
 
     scored.sort(key=lambda t: t[0], reverse=True)
@@ -877,7 +909,7 @@ def _compute_rr_ratio(p: float, stop, sell, direction: int, atr) -> str:
 
 def _build_setup(asset: str, direction: int, score: float, market: MarketSnapshot,
                  allow_proxy_levels: bool, ips_by_ccy: dict, ccys, ev,
-                 cot_label: str = "[PROXY]") -> AssetSetup:
+                 cot_label: str = "[PROXY]", strength_is_live: bool = False) -> AssetSetup:
     price = market.price(asset)
     em_disp, em_method, atr = compute_expected_move(asset, market)
     p = price.value
@@ -911,10 +943,20 @@ def _build_setup(asset: str, direction: int, score: float, market: MarketSnapsho
     inval_level = (f"clôture {'sous le' if direction > 0 else 'au-dessus du'} stop "
                    f"{_level(stop, asset)}" if stop is not None else "[N/A]")
 
+    # AUDIT-FIX (15/07/2026): this tag used to hardcode "[PROXY]" regardless
+    # of the actual data source behind the directional edge, so a setup
+    # built from live Oanda D1 currency strength (PRIMARY) was permanently
+    # mislabeled as an approximation. It now reflects the real source
+    # reported by _compute_direction_edge / _strength_source_map: "[Oanda
+    # D1]" when both currency legs are live-scored, "[PROXY]" when either
+    # leg fell back to CB-bias, and unchanged "[PROXY]" for the regime-tilt
+    # case (commodities/indices have no currency-strength source at all).
+    momentum_tag = "[Oanda D1]" if (ccys and strength_is_live) else "[PROXY]"
+
     return AssetSetup(
         asset=asset, color=color, bias=bias, bias_class=bias_class,
         reason_short=("momentum prix D1" if ccys else "tilt de régime"),
-        reason_macro=("Différentiel de momentum prix D1 [PROXY] favorable"
+        reason_macro=(f"Différentiel de momentum prix D1 {momentum_tag} favorable"
                       if ccys else "Biais de régime (refuge / risque) [PROXY]"),
         conviction=conviction, action=action, action_class=action_class, arrow=arrow,
         zone_buy=_level(buy, asset) if buy is not None else "[N/A]",
