@@ -28,9 +28,7 @@ def _e(text: object) -> str:
 
 def _stars(n: int) -> str:
     n = max(1, min(5, int(n)))
-    filled = "★" * n
-    empty = "☆" * (5 - n)
-    return f'<span class="mono" style="color:var(--royal);letter-spacing:2px">{filled}{empty}</span>'
+    return f'<span class="stars-{n}"></span>'
 
 
 def _cs_source_tag(currency_strength: list) -> str:
@@ -69,9 +67,37 @@ def _render_top_card(s: AssetSetup) -> str:
       </div>"""
 
 
+# Category (regime_engine.RegimeAssessment) -> existing CSS bucket used by
+# ctx.regime_class ("regime-on" / "regime-off" / "regime-mix").
+_CATEGORY_TO_CSS = {
+    "risk_on": "regime-on",
+    "risk_off": "regime-off",
+    "transitional": "regime-mix",
+    "policy_divergence": "regime-mix",
+}
+
+
+def _headline_regime(ctx: BriefingContext) -> tuple[str, str]:
+    """Single source of truth for the Section 1 headline (audit fix, problem 1).
+
+    Previously Section 1 always read the VIX-only ``ctx.regime`` while
+    Section 6 independently displayed the multi-factor ``regime_assessment``
+    — the two could (and did) disagree in the same document (e.g. "MIXTE"
+    vs "Reflation"). Section 1 now prefers the multi-factor assessment
+    (which itself applies the confidence floor — see regime_engine.py) and
+    falls back to the legacy VIX-only regime only when no assessment could
+    be computed for this run.
+    """
+    ra = getattr(ctx, "regime_assessment", None)
+    if ra is not None and ra.name:
+        return ra.name, _CATEGORY_TO_CSS.get(ra.category, "regime-mix")
+    return ctx.regime, ctx.regime_class
+
+
 def _render_section1(ctx: BriefingContext) -> str:
     vix = ctx.market.gauge("VIX")
     move = ctx.market.gauge("MOVE")
+    headline_regime, headline_class = _headline_regime(ctx)
     op_note = ""
     if ctx.operational_note:
         op_note = (f'<div class="abox wait" style="font-size:11px;margin-bottom:14px">'
@@ -82,8 +108,8 @@ def _render_section1(ctx: BriefingContext) -> str:
         cards = "".join(_render_top_card(s) for s in ctx.priority_assets)
         priority_block = f'<div class="top-grid">{cards}</div>'
     else:
-        priority_block = (f'<div class="no-setup">'
-                          f'<div class="no-setup-title">Aucun setup prioritaire activé</div>'
+        priority_block = (f'<div class="no-setup"><div class="no-setup-icon">🛑</div>'
+                          f'<div class="no-setup-title">Aucun actif ne réunit les critères aujourd\'hui</div>'
                           f'<div class="no-setup-sub">{_e(ctx.no_setup_reason or "")}</div></div>')
 
     if ctx.avoid_assets:
@@ -101,7 +127,7 @@ def _render_section1(ctx: BriefingContext) -> str:
   <div class="sec-body">
     <div class="regime-bar">
       <span class="regime-lbl">Régime du jour</span>
-      <span class="regime-val {ctx.regime_class}">{_e(ctx.regime)}</span>
+      <span class="regime-val {headline_class}">{_e(headline_regime)}</span>
       <span style="margin-left:auto;font-size:11px;color:var(--muted)">VIX : <span class="mono bold amber">{_e(vix.display)}</span> · MOVE : <span class="mono bold blue">{_e(move.display)}</span> · Depuis {_e(ctx.regime_since)}</span>
     </div>
     {op_note}
@@ -117,6 +143,8 @@ def _render_section1(ctx: BriefingContext) -> str:
 # Section 2
 # ---------------------------------------------------------------------------
 def _render_event_high(e: MacroEvent, scn: dict) -> str:
+    # Audit A1 fix: display the date alongside the time to avoid false
+    # intraday imminence, especially on weekends.
     date_str = e.date_display if hasattr(e, 'date_display') and e.date_display else ""
     time_label = f"{_e(e.time_display)}" if not date_str else f"{_e(date_str)} · {_e(e.time_display)}"
     return f"""
@@ -137,6 +165,7 @@ def _render_event_high(e: MacroEvent, scn: dict) -> str:
 
 def _render_event_medium(e: MacroEvent) -> str:
     pairs = " · ".join(e.pairs_affected[:4]) if e.pairs_affected else "—"
+    # Audit A1 fix: display the date alongside the time.
     date_str = e.date_display if hasattr(e, 'date_display') and e.date_display else ""
     time_label = f"{_e(e.time_display)}" if not date_str else f"{_e(date_str)} · {_e(e.time_display)}"
     return f"""
@@ -144,6 +173,8 @@ def _render_event_medium(e: MacroEvent) -> str:
       <div class="event-hdr">
         <span class="ev-time">{time_label}</span>
         <span class="ev-name">{_e(e.event_name)} [{_e(e.currency)}]</span>
+        <!-- MACRO-A3 FIX : Le flux FF n'a pas de "Medium". Ces events sont "High" à >48h. -->
+        <!-- Remplacement de "🟡 MODÉRÉ" par "🟡 ÉLEVÉ · >48h" pour honnêteté du risque. -->
         <span class="ev-tag"><span class="badge badge-yellow">🟡 ÉLEVÉ · &gt;48h</span></span>
         <span style="margin-left:auto;font-size:11px;color:var(--muted)">{_e(pairs)}</span>
       </div>
@@ -151,6 +182,12 @@ def _render_event_medium(e: MacroEvent) -> str:
 
 
 def _render_section2(ctx: BriefingContext) -> str:
+    # Audit A1 fix: adapt the section title to the actual time context.
+    # On a weekend or outside live session, events are "à venir" not "du jour".
+    # C2 (certification, cause racine R-2): the section title is a Contract
+    # invariant (table 1.5 / STR-11, IMMUABLE) and MUST stay constant. The
+    # live/closed nuance is carried by the sub-title only, which the Contract
+    # does not constrain.
     sec_title = "Catalyseurs du Jour"
     if ctx.is_live_session:
         sec_sub = "News qui peuvent invalider un setup"
@@ -319,7 +356,7 @@ def _render_asset_card(s: AssetSetup) -> str:
         <span class="asset-price">{_e(s.price_display)}</span>
       </div>
       <div class="asset-fields">
-        <div><div class="field-lbl">1. Biais fondamental</div><div class="field-val {s.bias_class}">{_e(s.bias)} — {_e(s.reason_macro)}</div></div>
+        <div><div class="field-lbl">1. Biais momentum (prix D1)</div><div class="field-val {s.bias_class}">{_e(s.bias)} — {_e(s.reason_macro)}</div></div>
         <div><div class="field-lbl">2. Zone d'achat macro</div><div class="field-val green">{_e(s.zone_buy)} <span style="font-size:9px;color:var(--muted);font-weight:400">{_e(s.origin_buy)}</span></div></div>
         <div><div class="field-lbl">3. Zone de vente macro</div><div class="field-val red">{_e(s.zone_sell)} <span style="font-size:9px;color:var(--muted);font-weight:400">{_e(s.origin_sell)}</span></div></div>
         <div><div class="field-lbl">4. Stop macro</div><div class="field-val red">{_e(s.stop)} <span style="font-size:9px;color:var(--muted);font-weight:400">{_e(s.origin_stop)}</span></div></div>
@@ -337,8 +374,8 @@ def _render_section4(ctx: BriefingContext) -> str:
     if ctx.priority_assets:
         body = "".join(_render_asset_card(s) for s in ctx.priority_assets)
     else:
-        body = (f'<div class="no-setup">'
-                f'<div class="no-setup-title">Aucune fiche actif générée</div>'
+        body = (f'<div class="no-setup"><div class="no-setup-icon">🛑</div>'
+                f'<div class="no-setup-title">Aucune fiche actif aujourd\'hui</div>'
                 f'<div class="no-setup-sub">{_e(ctx.no_setup_reason or "")}</div></div>')
     return f"""
 <div class="section">
@@ -386,6 +423,10 @@ def _render_section5(ctx: BriefingContext) -> str:
     if ctx.priority_assets:
         recap = "".join(_render_recap_row(s) for s in ctx.priority_assets)
     else:
+        # C2 (certification, cause racine R-2): in the no-setup case Sections 1
+        # and 4 emit zero cards/fiches; the recap <tbody> must therefore contain
+        # zero data rows so that STR-20 (top-card = asset = recap rows) holds
+        # (0 = 0 = 0). The no-setup message already appears in Sections 1 and 4.
         recap = ""
 
     return f"""
@@ -434,6 +475,10 @@ def _render_section6_regime(ctx: BriefingContext) -> str:
     """Render the multi-factor regime assessment section."""
     ra = getattr(ctx, 'regime_assessment', None)
     if ra is None:
+        # C2 (certification, cause racine R-2): Section 6 is a Contract-mandated
+        # section (table 1.5 / STR-11, IMMUABLE). It must ALWAYS be emitted; when
+        # the regime assessment is unavailable it degrades to a present [N/A]
+        # block instead of disappearing (preserving the 8-section structure).
         return """
 <div class="section">
   <div class="sec-hdr"><div class="sec-num">6</div><div class="sec-ttl">Moteur de Régime</div><div class="sec-sub">Identification multi-facteur du régime de marché</div></div>
@@ -441,28 +486,31 @@ def _render_section6_regime(ctx: BriefingContext) -> str:
     <div class="abox wait" style="font-size:12px"><span>[N/A] — évaluation de régime indisponible pour cette génération.</span></div>
   </div>
 </div>"""
-
+    
+    # Supporting indicators
     supporting_rows = ""
     for ind in ra.supporting:
         supporting_rows += (
             f'<div class="rank-row"><span class="rank-lbl">✅ {_e(ind.name)}</span>'
             f'<span style="font-size:11px;color:var(--green)">{_e(ind.value)} — {_e(ind.note)}</span></div>'
         )
-
+    
+    # Contradicting indicators
     contradicting_rows = ""
     for ind in ra.contradicting:
         contradicting_rows += (
             f'<div class="rank-row"><span class="rank-lbl">❌ {_e(ind.name)}</span>'
             f'<span style="font-size:11px;color:var(--red)">{_e(ind.value)} — {_e(ind.note)}</span></div>'
         )
-
+    
+    # Transition triggers
     trigger_rows = ""
     for t in ra.transition_triggers:
         trigger_rows += f'<div class="risk-row">→ {_e(t)}</div>'
-
+    
     confidence_pct = int(ra.confidence * 100)
     conf_color = "green" if ra.confidence >= 0.6 else "yellow" if ra.confidence >= 0.3 else "red"
-
+    
     return f"""
 <div class="section">
   <div class="sec-hdr"><div class="sec-num">6</div><div class="sec-ttl">Moteur de Régime</div><div class="sec-sub">Identification multi-facteur du régime de marché</div></div>
@@ -509,6 +557,10 @@ def _render_section7_interpretation(ctx: BriefingContext) -> str:
     """Render the interpretation layer section."""
     interp = getattr(ctx, 'interpretation', None)
     if interp is None:
+        # C2 (certification, cause racine R-2): Section 7 is a Contract-mandated
+        # section (table 1.5 / STR-11, IMMUABLE). It must ALWAYS be emitted; when
+        # the interpretation layer is unavailable it degrades to a present [N/A]
+        # block instead of disappearing (preserving the 8-section structure).
         return """
 <div class="section">
   <div class="sec-hdr"><div class="sec-num">7</div><div class="sec-ttl">Moteur d'Interprétation</div><div class="sec-sub">Pourquoi ce régime, quels facteurs dominent, quels risques</div></div>
@@ -516,32 +568,39 @@ def _render_section7_interpretation(ctx: BriefingContext) -> str:
     <div class="abox wait" style="font-size:12px"><span>[N/A] — couche d'interprétation indisponible pour cette génération.</span></div>
   </div>
 </div>"""
-
+    
+    # USD assessment
     usd_block = (
         f'<div class="abox" style="font-size:12px;margin-bottom:12px">'
         f'<span class="bold">ANALYSE USD :</span> {_e(interp.usd_assessment)}</div>'
     )
-
+    
+    # USD drivers
     driver_rows = ""
     for d in interp.usd_drivers:
         driver_rows += f'<div class="risk-row">· {_e(d)}</div>'
-
+    
+    # Dominant factors
     dominant_rows = ""
     for f in interp.dominant_factors:
         dominant_rows += f'<div class="risk-row">⭐ {_e(f)}</div>'
-
+    
+    # Reinforcing
     reinforcing_rows = ""
     for r in interp.reinforcing_indicators:
         reinforcing_rows += f'<div class="risk-row">✅ {_e(r)}</div>'
-
+    
+    # Contradicting
     contradicting_rows = ""
     for c in interp.contradicting_indicators:
         contradicting_rows += f'<div class="risk-row">❌ {_e(c)}</div>'
-
+    
+    # Invalidation risks
     risk_rows = ""
     for r in interp.invalidation_risks:
         risk_rows += f'<div class="risk-row">⚠️ {_e(r)}</div>'
-
+    
+    # Narrative chain
     chain_rows = ""
     for link in interp.narrative_chain:
         arrow = "→" if link.direction == "positive" else "←" if link.direction == "negative" else "↔"
@@ -550,14 +609,15 @@ def _render_section7_interpretation(ctx: BriefingContext) -> str:
             f'<span class="rank-lbl">{_e(link.upstream)}</span>'
             f'<span style="font-size:11px">{arrow} {_e(link.downstream)}: {_e(link.mechanism)}</span></div>'
         )
-
+    
+    # Asset explanations
     asset_rows = ""
     for asset, expl in interp.asset_explanations.items():
         asset_rows += (
             f'<div class="rank-row"><span class="rank-lbl">{_e(asset)}</span>'
             f'<span style="font-size:11px">{_e(expl)}</span></div>'
         )
-
+    
     return f"""
 <div class="section">
   <div class="sec-hdr"><div class="sec-num">7</div><div class="sec-ttl">Moteur d'Interprétation</div><div class="sec-sub">Pourquoi ce régime, quels facteurs dominent, quels risques</div></div>
