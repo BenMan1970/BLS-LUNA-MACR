@@ -786,11 +786,31 @@ def _build_setup_levels(p: float, atr, direction: int, asset: str) -> tuple:
     return buy, sell, stop
 
 
+# Currencies with no standalone CFTC Non-Commercials contract in
+# institutional.CFTC_MARKETS (USD is the implicit counter-currency in all
+# 7 legacy majors, not a line item itself; a separate ICE USD Index
+# contract exists but is not currently integrated). Audit fix: previously
+# these currencies were silently dropped from `candidates`, so a USD pair
+# only ever showed squeeze risk on its non-USD leg with no indication that
+# the USD leg was simply never measured.
+_NO_STANDALONE_CFTC_CONTRACT = {"USD"}
+
+
 def _build_setup_positioning(ccys, ips_by_ccy: dict, cot_label: str) -> tuple:
     """Compute positioning link, squeeze risk, IPS summary, both-legs-extreme flag."""
     pos_link = "Pas de COT chargé pour cet actif [N/A] — positionnement non pris en compte."
     squeeze_risk, squeeze_cls = "Faible", "green"
     ips_summary = "[N/A]"
+
+    def _append_untracked_note(summary: str, link: str) -> tuple[str, str]:
+        untracked = [c for c in (ccys or []) if c in _NO_STANDALONE_CFTC_CONTRACT]
+        if not untracked:
+            return summary, link
+        note = (f" · {', '.join(untracked)} : IPS [N/A] — pas de contrat CFTC "
+                f"autonome (contrepartie implicite des 7 majors ; positionnement "
+                f"non mesuré ici, cf. USD Index ICE non intégré).")
+        return summary + note, link + note
+
     if not ccys:
         return pos_link, squeeze_risk, squeeze_cls, ips_summary, False
     candidates = [(ccy, ips_by_ccy.get(ccy)) for ccy in ccys]
@@ -804,6 +824,7 @@ def _build_setup_positioning(ccys, ips_by_ccy: dict, cot_label: str) -> tuple:
     chosen = next((c for c in candidates if c[1].is_extreme),
                   candidates[0] if candidates else None)
     if not chosen:
+        pos_link, ips_summary = _append_untracked_note(ips_summary, pos_link)
         return pos_link, squeeze_risk, squeeze_cls, ips_summary, False
     ccy, r = chosen
     ips_summary = f"{ccy} {r.ips_score} — {r.ips_label}"
@@ -826,6 +847,7 @@ def _build_setup_positioning(ccys, ips_by_ccy: dict, cot_label: str) -> tuple:
         pos_link = (f"{ccy} IPS {r.ips_score} — {r.ips_label}. "
                     f"[{cot_label}]. "
                     "Positionnement non extrême, n'amende pas la conviction.")
+    ips_summary, pos_link = _append_untracked_note(ips_summary, pos_link)
     return pos_link, squeeze_risk, squeeze_cls, ips_summary, both_extreme
 
 
