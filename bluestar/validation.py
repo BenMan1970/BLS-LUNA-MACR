@@ -162,18 +162,25 @@ def check_no_contradictory_directions(ctx: BriefingContext) -> list[ValidationIs
 
 
 def check_no_momentum_as_macro(html: str) -> list[ValidationIssue]:
-    """Ensure 'macro'/'fondamental' doesn't label pure momentum (audit A2 fix)."""
+    """Ensure 'macro'/'fondamental' doesn't label pure momentum (audit A2 fix).
+
+    Audit fix (2nd pass): the original check only WARNed, and was satisfied
+    by inserting the literal string "Différentiel de momentum prix D1"
+    anywhere in the document — a phrase that can sit far from the actual
+    "Biais fondamental" label it's supposed to qualify. Escalated to ERROR
+    and the label itself is now flagged directly: a field called "Biais
+    fondamental" that is, by construction, an Oanda D1 price-momentum score
+    should be renamed, not accompanied by a disclaimer elsewhere in the page.
+    """
     issues = []
-    # Check for the old misleading labels
     if "force relative macro" in html.lower() and "momentum" not in html.lower():
         issues.append(ValidationIssue("momentum_as_macro", "ERROR",
                                       "Le terme 'force relative macro' est utilisé sans mentionner 'momentum'."))
-    if "biais fondamental" in html.lower() and "momentum prix" not in html.lower():
-        # The field label "Biais fondamental" is OK as long as the explanation
-        # says "momentum prix D1" — only flag if momentum is not mentioned at all.
-        if "Différentiel de momentum prix D1" not in html:
-            issues.append(ValidationIssue("momentum_as_macro", "WARN",
-                                          "Label 'Biais fondamental' sans précision 'momentum prix D1'."))
+    if "biais fondamental" in html.lower():
+        issues.append(ValidationIssue("momentum_as_macro", "ERROR",
+                                      "Label 'Biais fondamental' utilisé pour un score de momentum prix D1 — "
+                                      "renommer en 'Biais momentum (prix D1)' plutôt que de le justifier "
+                                      "par une phrase disclaimer ailleurs dans la page."))
     return issues
 
 
