@@ -59,6 +59,12 @@ class RegimeAssessment:
     contradicting: list[RegimeIndicator] = field(default_factory=list)
     transition_triggers: list[str] = field(default_factory=list)
     narrative: str = ""          # the story connecting indicators to the regime
+    # Audit fix: when confidence < floor, the engine reports "Mixed / Selective"
+    # instead of a barely-won branch, but keeps the pre-collapse candidate here
+    # so the narrative can stay transparent about *why* ("Reflation était en
+    # tête à 12% de confiance, sous le seuil de publication").
+    raw_candidate: Optional[str] = None
+    floor_applied: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +135,17 @@ _REGIMES = {
 # ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
+def _proxy_weight(datum, base: float) -> tuple[float, str]:
+    """Halve an indicator's vote weight when its backing Datum is [PROXY]
+    (audit fix — a manually-typed override must not carry the same regime
+    authority as a live PRIMARY/FALLBACK reading). Returns (weight, note_suffix).
+    """
+    if getattr(datum, "is_proxy", False):
+        mult = getattr(C, "REGIME_PROXY_WEIGHT_MULT", 0.5)
+        return base * mult, " [PROXY — poids réduit dans le vote de régime]"
+    return base, ""
+
+
 def _vix_indicator(market: MarketSnapshot) -> RegimeIndicator | None:
     """VIX volatility regime indicator."""
     vix = market.gauge("VIX")
@@ -136,13 +153,16 @@ def _vix_indicator(market: MarketSnapshot) -> RegimeIndicator | None:
         return None
     v = vix.value
     if v <= C.VIX_RISK_ON_MAX:
-        return RegimeIndicator("VIX", f"{v:.1f}", "risk_on", 0.20, True,
-                               "Volatilité actions comprimée — appétit de risque.")
+        w, note = _proxy_weight(vix, 0.20)
+        return RegimeIndicator("VIX", f"{v:.1f}", "risk_on", w, True,
+                               "Volatilité actions comprimée — appétit de risque." + note)
     if v >= C.VIX_RISK_OFF_MIN:
-        return RegimeIndicator("VIX", f"{v:.1f}", "risk_off", 0.20, True,
-                               "Volatilité élevée — aversion au risque.")
-    return RegimeIndicator("VIX", f"{v:.1f}", "neutral", 0.10, True,
-                           "Volatilité modérée — régime transitionnel.")
+        w, note = _proxy_weight(vix, 0.20)
+        return RegimeIndicator("VIX", f"{v:.1f}", "risk_off", w, True,
+                               "Volatilité élevée — aversion au risque." + note)
+    w, note = _proxy_weight(vix, 0.10)
+    return RegimeIndicator("VIX", f"{v:.1f}", "neutral", w, True,
+                           "Volatilité modérée — régime transitionnel." + note)
 
 
 def _move_indicator(market: MarketSnapshot) -> RegimeIndicator | None:
@@ -152,13 +172,16 @@ def _move_indicator(market: MarketSnapshot) -> RegimeIndicator | None:
         return None
     m = move.value
     if m < 90:
-        return RegimeIndicator("MOVE", f"{m:.1f}", "risk_on", 0.10, True,
-                               "Volatilité taux comprimée — pas de stress rates.")
+        w, note = _proxy_weight(move, 0.10)
+        return RegimeIndicator("MOVE", f"{m:.1f}", "risk_on", w, True,
+                               "Volatilité taux comprimée — pas de stress rates." + note)
     if m > 120:
-        return RegimeIndicator("MOVE", f"{m:.1f}", "risk_off", 0.10, True,
-                               "Volatilité taux élevée — stress sur le marché obligataire.")
-    return RegimeIndicator("MOVE", f"{m:.1f}", "neutral", 0.05, True,
-                           "Volatilité taux modérée.")
+        w, note = _proxy_weight(move, 0.10)
+        return RegimeIndicator("MOVE", f"{m:.1f}", "risk_off", w, True,
+                               "Volatilité taux élevée — stress sur le marché obligataire." + note)
+    w, note = _proxy_weight(move, 0.05)
+    return RegimeIndicator("MOVE", f"{m:.1f}", "neutral", w, True,
+                           "Volatilité taux modérée." + note)
 
 
 def _us10y_indicator(market: MarketSnapshot) -> RegimeIndicator | None:
@@ -168,13 +191,16 @@ def _us10y_indicator(market: MarketSnapshot) -> RegimeIndicator | None:
         return None
     y = us10y.value
     if y > 4.5:
-        return RegimeIndicator("US10Y", f"{y:.2f}%", "inflation", 0.10, True,
-                               "Taux longs élevés — pression inflationniste ou croissance forte.")
+        w, note = _proxy_weight(us10y, 0.10)
+        return RegimeIndicator("US10Y", f"{y:.2f}%", "inflation", w, True,
+                               "Taux longs élevés — pression inflationniste ou croissance forte." + note)
     if y < 3.5:
-        return RegimeIndicator("US10Y", f"{y:.2f}%", "deflation", 0.10, True,
-                               "Taux longs bas — anticipation de ralentissement / disinflation.")
-    return RegimeIndicator("US10Y", f"{y:.2f}%", "neutral", 0.05, True,
-                           "Taux longs dans la fourchette neutre.")
+        w, note = _proxy_weight(us10y, 0.10)
+        return RegimeIndicator("US10Y", f"{y:.2f}%", "deflation", w, True,
+                               "Taux longs bas — anticipation de ralentissement / disinflation." + note)
+    w, note = _proxy_weight(us10y, 0.05)
+    return RegimeIndicator("US10Y", f"{y:.2f}%", "neutral", w, True,
+                           "Taux longs dans la fourchette neutre." + note)
 
 
 def _dxy_indicator(market: MarketSnapshot) -> RegimeIndicator | None:
@@ -184,13 +210,16 @@ def _dxy_indicator(market: MarketSnapshot) -> RegimeIndicator | None:
         return None
     d = dxy.value
     if d > 105:
-        return RegimeIndicator("DXY", f"{d:.1f}", "dollar_strong", 0.10, True,
-                               "Dollar fort — pression sur EM/commodities, potentiel Dollar Smile.")
+        w, note = _proxy_weight(dxy, 0.10)
+        return RegimeIndicator("DXY", f"{d:.1f}", "dollar_strong", w, True,
+                               "Dollar fort — pression sur EM/commodities, potentiel Dollar Smile." + note)
     if d < 100:
-        return RegimeIndicator("DXY", f"{d:.1f}", "dollar_weak", 0.10, True,
-                               "Dollar faible — soutien aux actifs risqués et commodities.")
-    return RegimeIndicator("DXY", f"{d:.1f}", "neutral", 0.05, True,
-                           "Dollar dans sa fourchette neutre.")
+        w, note = _proxy_weight(dxy, 0.10)
+        return RegimeIndicator("DXY", f"{d:.1f}", "dollar_weak", w, True,
+                               "Dollar faible — soutien aux actifs risqués et commodities." + note)
+    w, note = _proxy_weight(dxy, 0.05)
+    return RegimeIndicator("DXY", f"{d:.1f}", "neutral", w, True,
+                           "Dollar dans sa fourchette neutre." + note)
 
 
 def _rate_divergence_indicator(central_banks: list[CentralBankSnapshot]) -> RegimeIndicator | None:
@@ -325,6 +354,20 @@ def assess_regime(
 
     regime_name, category, confidence, opposing_signal = _classify(indicators)
 
+    # Audit fix (A: "Reflation @ 12% confidence" bug): a decision-tree branch
+    # can fire on a razor-thin, contested vote (top1-top2 margin near zero)
+    # and still get published as if it were a settled call. Below the floor,
+    # force the honest "Mixed / Selective" label; keep the original candidate
+    # name for the narrative so nothing is hidden, just not overstated.
+    floor = getattr(C, "REGIME_CONFIDENCE_FLOOR", 0.20)
+    raw_candidate: Optional[str] = None
+    floor_applied = False
+    if confidence < floor and regime_name != "Mixed / Selective":
+        raw_candidate = regime_name
+        floor_applied = True
+        regime_name, category = "Mixed / Selective", "transitional"
+        opposing_signal = None  # no clean antonym for the collapsed label
+
     # Audit fix ("Mixed sans contradiction"): every RegimeIndicator is built
     # with supports=True hardcoded at construction time (the individual
     # _xxx_indicator() helpers cannot know the final regime yet), so
@@ -347,6 +390,12 @@ def assess_regime(
     contradicting = [i for i in indicators if not i.supports]
     triggers = _build_triggers(regime_name, events, indicators)
     narrative = _build_narrative(regime_name, indicators, central_banks, currency_strength)
+    if floor_applied:
+        narrative += (
+            f" → Note : « {raw_candidate} » était en tête du vote mais avec une "
+            f"confiance de {confidence:.0%} (< seuil {floor:.0%}) — régime "
+            f"reclassé en Mixed / Selective plutôt que publié comme signal ferme."
+        )
 
     return RegimeAssessment(
         name=regime_name,
@@ -357,6 +406,8 @@ def assess_regime(
         contradicting=contradicting,
         transition_triggers=triggers,
         narrative=narrative,
+        raw_candidate=raw_candidate,
+        floor_applied=floor_applied,
     )
 
 
