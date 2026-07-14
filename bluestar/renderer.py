@@ -82,8 +82,8 @@ def _render_section1(ctx: BriefingContext) -> str:
         cards = "".join(_render_top_card(s) for s in ctx.priority_assets)
         priority_block = f'<div class="top-grid">{cards}</div>'
     else:
-        priority_block = (f'<div class="no-setup"><div class="no-setup-icon">🛑</div>'
-                          f'<div class="no-setup-title">Aucun actif ne réunit les critères aujourd\'hui</div>'
+        priority_block = (f'<div class="no-setup">'
+                          f'<div class="no-setup-title">Aucun setup prioritaire activé</div>'
                           f'<div class="no-setup-sub">{_e(ctx.no_setup_reason or "")}</div></div>')
 
     if ctx.avoid_assets:
@@ -337,8 +337,8 @@ def _render_section4(ctx: BriefingContext) -> str:
     if ctx.priority_assets:
         body = "".join(_render_asset_card(s) for s in ctx.priority_assets)
     else:
-        body = (f'<div class="no-setup"><div class="no-setup-icon">🛑</div>'
-                f'<div class="no-setup-title">Aucune fiche actif aujourd\'hui</div>'
+        body = (f'<div class="no-setup">'
+                f'<div class="no-setup-title">Aucune fiche actif générée</div>'
                 f'<div class="no-setup-sub">{_e(ctx.no_setup_reason or "")}</div></div>')
     return f"""
 <div class="section">
