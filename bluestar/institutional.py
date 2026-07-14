@@ -47,15 +47,36 @@ except Exception:  # pragma: no cover
 
 # --------------------------------------------------------------------------
 # FRED key — read ONCE at module level (st.secrets is NOT thread-safe)
+#
+# AUDIT-FIX (15/07/2026): this used to test only the exact-case secret name
+# "FRED_API_KEY" and swallow any st.secrets access failure with a bare
+# `except: pass` — zero log trace either way. external_sources.py resolves
+# the very same FRED key for other series (CB rates, 2s10s, SOFR/EFFR) with
+# a more defensive pattern: it also tries the lowercase "fred_api_key" name
+# and logs a warning when st.secrets access itself fails. That meant a
+# secrets.toml using lowercase (a common TOML convention) — or any transient
+# st.secrets error at import time — was silently invisible here while
+# external_sources.py's FRED-backed fields kept working fine, so the
+# FRED-driven GDP Nowcast path (fetch_gdpnow_full, called from
+# oanda_data.py) fell back to [PROXY]/[N/A] with no diagnostic anywhere.
+# Aligned to the same two-case + logged pattern here. The module-level
+# single-read design is intentionally unchanged (thread-safety — see above);
+# this only widens what counts as "found" and makes "not found" visible.
 # --------------------------------------------------------------------------
 _FRED_API_KEY: Optional[str] = None
 try:
     import streamlit as st  # type: ignore
-    _FRED_API_KEY = st.secrets.get("FRED_API_KEY")  # type: ignore
-except Exception:
-    pass
+    _FRED_API_KEY = st.secrets.get("FRED_API_KEY") or st.secrets.get("fred_api_key")  # type: ignore
+except Exception as _fred_secrets_exc:
+    logger.warning("Streamlit FRED key access failed: %s", _fred_secrets_exc)
 if not _FRED_API_KEY:
-    _FRED_API_KEY = os.environ.get("FRED_API_KEY")
+    _FRED_API_KEY = os.environ.get("FRED_API_KEY") or os.environ.get("fred_api_key")
+if not _FRED_API_KEY:
+    logger.warning(
+        "FRED_API_KEY not found (tried FRED_API_KEY/fred_api_key in st.secrets "
+        "and os.environ) — fetch_gdpnow_full()/build_regime_dashboard() FRED "
+        "fields will degrade to None/[PROXY]/[N/A] downstream."
+    )
 
 
 def _get(url: str, **kw) -> Optional[requests.Response]:
