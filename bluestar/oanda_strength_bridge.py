@@ -118,8 +118,19 @@ def _aggregate(pct_by_pair: Dict[str, float]) -> Dict[str, float]:
       BASE gains  +p  weighted by the *opponent* (QUOTE) weight.
       QUOTE gains -p  weighted by the *opponent* (BASE)  weight.
     Each currency's raw score = weighted mean of its contributions.
-    Raw scores are then min-max rescaled to [0,10] centered so that the
-    empirical neutral (mean) lands near 5.0. A currency with no data → 5.0.
+
+    AUDIT FIX (methodology change, not a cosmetic patch — flag for sign-off):
+    scores were previously min-max rescaled to [0,10], which mathematically
+    forces the day's weakest currency to exactly 0.00 and the strongest to
+    exactly 10.00 regardless of how large the real dispersion is. On a day
+    where the 8 majors' D1 returns are all within a fraction of a percent of
+    each other, this manufactured a false "USD at rock bottom / NZD at the
+    top" reading identical in shape to a genuine risk-divergence day. Now
+    rescaled from a z-score (currency's raw value vs the cross-sectional
+    mean/stdev of the 8 majors that day), centered on 5.0 (neutral) and
+    clipped to [0,10]. A currency only approaches 0 or 10 when it is
+    genuinely ~2 standard deviations from the day's average — an actual
+    outlier — rather than every single day by construction.
     """
     totals: Dict[str, float] = {c: 0.0 for c in MAJORS}
     weights: Dict[str, float] = {c: 0.0 for c in MAJORS}
@@ -146,18 +157,26 @@ def _aggregate(pct_by_pair: Dict[str, float]) -> Dict[str, float]:
         # Should not happen (caller guards on pair count), but stay safe.
         return {c: 5.0 for c in MAJORS}
 
-    lo, hi = min(present), max(present)
-    spread = hi - lo
+    mean = sum(present) / len(present)
+    variance = sum((v - mean) ** 2 for v in present) / len(present)
+    stdev = variance ** 0.5
+
+    # Z-units mapped to the [0,10] scale: +/-2 stdev (a genuinely wide day)
+    # reaches the 0/10 bounds; smaller, more typical dispersion stays
+    # clustered near 5.0 instead of being stretched to fill the full range.
+    _Z_SPAN = 2.0
 
     scores: Dict[str, float] = {}
     for c in MAJORS:
         v = raw[c]
         if v is None:
             scores[c] = 5.0                       # no data → neutral, never dropped
-        elif spread <= 1e-9:
+        elif stdev <= 1e-9:
             scores[c] = 5.0                       # all equal → all neutral
         else:
-            scores[c] = round((v - lo) / spread * 10.0, 2)
+            z = (v - mean) / stdev
+            scaled = 5.0 + (z / _Z_SPAN) * 5.0
+            scores[c] = round(min(10.0, max(0.0, scaled)), 2)
     return scores
 
 
