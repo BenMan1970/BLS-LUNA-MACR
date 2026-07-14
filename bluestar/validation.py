@@ -202,18 +202,9 @@ def check_staleness(ctx: BriefingContext) -> list[ValidationIssue]:
         if stale:
             issues.append(ValidationIssue("staleness", "WARN", stale))
         if report.publication_blocked:
-            # AUDIT-FIX (feedback, 14/07/2026): "ce briefing NE DEVRAIT PAS
-            # être diffusé tel quel" was accurate but meta -- it talks about
-            # the document's own distribution status rather than telling
-            # the person reading it what to actually do with the numbers
-            # below. Rephrased to be actionable for the reader; the
-            # underlying facts (rule name, severity, percentages) are
-            # unchanged for any other consumer of ValidationIssue.
             issues.append(ValidationIssue("coverage", "ERROR",
                                           f"Couverture live insuffisante ({report.live_ratio:.0%} < "
-                                          f"{C.MIN_LIVE_COVERAGE_RATIO:.0%}) — une bonne partie des niveaux "
-                                          f"et signaux ci-dessous s'appuie sur des données de repli ou "
-                                          f"approximatives aujourd'hui ; à lire avec prudence supplémentaire."))
+                                          f"{C.MIN_LIVE_COVERAGE_RATIO:.0%}). Publication bloquée."))
     except Exception as exc:
         logger.warning("Staleness check skipped: %s", exc)
     return issues
