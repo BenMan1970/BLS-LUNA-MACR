@@ -91,21 +91,21 @@ def _render_validation_note(ctx: BriefingContext) -> str:
 
     out = ""
     if errors:
-        # AUDIT-FIX (institutional review, 14/07/2026): ERROR findings used to
-        # share the same quiet "abox wait" note box as WARN findings -- one
-        # more click of attention than the operational note, easy to skim
-        # past. validation.py's own docstring calls an ERROR a contract
-        # breach "the renderer must never ship"; since this pipeline still
-        # chooses to ship it (visible, not blocking -- see the call site in
-        # macro_engine.build_context for why), the least it owes the reader
-        # is being impossible to miss. Reuses the existing no-setup block
-        # style (icon + title + sub) rather than inventing a new CSS class
-        # I can't verify exists.
-        err_lines = "".join(f'<div class="no-setup-sub">{_e(i.message)}</div>' for i in errors)
-        out += (f'<div class="no-setup" style="margin-bottom:14px">'
-                f'<div class="no-setup-icon">🛑</div>'
-                f'<div class="no-setup-title">Validation moteur : {len(errors)} '
-                f'rupture(s) de contrat détectée(s)</div>{err_lines}</div>')
+        # AUDIT-FIX (feedback, 14/07/2026): this used to reuse the giant
+        # dashed "no-setup" empty-state block (36px icon, 40px padding) with
+        # the title "rupture(s) de contrat détectée(s)" -- internal
+        # engineering language, and the same visual weight as the real
+        # "no setup found today" block right next to it, on a document
+        # whose job is to help someone decide what to trade. Switched to
+        # the same properly-sized note style used for every other one-line
+        # caveat on this page (abox avoid: red accent, not a full block),
+        # with a caution icon instead of a stop sign since nothing is
+        # actually being stopped, and wording about what it means for
+        # reading the briefing rather than about the document's own
+        # publication status.
+        err_lines = " · ".join(_e(i.message) for i in errors)
+        out += (f'<div class="abox avoid" style="font-size:12px;margin-bottom:14px">'
+                f'<span>⚠️ <span class="bold">QUALITÉ DES DONNÉES :</span> {err_lines}</span></div>')
     if warns:
         names = ", ".join(sorted({i.rule for i in warns}))
         out += (f'<div class="abox wait" style="font-size:11px;margin-bottom:14px">'
