@@ -292,11 +292,19 @@ def build_coverage_report(
         elif sr.freshness is Freshness.PROXY:
             report.proxy_count += 1
         elif sr.freshness is Freshness.STALE:
+            # AUDIT-FIX (institutional review, 14/07/2026): a stale datum
+            # must not count toward live_count regardless of its original
+            # source reliability. The old code did
+            # `if PRIMARY: live_count += 1  # stale but was live`, which let
+            # badly-stale PRIMARY data inflate live_ratio -- publication_blocked
+            # could stay False even when the "live" data was actually days
+            # old. Zero-regression direction: this can only ever move a
+            # field OUT of live_count, so live_ratio can only go down or
+            # stay the same relative to the old formula, never up -- a run
+            # that was already (correctly) blocked stays blocked, this only
+            # catches cases that were wrongly NOT blocked before.
             report.stale_count += 1
-            if sr.reliability is Reliability.PRIMARY:
-                report.live_count += 1  # stale but was live
-            else:
-                report.fallback_count += 1
+            report.fallback_count += 1
         elif sr.reliability is Reliability.PRIMARY:
             report.live_count += 1
         elif sr.reliability is Reliability.FALLBACK:
@@ -312,11 +320,10 @@ def build_coverage_report(
         elif sr.freshness is Freshness.PROXY:
             report.proxy_count += 1
         elif sr.freshness is Freshness.STALE:
+            # AUDIT-FIX (institutional review, 14/07/2026): same fix as the
+            # gauges loop above -- see the comment there for the rationale.
             report.stale_count += 1
-            if sr.reliability is Reliability.PRIMARY:
-                report.live_count += 1
-            else:
-                report.fallback_count += 1
+            report.fallback_count += 1
         elif sr.reliability is Reliability.PRIMARY:
             report.live_count += 1
         elif sr.reliability is Reliability.FALLBACK:
