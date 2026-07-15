@@ -716,18 +716,6 @@ def _correlation_short(asset: str, market: MarketSnapshot) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Sizing factor (NOT Kelly)
-# ---------------------------------------------------------------------------
-def compute_sizing_factor(conviction: int, market: MarketSnapshot) -> str:
-    vix = market.gauge("VIX")
-    if vix.available:
-        sf = conviction * (1.0 / (1.0 + vix.value / C.SIZING_VIX_DENOM))
-        return f"{fr_num(sf, 1)}×"
-    sf = conviction * (1.0 / (1.0 + C.SIZING_PROXY_VIX / C.SIZING_VIX_DENOM))
-    return f"{fr_num(sf, 1)}× [PROXY]"
-
-
-# ---------------------------------------------------------------------------
 # Step 6 -- Asset selection
 # ---------------------------------------------------------------------------
 def _events_for_ccys(events: list[MacroEvent], ccys: tuple[str, ...],
@@ -1053,7 +1041,6 @@ def _build_setup(asset: str, direction: int, score: float, market: MarketSnapsho
         invalidation_risk=invalidation, invalidation_level=inval_level,
         positioning_link=pos_link, correlation_key=compute_correlation(asset, market),
         ips_summary=ips_summary, squeeze_risk=squeeze_risk, squeeze_class=squeeze_cls,
-        sizing_factor=compute_sizing_factor(conviction, market),
         risk_reward=_compute_rr_ratio(p, stop, sell, direction, atr),
         price_display=price.display, levels_are_proxy=levels_proxy,
     )
