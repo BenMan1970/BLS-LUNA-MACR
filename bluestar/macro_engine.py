@@ -292,13 +292,31 @@ def _build_rate_differential(central_banks: list[CentralBankSnapshot]) -> tuple[
     # actual stamp.source_name values instead, so e.g. a GBP/JPY pair
     # correctly shows both "Bank of England · IADB" and "FRED" when both
     # legs are genuinely live.
-    both_live = (stamps[ccy_hi].reliability is Reliability.PRIMARY and
-                stamps[ccy_lo].reliability is Reliability.PRIMARY)
+    hi_stamp, lo_stamp = stamps[ccy_hi], stamps[ccy_lo]
+    both_live = (hi_stamp.reliability is Reliability.PRIMARY and
+                lo_stamp.reliability is Reliability.PRIMARY)
+    both_proxy = (hi_stamp.reliability is Reliability.PROXY and
+                 lo_stamp.reliability is Reliability.PROXY)
     if both_live:
-        src_names = sorted({stamps[ccy_hi].source_name, stamps[ccy_lo].source_name})
+        src_names = sorted({hi_stamp.source_name, lo_stamp.source_name})
         tag = f"[{' + '.join(src_names)} · PRIMARY]"
-    else:
+    elif both_proxy:
         tag = "[PROXY · taux saisis en overrides]"
+    else:
+        # AUDIT-FIX (15/07/2026, finding 5 — MAJEURE): this used to fall
+        # through to the same unconditional "[PROXY · taux saisis en
+        # overrides]" tag as the both-proxy case above, even when one leg
+        # (e.g. USD via FRED) was genuinely live and only the other (e.g.
+        # JPY via manual override) was a proxy — misreporting a real,
+        # live rate as a manual approximation. Each leg's real provenance
+        # is now stated explicitly.
+        def _leg_tag(stamp: SourceStamp) -> str:
+            if stamp.reliability is Reliability.PRIMARY:
+                return stamp.source_name or "PRIMARY"
+            if stamp.reliability is Reliability.PROXY:
+                return "override"
+            return stamp.source_name or stamp.reliability.value
+        tag = f"[MIXTE · {ccy_hi} {_leg_tag(hi_stamp)} + {ccy_lo} {_leg_tag(lo_stamp)}]"
     dominant = (f"{ccy_hi} ({fr_num(rates[ccy_hi], 2)}%) vs {ccy_lo} "
                f"({fr_num(rates[ccy_lo], 2)}%) → écart ≈ {fr_num(gap, 2)} pt "
                f"{tag}")
@@ -495,8 +513,15 @@ def _ips_from_overrides(cot_over: dict, ref_label: str) -> list[CotPositioning]:
     return rows
 
 
-def _ips_from_scrape(ref_label: str) -> list[CotPositioning]:
-    """Path 3: live CFTC scrape with linear scaling [PROXY]."""
+def _ips_from_scrape(ref_date_str: str) -> list[CotPositioning]:
+    """Path 3: live CFTC scrape with linear scaling [PROXY].
+
+    ``ref_date_str`` is the date portion only (no "CFTC Non-Commercials |"
+    prefix, no reliability tag) — see the audit-fix note in
+    ``build_ips_scores`` for why this was split out of the old
+    ``ref_label`` (avoids duplicating the "CFTC Non-Commercials |" prefix
+    when ``external_date`` is unavailable and this fallback is used).
+    """
     ext_net, external_date = fetch_cot_data()
     if not ext_net:
         return []
@@ -509,7 +534,7 @@ def _ips_from_scrape(ref_label: str) -> list[CotPositioning]:
         score = int(round(50 + frac * 50))
         # MACRO-B3 FIX : retrait du mot "OBSERVÉ" trompeur. Ce n'est pas un percentile,
         # c'est un scaling linéaire arbitraire (150k contrats).
-        src_label = f"CFTC Non-Commercials | {external_date or ref_label} [PROXY · scaling linéaire]"
+        src_label = f"CFTC Non-Commercials | {external_date or ref_date_str} [PROXY · scaling linéaire]"
         rows.append(CotPositioning(
             currency=ccy, net_contracts=net, ips_score=score,
             ips_label=_ips_label_for(score), delta_week="≈ stable", momentum="→",
@@ -530,11 +555,22 @@ def build_ips_scores(overrides: Optional[dict],
     4. [N/A] when no COT data is available.
     """
     ref = _reference_cftc_friday(now_utc)
-    ref_label = (
-        f"OBSERVÉ — CFTC Non-Commercials | "
+    # AUDIT-FIX (15/07/2026, finding 3 — MAJEURE): "OBSERVÉ" used to be baked
+    # into ref_label unconditionally, so the PROXY paths below (overrides /
+    # scrape), which append "[PROXY · scaling linéaire]" as a suffix, could
+    # produce a self-contradictory label like
+    # "OBSERVÉ — CFTC ... [PROXY · scaling linéaire]". ref_label is now
+    # source-neutral (no reliability claim baked in); the "OBSERVÉ" prefix
+    # is added by the caller (build_context) only once the actual
+    # reliability of the resolved IPS rows is known. ref_date_str is kept
+    # separate (date only, no "CFTC Non-Commercials |" prefix) so
+    # _ips_from_scrape's own fallback composition doesn't end up
+    # duplicating that prefix when the live scrape date is unavailable.
+    ref_date_str = (
         f"{FR_DAYS[ref.weekday()]} "
         f"{ref.day} {FR_MONTHS[ref.month]} {ref.year}"
     )
+    ref_label = f"CFTC Non-Commercials | {ref_date_str}"
 
     cot_over = (overrides or {}).get("cot", {})
 
@@ -542,7 +578,7 @@ def build_ips_scores(overrides: Optional[dict],
     if not rows and cot_over:
         rows = _ips_from_overrides(cot_over, ref_label)
     if not rows:
-        rows = _ips_from_scrape(ref_label)
+        rows = _ips_from_scrape(ref_date_str)
 
     return rows, ref_label
 
@@ -1063,10 +1099,43 @@ def _pairs_for_ccy(ccy: str) -> list[str]:
 # ---------------------------------------------------------------------------
 # Step -- Macro overlay text blocks
 # ---------------------------------------------------------------------------
+def _build_cot_summary(ips: list) -> str:
+    """Synthesize the qualitative COT/positioning summary for the 'COT &
+    Positioning' card.
+
+    AUDIT-FIX (15/07/2026, finding 1 — CRITIQUE): ``build_macro_overlay()``'s
+    returned dict never had a ``"cot_summary"`` key, so ``build_context()``'s
+    ``overlay.get("cot_summary", "")`` always resolved to an empty string —
+    the card rendered as a bare date tag with no content, even though the
+    IPS scores it should summarize are computed and displayed further down
+    the same page. This reuses the already-computed ``ips_score`` thresholds
+    (no new thresholds introduced) to describe which currencies, if any,
+    sit in an extreme positioning zone.
+    """
+    if not ips:
+        return "[N/A] — aucune donnée de positionnement disponible."
+    crowded_long = [r.currency for r in ips
+                    if r.ips_score is not None and r.ips_score >= C.IPS_CROWDED]
+    crowded_short = [r.currency for r in ips
+                     if r.ips_score is not None and r.ips_score <= C.IPS_CAPITULATION]
+    extremes = crowded_long + crowded_short
+    if not extremes:
+        return "Aucune devise majeure en positionnement extrême — scores IPS en zone neutre."
+    parts = []
+    if crowded_long:
+        parts.append(f"{'/'.join(crowded_long)} crowded long")
+    if crowded_short:
+        parts.append(f"{'/'.join(crowded_short)} crowded short/capitulation")
+    plural = "s" if len(extremes) > 1 else ""
+    return (f"{len(extremes)} devise{plural} en positionnement extrême "
+            f"({', '.join(parts)}).")
+
+
 def build_macro_overlay(market: MarketSnapshot, regime: str,
                         events: list[MacroEvent],
                         liquidity_msg: str,
-                        pc_data: Optional[dict] = None) -> dict:
+                        pc_data: Optional[dict] = None,
+                        ips: Optional[list] = None) -> dict:
     vix = market.gauge("VIX")
     move = market.gauge("MOVE")
     dxy = market.gauge("DXY")
@@ -1136,6 +1205,7 @@ def build_macro_overlay(market: MarketSnapshot, regime: str,
         "vol_regime": vol_regime, "vol_impl": vol_impl,
         "correlation": f"{_correlation_short('EUR/USD', market)} · {_correlation_short('USD/JPY', market)}",
         "liquidity": liquidity_msg,
+        "cot_summary": _build_cot_summary(ips or []),
     }
 
 
@@ -1339,17 +1409,27 @@ def build_context(
     else:
         liquidity_msg = "[N/A] — spread SOFR−EFFR non sourcé."
 
-    overlay = build_macro_overlay(market, headline_regime_name, upcoming, liquidity_msg, pc_data)
+    overlay = build_macro_overlay(market, headline_regime_name, upcoming, liquidity_msg, pc_data, ips=ips)
     
     # MACRO-B3 FIX: le suffixe [PROXY · scaling linéaire] apparaît dès qu'un chemin
     # heuristique (overrides/scrape) alimente l'IPS. "OBSERVÉ" nu est réservé
     # au chemin z-score/percentile réel (institutional/Socrata).
+    #
+    # AUDIT-FIX (15/07/2026, finding 3 — MAJEURE): "OBSERVÉ" used to be
+    # baked into cot_ref_label itself, so this branch's PROXY suffix could
+    # end up appended to an already-"OBSERVÉ"-labelled string, producing a
+    # self-contradictory "OBSERVÉ ... [PROXY · scaling linéaire]" tag
+    # whenever the resolved IPS rows were not all PRIMARY. cot_ref_label is
+    # now reliability-neutral (see build_ips_scores) and the "OBSERVÉ —"
+    # prefix is only prepended here, in the one branch where it's actually
+    # true. Output is byte-identical to before for the PRIMARY-only case;
+    # the PROXY/mixed case no longer carries the contradictory prefix.
     if not ips:
         cot_date = "[N/A]"
     else:
         reliabs = {r.stamp.reliability for r in ips if r.stamp is not None}
         if Reliability.PRIMARY in reliabs and Reliability.PROXY not in reliabs:
-            cot_date = cot_ref_label
+            cot_date = f"OBSERVÉ — {cot_ref_label}"
         else:
             cot_date = cot_ref_label + " [PROXY · scaling linéaire]"
 
