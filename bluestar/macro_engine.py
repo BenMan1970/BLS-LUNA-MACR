@@ -142,12 +142,23 @@ _CB_DEFS = [
 def build_central_bank_context(overrides: Optional[dict]) -> list[CentralBankSnapshot]:
     """Build the four central-bank blocks.
 
-    Sourcing precedence (non-regression):
-      1. User override (``overrides['central_banks'][name]``) — always wins.
-      2. FRED policy rate (``fetch_central_bank_rates``) — fills a missing rate.
-      3. CME FedWatch (``fetch_fedwatch_probabilities``) — fills the Fed's
-         pause/cut/hike when the override omits them.
-      4. Otherwise [N/A] — never invented.
+    Sourcing precedence:
+      1. FRED policy rate (``fetch_central_bank_rates``) for the *rate*
+         field — preferred when live, so a working FRED feed is never
+         permanently shadowed by an override typed once and left in place.
+         AUDIT-FIX (15/07/2026): this used to be override-always-wins for
+         the rate too ("[PROXY · taux saisis en overrides]" showing up
+         indefinitely even when FRED was fine), per user request the two
+         are now swapped for the *rate* specifically.
+      2. User override (``overrides['central_banks'][name]['rate']``) —
+         fallback when FRED has no value for that bank.
+      3. ``fact`` / ``bias`` / ``next`` stay override-first (unchanged):
+         FRED only supplies a numeric rate, not the qualitative FAIT/BIAIS
+         write-up or the next-meeting date, so there is nothing live to
+         prefer there.
+      4. CME FedWatch (``fetch_fedwatch_probabilities``) — fills the Fed's
+         pause/cut/hike when the override omits them (unchanged).
+      5. Otherwise [N/A] — never invented.
     """
     cb_over = (overrides or {}).get("central_banks", {})
 
@@ -160,14 +171,14 @@ def build_central_bank_context(overrides: Optional[dict]) -> list[CentralBankSna
     for name, flag, _ccy in _CB_DEFS:
         o = cb_over.get(name, {})
 
-        # --- Rate: override > FRED > [N/A] ---
-        rate = o.get("rate")
+        # --- Rate: FRED (live) > override > [N/A] ---
+        fred_val = fred_rates.get(name)
         rate_from_fred = False
-        if rate is None:
-            fred_val = fred_rates.get(name)
-            if fred_val is not None:
-                rate = f"{fr_num(fred_val, 2)}%"
-                rate_from_fred = True
+        if fred_val is not None:
+            rate = f"{fr_num(fred_val, 2)}%"
+            rate_from_fred = True
+        else:
+            rate = o.get("rate")
         if rate is None:
             rate = "[N/A]"
 
@@ -187,13 +198,17 @@ def build_central_bank_context(overrides: Optional[dict]) -> list[CentralBankSna
             fw_used = True
 
         # --- Stamp reflects the strongest source actually used ---
-        if o:
-            stamp = proxy_stamp("manual override")
-        elif rate_from_fred or fw_used:
+        # AUDIT-FIX (15/07/2026): FRED-live rate now takes stamp precedence
+        # over a co-present override (e.g. override only supplying fact/
+        # bias/next text) — previously `if o:` alone forced [PROXY] even
+        # when the displayed rate itself came live from FRED.
+        if rate_from_fred or fw_used:
             src = "FRED" if rate_from_fred else ""
             if fw_used:
                 src = (src + " + CME FedWatch").strip(" +")
             stamp = SourceStamp(src or "external", Reliability.PRIMARY)
+        elif o:
+            stamp = proxy_stamp("manual override")
         else:
             stamp = na_stamp("source sans clé API")
 
@@ -239,11 +254,13 @@ def _build_rate_differential(central_banks: list[CentralBankSnapshot]) -> tuple[
     degrades to [N/A] when fewer than 2 rates are genuinely available.
     """
     rates: dict[str, float] = {}
+    stamps: dict[str, SourceStamp] = {}
     for (_name, _flag, ccy), cb in zip(_CB_DEFS, central_banks):
         if cb.stamp.ok:
             r = _parse_rate_pct(cb.rate_display)
             if r is not None:
                 rates[ccy] = r
+                stamps[ccy] = cb.stamp
 
     if len(rates) < 2:
         return ("[N/A] — taux directeurs non sourcés (saisir en overrides).",
@@ -252,9 +269,20 @@ def _build_rate_differential(central_banks: list[CentralBankSnapshot]) -> tuple[
     ccy_hi = max(rates, key=rates.get)
     ccy_lo = min(rates, key=rates.get)
     gap = rates[ccy_hi] - rates[ccy_lo]
+    # AUDIT-FIX (15/07/2026): this tag used to hardcode "[PROXY · taux
+    # saisis en overrides]" unconditionally, which was accurate by
+    # construction back when the override always won the rate. Now that
+    # build_central_bank_context() lets a live FRED rate win when
+    # available, a hardcoded PROXY tag would misreport a genuinely live
+    # differential as an approximation — the same class of bug as the
+    # momentum-tag fix on the setup cards. The tag now reflects the actual
+    # stamp of the two rates involved.
+    both_live = (stamps[ccy_hi].reliability is Reliability.PRIMARY and
+                stamps[ccy_lo].reliability is Reliability.PRIMARY)
+    tag = "[FRED · PRIMARY]" if both_live else "[PROXY · taux saisis en overrides]"
     dominant = (f"{ccy_hi} ({fr_num(rates[ccy_hi], 2)}%) vs {ccy_lo} "
                f"({fr_num(rates[ccy_lo], 2)}%) → écart ≈ {fr_num(gap, 2)} pt "
-               "[PROXY · taux saisis en overrides]")
+               f"{tag}")
     if gap == 0:
         implication = f"Taux directeurs identiques ({ccy_hi}/{ccy_lo}) — pas de portage net entre les deux."
     else:
