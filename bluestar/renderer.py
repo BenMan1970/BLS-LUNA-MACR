@@ -240,7 +240,7 @@ def _render_fed(cb) -> str:
         </div>"""
     return f"""
       <div class="cb">
-        <div class="cb-flag">{cb.flag}</div><div class="cb-name">{_e(cb.name)}</div><div class="cb-rate">{_e(cb.rate_display)}</div>
+        <div class="cb-flag">{cb.flag}</div><div class="cb-name">{_e(cb.name)}</div><div class="cb-rate">{_e(cb.rate_display)} <span style="font-size:9px;font-weight:400;color:var(--muted)">{_e(cb.stamp.render())}</span></div>
         {proba}
         <div class="cb-next">Prochaine : {_e(cb.next_meeting)}</div>
         <div class="cb-biais"><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">FAIT ·</span> {_e(cb.fact)}<br><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">BIAIS ·</span> {_e(cb.bias_interpretation)}</div>
@@ -249,7 +249,7 @@ def _render_fed(cb) -> str:
 
 def _render_cb_simple(cb) -> str:
     return f"""
-      <div class="cb"><div class="cb-flag">{cb.flag}</div><div class="cb-name">{_e(cb.name)}</div><div class="cb-rate">{_e(cb.rate_display)}</div><div class="cb-biais"><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">FAIT ·</span> {_e(cb.fact)}<br><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">BIAIS ·</span> {_e(cb.bias_interpretation)}</div><div class="cb-next">Prochaine : {_e(cb.next_meeting)}</div></div>"""
+      <div class="cb"><div class="cb-flag">{cb.flag}</div><div class="cb-name">{_e(cb.name)}</div><div class="cb-rate">{_e(cb.rate_display)} <span style="font-size:9px;font-weight:400;color:var(--muted)">{_e(cb.stamp.render())}</span></div><div class="cb-biais"><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">FAIT ·</span> {_e(cb.fact)}<br><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">BIAIS ·</span> {_e(cb.bias_interpretation)}</div><div class="cb-next">Prochaine : {_e(cb.next_meeting)}</div></div>"""
 
 
 def _render_section3(ctx: BriefingContext) -> str:
