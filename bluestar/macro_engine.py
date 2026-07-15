@@ -33,6 +33,7 @@ except Exception:  # pragma: no cover
 from .oanda_data import fr_num
 from .external_sources import (
     fetch_central_bank_rates,
+    central_bank_rate_source,            # AUDIT-ENRICHMENT 15/07/2026: BoE via IADB
     fetch_fedwatch_probabilities,
     fetch_cot_data,
     fetch_liquidity_stress,
@@ -171,12 +172,17 @@ def build_central_bank_context(overrides: Optional[dict]) -> list[CentralBankSna
     for name, flag, _ccy in _CB_DEFS:
         o = cb_over.get(name, {})
 
-        # --- Rate: FRED (live) > override > [N/A] ---
-        fred_val = fred_rates.get(name)
-        rate_from_fred = False
-        if fred_val is not None:
-            rate = f"{fr_num(fred_val, 2)}%"
-            rate_from_fred = True
+        # --- Rate: live source (FRED or BoE IADB) > override > [N/A] ---
+        # AUDIT-ENRICHMENT (15/07/2026): renamed fred_val/rate_from_fred ->
+        # live_val/rate_is_live — fetch_central_bank_rates() can now also
+        # resolve "BoE" via the Bank of England's own IADB feed (see
+        # external_sources.py), not just FRED, so "fred_val" was no longer
+        # an accurate name for what this variable can hold.
+        live_val = fred_rates.get(name)
+        rate_is_live = False
+        if live_val is not None:
+            rate = f"{fr_num(live_val, 2)}%"
+            rate_is_live = True
         else:
             rate = o.get("rate")
         if rate is None:
@@ -202,8 +208,11 @@ def build_central_bank_context(overrides: Optional[dict]) -> list[CentralBankSna
         # over a co-present override (e.g. override only supplying fact/
         # bias/next text) — previously `if o:` alone forced [PROXY] even
         # when the displayed rate itself came live from FRED.
-        if rate_from_fred or fw_used:
-            src = "FRED" if rate_from_fred else ""
+        # AUDIT-ENRICHMENT (15/07/2026): src is now looked up via
+        # central_bank_rate_source(name) instead of hardcoded "FRED" — that
+        # hardcode would have mislabeled a live BoE (IADB) rate as "FRED".
+        if rate_is_live or fw_used:
+            src = central_bank_rate_source(name) if rate_is_live else ""
             if fw_used:
                 src = (src + " + CME FedWatch").strip(" +")
             stamp = SourceStamp(src or "external", Reliability.PRIMARY)
@@ -277,9 +286,19 @@ def _build_rate_differential(central_banks: list[CentralBankSnapshot]) -> tuple[
     # differential as an approximation — the same class of bug as the
     # momentum-tag fix on the setup cards. The tag now reflects the actual
     # stamp of the two rates involved.
+    # AUDIT-ENRICHMENT (15/07/2026): the live-case tag was itself hardcoded
+    # to "[FRED · PRIMARY]" — wrong the moment one leg is BoE-sourced (see
+    # external_sources.py / central_bank_rate_source). Built from the two
+    # actual stamp.source_name values instead, so e.g. a GBP/JPY pair
+    # correctly shows both "Bank of England · IADB" and "FRED" when both
+    # legs are genuinely live.
     both_live = (stamps[ccy_hi].reliability is Reliability.PRIMARY and
                 stamps[ccy_lo].reliability is Reliability.PRIMARY)
-    tag = "[FRED · PRIMARY]" if both_live else "[PROXY · taux saisis en overrides]"
+    if both_live:
+        src_names = sorted({stamps[ccy_hi].source_name, stamps[ccy_lo].source_name})
+        tag = f"[{' + '.join(src_names)} · PRIMARY]"
+    else:
+        tag = "[PROXY · taux saisis en overrides]"
     dominant = (f"{ccy_hi} ({fr_num(rates[ccy_hi], 2)}%) vs {ccy_lo} "
                f"({fr_num(rates[ccy_lo], 2)}%) → écart ≈ {fr_num(gap, 2)} pt "
                f"{tag}")
