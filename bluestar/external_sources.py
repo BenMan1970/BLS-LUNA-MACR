@@ -104,8 +104,9 @@ _FRED_BASE = "https://api.stlouisfed.org/fred/series/observations"
 # - FEDFUNDS : mensuel, remplacé par DFEDTARU (quotidien, borne haute).
 # - IRSTCB01JPM156N : coquille 'B', discontinuée. Remplacé par IRSTCI01JPM156N.
 # - BOERUKM : gelée depuis jan. 2017. AUCUNE série BoE fiable sur FRED.
-#   -> BoE retirée du mapping. Le pipeline dégradera honnêtement en [N/A]
-#      jusqu'à fourniture via override ou intégration API BoE officielle.
+#   -> BoE retirée du mapping FRED. Voir plus bas (section 1bis) pour la
+#      source BoE dédiée (API officielle Bank of England, hors FRED) ajoutée
+#      le 15/07/2026 — enrichissement pur, ne touche à rien de ce qui suit.
 # ---------------------------------------------------------------------------
 _CB_RATE_SERIES: dict[str, str] = {
     "FED": "DFEDTARU",
@@ -119,10 +120,25 @@ _CB_RATE_BOUNDS: dict[str, tuple[float, float]] = {
     "FED": (-0.5, 15.0),
     "BCE": (-0.5, 15.0),
     "BoJ": (-1.0, 10.0),
+    "BoE": (-0.5, 15.0),
 }
 
 # Staleness max : au-delà, la série est considérée potentiellement gelée.
 _CB_MAX_STALENESS_DAYS: int = 70
+
+# BoE-specific staleness bound (audit-enrichment 15/07/2026): the FRED
+# series above are DAILY (a value repeats every day even when the rate
+# itself is unchanged), so a fresh observation *date* within 70 days is a
+# reliable freshness signal even for a rate that hasn't moved. The BoE
+# IADB Bank Rate series is event-based: a new row only appears the day the
+# MPC actually changes the rate, so the latest observation can legitimately
+# be many months old while still being the current valid rate (MPC meets
+# ~8x/year and often holds). Reusing the 70-day FRED bound here would
+# wrongly discard a perfectly valid, unchanged BoE rate as "stale". A much
+# more generous window is used instead — long enough to tolerate a normal
+# holding pattern, still short enough to catch a genuinely dead/discontinued
+# feed.
+_BOE_MAX_STALENESS_DAYS: int = 400
 
 _SOFR_SERIES = "SOFR"
 _EFFR_SERIES = "EFFR"
@@ -195,16 +211,120 @@ def _fred_series_dated(series_id: str) -> Optional[tuple[float, str]]:
         return None
 
 
+# ===========================================================================
+# 1bis. Bank of England — API officielle (hors FRED)
+#
+# AUDIT-ENRICHMENT (15/07/2026): FRED n'a aucune série BoE Bank Rate fiable
+# (BOERUKM gelée depuis 2017, voir commentaire ci-dessus). Cette section
+# interroge directement la base IADB de la Bank of England (endpoint public,
+# sans clé) — même contrat "never raise, log and return None" que le reste
+# du module. Purement additif : ne touche ni _fred_series, ni
+# _fred_series_dated, ni aucune des séries FED/BCE/BoJ existantes.
+# ===========================================================================
+_BOE_IADB_URL = "https://www.bankofengland.co.uk/boeapps/iadb/fromshowcolumns.asp"
+_BOE_BANK_RATE_CODE = "IUDBEDR"  # Bank Rate officielle (code série IADB)
+
+# Formats de date observés dans les exports IADB (varie selon les endpoints
+# BoE) — essayés dans l'ordre jusqu'à ce qu'un marche.
+_BOE_DATE_FORMATS = ("%d %b %Y", "%d/%m/%Y", "%d-%b-%y", "%Y-%m-%d")
+
+
+def _boe_parse_date(raw: str) -> Optional[datetime.date]:
+    raw = raw.strip()
+    for fmt in _BOE_DATE_FORMATS:
+        try:
+            return datetime.datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _boe_bank_rate() -> Optional[tuple[float, str]]:
+    """Fetch the latest BoE Bank Rate observation from the IADB CSV export.
+
+    Returns ``(value, date_iso)`` or ``None`` on any failure — never raises,
+    matching every other fetcher in this module. NOTE: this endpoint is
+    outside the sandbox's allowed network domains at the time this was
+    written, so this function could not be exercised against a live
+    response here; the CSV parsing below is best-effort against the
+    documented IADB export format (data rows after a short header/meta
+    block) and should be verified against a real response in your
+    environment before being relied on.
+    """
+    end = datetime.date.today()
+    start = end - datetime.timedelta(days=800)  # generous: MPC holds often
+    params = {
+        "csv.x": "yes",
+        "Datefrom": start.strftime("%d/%b/%Y"),
+        "Dateto": end.strftime("%d/%b/%Y"),
+        "SeriesCodes": _BOE_BANK_RATE_CODE,
+        "CSVF": "TN",
+        "UsingCodes": "Y",
+        "VPD": "Y",
+        "ns": "1",
+    }
+    try:
+        r = requests.get(_BOE_IADB_URL, params=params, timeout=15)
+        r.raise_for_status()
+    except requests.RequestException as exc:
+        logger.warning("BoE IADB fetch failed: %s", exc)
+        return None
+
+    try:
+        lines = [ln for ln in r.text.splitlines() if ln.strip()]
+        # IADB exports carry a short header/meta block before the data
+        # table; scan for the first row that looks like "<date>,<number>"
+        # rather than assuming a fixed skip count, since the exact preamble
+        # length has varied across BoE endpoint versions.
+        data_rows = []
+        for row in csv.reader(lines):
+            if len(row) < 2 or not row[0].strip():
+                continue
+            d = _boe_parse_date(row[0])
+            if d is None:
+                continue
+            try:
+                v = float(row[1].strip())
+            except ValueError:
+                continue
+            data_rows.append((d, v))
+        if not data_rows:
+            logger.warning("BoE IADB: aucune ligne de données exploitable dans la réponse")
+            return None
+        data_rows.sort(key=lambda t: t[0])
+        last_date, last_val = data_rows[-1]
+        return last_val, last_date.isoformat()
+    except (csv.Error, IndexError) as exc:
+        logger.warning("BoE IADB parse error: %s", exc)
+        return None
+
+
+def central_bank_rate_source(name: str) -> str:
+    """Human-readable source label for a rate resolved by
+    ``fetch_central_bank_rates()`` — lets callers (macro_engine.py) render
+    an accurate stamp instead of hardcoding "FRED" for every entry, which
+    would now be wrong for "BoE" specifically (audit-enrichment 15/07/2026).
+    """
+    return "Bank of England · IADB" if name == "BoE" else "FRED"
+
+
 def fetch_central_bank_rates() -> dict[str, float]:
-    """Return ``{cb_name: rate_pct}`` for every rate FRED can serve.
-    
-    Audit A1 FIX: chaque série résolue est contrôlée en fraîcheur (date d'observation)
-    et en plausibilité (bornes _CB_RATE_BOUNDS). Une série qui échoue est écartée
-    avec un WARNING, dégradant proprement vers [N/A] en aval.
+    """Return ``{cb_name: rate_pct}`` for every rate a live source can serve.
+
+    Audit A1 FIX: chaque série FRED résolue est contrôlée en fraîcheur (date
+    d'observation) et en plausibilité (bornes _CB_RATE_BOUNDS). Une série qui
+    échoue est écartée avec un WARNING, dégradant proprement vers [N/A] en aval.
+
+    Audit-ENRICHMENT (15/07/2026): "BoE" est désormais résolu ici aussi, via
+    la Bank of England elle-même plutôt que FRED (voir section 1bis) — le
+    contrat public de cette fonction ({name: float}) est inchangé, BoE
+    apparaît simplement comme une clé de plus quand la source répond.
+    Utiliser ``central_bank_rate_source(name)`` en aval pour savoir quelle
+    source a réellement servi une entrée donnée (au lieu de supposer "FRED").
     """
     out: dict[str, float] = {}
 
-    def _resolve(name: str, series_id: str) -> Optional[float]:
+    def _resolve_fred(name: str, series_id: str) -> Optional[float]:
         res = _fred_series_dated(series_id)
         if res is None:
             logger.warning("CB rate: %s (%s) — aucune observation FRED", name, series_id)
@@ -244,9 +364,46 @@ def fetch_central_bank_rates() -> dict[str, float]:
 
         return val
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(_CB_RATE_SERIES)) as ex:
-        future_to_name = {ex.submit(_resolve, name, series_id): name
+    def _resolve_boe() -> Optional[float]:
+        res = _boe_bank_rate()
+        if res is None:
+            logger.warning("CB rate: BoE (IADB %s) — aucune observation", _BOE_BANK_RATE_CODE)
+            return None
+
+        val, dt_iso = res
+
+        # --- Contrôle 1 : fraîcheur (fenêtre BoE dédiée, cf. _BOE_MAX_STALENESS_DAYS) ---
+        try:
+            obs_date = datetime.date.fromisoformat(dt_iso)
+            age_days = (datetime.date.today() - obs_date).days
+            if age_days > _BOE_MAX_STALENESS_DAYS:
+                logger.warning(
+                    "CB rate: BoE (IADB) — observation datée du %s (%d j) "
+                    "→ série potentiellement gelée, valeur écartée",
+                    dt_iso, age_days,
+                )
+                return None
+        except (ValueError, TypeError):
+            logger.warning("CB rate: BoE (IADB) — date illisible '%s', valeur écartée", dt_iso)
+            return None
+
+        # --- Contrôle 2 : plausibilité ---
+        bounds = _CB_RATE_BOUNDS.get("BoE")
+        if bounds is not None:
+            lo, hi = bounds
+            if not (lo <= val <= hi):
+                logger.warning(
+                    "CB rate: BoE (IADB) — valeur %.4f hors bornes [%.1f, %.1f], écartée",
+                    val, lo, hi,
+                )
+                return None
+
+        return val
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(_CB_RATE_SERIES) + 1) as ex:
+        future_to_name = {ex.submit(_resolve_fred, name, series_id): name
                           for name, series_id in _CB_RATE_SERIES.items()}
+        future_to_name[ex.submit(_resolve_boe)] = "BoE"
         for future in concurrent.futures.as_completed(future_to_name):
             name = future_to_name[future]
             try:
@@ -257,10 +414,11 @@ def fetch_central_bank_rates() -> dict[str, float]:
             if val is not None:
                 out[name] = val
                 
+    _all_names = set(_CB_RATE_SERIES) | {"BoE"}
     if not out:
         logger.error("CB rate: AUCUN taux résolu — différentiels indisponibles")
     else:
-        missing = set(_CB_RATE_SERIES) - set(out)
+        missing = _all_names - set(out)
         if missing:
             logger.warning("CB rate: taux manquants pour %s — dégradation [N/A] attendue", ", ".join(sorted(missing)))
 
