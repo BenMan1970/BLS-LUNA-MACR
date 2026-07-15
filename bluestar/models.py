@@ -223,7 +223,16 @@ class AssetSetup:
     ips_summary: str = "[N/A]"
     squeeze_risk: str = "Faible"
     squeeze_class: str = "green"
-    sizing_factor: str = "[N/A]"
+    # AUDIT-FIX (15/07/2026, finding 6 — MINEURE): 'sizing_factor' removed.
+    # It was computed every run (compute_sizing_factor in macro_engine.py)
+    # but never read by renderer.py or anywhere else — v9.0 replaced the
+    # Sizing Factor display with the R:R ratio below (see
+    # validation.check_sizing_formula_present's own comment: "In v9.0,
+    # Sizing Factor is replaced by R:R"), leaving this a pure
+    # dead-code field misleading future maintainers into thinking it
+    # reaches the reader. Removed field + its computation + call-site,
+    # zero other consumers (verified: no references anywhere else in the
+    # codebase).
     risk_reward: str = "[N/A]"     # R:R ratio (e.g. "1:2,5")
     price_display: str = "[N/A]"
     levels_are_proxy: bool = False
@@ -292,3 +301,4 @@ class BriefingContext:
     # v9.0: Enhanced regime and interpretation layers
     regime_assessment: object = None  # RegimeAssessment (avoid circular import)
     interpretation: object = None     # InterpretationLayer
+ 
