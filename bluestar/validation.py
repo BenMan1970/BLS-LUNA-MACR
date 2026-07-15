@@ -63,8 +63,37 @@ def check_required_fields(ctx: BriefingContext) -> list[ValidationIssue]:
     return issues
 
 
+_RR_SHAPE = re.compile(r"^(\[N/A\]|1:\d+(?:,\d+)?)$")
+_INVAL_SHAPE = re.compile(r"^(\[N/A\]|clôture (sous le|au-dessus du) stop .+)$")
+
+
 def check_sources_or_na(ctx: BriefingContext) -> list[ValidationIssue]:
-    """Numeric levels must be a number, [N/A] or [PROXY]-tagged."""
+    """Numeric levels must be a number, [N/A] or [PROXY]-tagged.
+
+    AUDIT-FIX (15/07/2026, finding 4 — MAJEURE): this rule used to check
+    only zone_buy/zone_sell/stop, leaving expected_move, risk_reward,
+    invalidation_level and ips_summary — all numeric fields rendered on
+    every asset card — completely unchecked, a gap that would let a future
+    silent drift (e.g. a bug emitting a raw, unexplained number in any of
+    them) through with no warning at all. Extended below.
+
+    Unlike zone_buy/zone_sell/stop (which have a dedicated ``origin_*``
+    field), these four have no sibling origin field, so the check for
+    each is built from what's actually available as origin evidence:
+      - expected_move has ``em_method`` (ATR 14j / PROXY .../ [N/A]) —
+        same origin-field pattern as zone_buy/origin_buy.
+      - risk_reward and invalidation_level are pure arithmetic derivations
+        of the already-validated buy/sell/stop levels with a fixed,
+        known-good shape ("1:X,X" / "clôture ... stop ..."); anything
+        outside that shape is flagged.
+      - ips_summary has no tag of its own (today the "[cot_label]" tag
+        lives on the sibling ``positioning_link`` field, built in the
+        same function) — checked against that sibling being populated.
+    These are intentionally shape/presence checks rather than a blanket
+    "must contain a bracket" rule, so they add real coverage for future
+    drift without generating WARN noise on the current, well-formed
+    output (verified against the live pipeline: none of these fire today).
+    """
     issues = []
     tag = re.compile(r"\[(N/A|PROXY)")
     for s in ctx.priority_assets:
@@ -75,6 +104,33 @@ def check_sources_or_na(ctx: BriefingContext) -> list[ValidationIssue]:
             if has_num and not (tag.search(origin) or "[" in origin):
                 issues.append(ValidationIssue("sources_or_na", "WARN",
                                               f"{s.asset}: niveau '{f}' sans origine tagguée."))
+
+        em_val = str(getattr(s, "expected_move", ""))
+        em_method = str(getattr(s, "em_method", ""))
+        if any(ch.isdigit() for ch in em_val) and not em_method.strip():
+            issues.append(ValidationIssue("sources_or_na", "WARN",
+                                          f"{s.asset}: 'expected_move' ({em_val}) sans méthode "
+                                          "('em_method' vide)."))
+
+        rr_val = str(getattr(s, "risk_reward", "")).strip()
+        if rr_val and not _RR_SHAPE.match(rr_val):
+            issues.append(ValidationIssue("sources_or_na", "WARN",
+                                          f"{s.asset}: 'risk_reward' ({rr_val}) hors format "
+                                          "attendu (ni '[N/A]' ni '1:X,X')."))
+
+        inv_val = str(getattr(s, "invalidation_level", "")).strip()
+        if inv_val and not _INVAL_SHAPE.match(inv_val):
+            issues.append(ValidationIssue("sources_or_na", "WARN",
+                                          f"{s.asset}: 'invalidation_level' ({inv_val}) hors "
+                                          "format attendu."))
+
+        ips_val = str(getattr(s, "ips_summary", ""))
+        if (any(ch.isdigit() for ch in ips_val)
+                and not (tag.search(ips_val) or "[" in ips_val)
+                and not str(getattr(s, "positioning_link", "")).strip()):
+            issues.append(ValidationIssue("sources_or_na", "WARN",
+                                          f"{s.asset}: 'ips_summary' ({ips_val}) sans tag propre "
+                                          "et sans 'positioning_link' associé."))
     return issues
 
 
