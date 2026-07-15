@@ -280,7 +280,24 @@ def _gdp_indicator(market: MarketSnapshot) -> RegimeIndicator | None:
     if g < 1.0:
         return RegimeIndicator("GDPNow", f"{g:.1f}%", "risk_off", 0.05, True,
                                "Croissance faible — risque de ralentissement.")
-    return None
+    # AUDIT-FIX (15/07/2026): the neutral band (1.0%-2.5%) used to return
+    # None here, which _build_narrative() cannot distinguish from "data
+    # unavailable" (both render as "signal indisponible [N/A]") — harmless
+    # while GDP Nowcast was itself unavailable, but actively misleading
+    # once it started coming back live at a neutral reading (e.g. 1.3%):
+    # the KPI header shows the real number while the narrative claims it's
+    # missing. Mirrors the neutral branch already in place (and audited) in
+    # the sibling _us10y_indicator, which always returns an indicator when
+    # its Datum is available. Weight is explicitly 0.0 — not
+    # _proxy_weight()'s 0.05/0.025 — so this is a strict no-op in
+    # _classify(): `scores[...] += 0.0` and `total_weight += 0.0` cannot
+    # move the dominant bucket, the confidence margin, or the selected
+    # regime. The only observable change is textual: the narrative now says
+    # "Croissance : 1.3% (neutre...)" instead of "[N/A]", and this
+    # indicator is correctly counted among the evaluated ones (it's the
+    # `supports=True` hardcoded convention every indicator uses here).
+    return RegimeIndicator("GDPNow", f"{g:.1f}%", "neutral", 0.0, True,
+                           "Croissance neutre — pas de signal directionnel matériel.")
 
 
 
