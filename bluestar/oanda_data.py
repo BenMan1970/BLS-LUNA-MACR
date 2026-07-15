@@ -26,6 +26,7 @@ import concurrent.futures
 import logging
 import math
 import os
+import re
 import time
 from datetime import datetime
 from typing import Optional
@@ -186,6 +187,42 @@ def _trend_str(last: float, prev: float, pct_decimals: int = 1) -> str:
     chg = (last - prev) / prev * 100
     arrow = "↑" if chg > 0.05 else "↓" if chg < -0.05 else "→"
     return f"{arrow} {fr_num(abs(chg), pct_decimals)}%"
+
+
+_LEADING_NUMBER_RE = re.compile(r"^\s*[-+]?\d+(?:[.,]\d+)?")
+
+
+def _parse_override_leading_number(raw: str) -> Optional[float]:
+    """Extract a leading numeric value from a free-text override string.
+
+    AUDIT-FIX (15/07/2026): GDP_NOWCAST / SURPRISE_IDX overrides are typed
+    as rich descriptive text in the sidebar (e.g. "3,0% (T2, Atlanta Fed
+    17/06)"), so the override branch below used to build
+    ``Datum(None, ..., display=raw_text, ...)`` — ``value`` was always
+    ``None`` even though the number is right there in the text. Because
+    ``Datum.available`` requires ``value is not None``, every downstream
+    consumer that checks ``.available`` (``regime_engine._gdp_indicator``,
+    which feeds both the regime narrative AND the multi-factor regime vote
+    itself, and ``interpretation._growth_link``, which feeds the factorial
+    narrative chain) silently treated a manually-entered, human-readable
+    GDP Nowcast as absent — while the KPI header, which reads ``.display``
+    directly and never checked ``.available``, kept showing the real
+    number. Same result whether the override text is a bare number
+    ("3,0") or has trailing context ("3,0% (T2, Atlanta Fed 17/06)") — only
+    the leading numeric token is extracted; the full original text is
+    still preserved verbatim in ``Datum.display``, unchanged.
+    Returns ``None`` (old behaviour, zero regression) when no leading
+    number can be parsed, e.g. a purely qualitative override.
+    """
+    if raw is None:
+        return None
+    m = _LEADING_NUMBER_RE.match(str(raw))
+    if not m:
+        return None
+    try:
+        return float(m.group(0).strip().replace(",", "."))
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -540,7 +577,7 @@ def build_market_snapshot(
         )
     elif "GDP_NOWCAST" in overrides:
         snap.gauges["GDP_NOWCAST"] = Datum(
-            None,
+            _parse_override_leading_number(overrides["GDP_NOWCAST"]),
             SourceStamp("manual override", Reliability.PROXY),
             str(overrides["GDP_NOWCAST"]), "",
         )
@@ -561,7 +598,7 @@ def build_market_snapshot(
     # Surprise Index: no keyless source — [N/A] unless overridden (unchanged).
     if "SURPRISE_IDX" in overrides:
         snap.gauges["SURPRISE_IDX"] = Datum(
-            None,
+            _parse_override_leading_number(overrides["SURPRISE_IDX"]),
             SourceStamp("manual override", Reliability.PROXY),
             str(overrides["SURPRISE_IDX"]), "",
         )
