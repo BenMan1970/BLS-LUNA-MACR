@@ -108,7 +108,15 @@ def _render_section1(ctx: BriefingContext) -> str:
         cards = "".join(_render_top_card(s) for s in ctx.priority_assets)
         priority_block = f'<div class="top-grid">{cards}</div>'
     else:
-        priority_block = (f'<div class="no-setup"><div class="no-setup-icon">🛑</div>'
+        # AUDIT-ENRICHMENT (15/07/2026): 🛑 (stop sign) read as an alarm in
+        # an emoji font, which is the wrong register for a decision-support
+        # tool that is explicitly choosing not to force a trade — it's a
+        # calm, deliberate "nothing meets the bar today", not an error
+        # state. Swapped for 🧭 (compass — "no clear directional read"),
+        # same neutral dashed-border box (.no-setup CSS untouched), purely
+        # cosmetic, no change to no_setup_reason logic or when this
+        # branch fires.
+        priority_block = (f'<div class="no-setup"><div class="no-setup-icon">🧭</div>'
                           f'<div class="no-setup-title">Aucun actif ne réunit les critères aujourd\'hui</div>'
                           f'<div class="no-setup-sub">{_e(ctx.no_setup_reason or "")}</div></div>')
 
@@ -374,7 +382,9 @@ def _render_section4(ctx: BriefingContext) -> str:
     if ctx.priority_assets:
         body = "".join(_render_asset_card(s) for s in ctx.priority_assets)
     else:
-        body = (f'<div class="no-setup"><div class="no-setup-icon">🛑</div>'
+        # AUDIT-ENRICHMENT (15/07/2026): same swap as Section 1 above — 🧭
+        # instead of 🛑, cosmetic only.
+        body = (f'<div class="no-setup"><div class="no-setup-icon">🧭</div>'
                 f'<div class="no-setup-title">Aucune fiche actif aujourd\'hui</div>'
                 f'<div class="no-setup-sub">{_e(ctx.no_setup_reason or "")}</div></div>')
     return f"""
