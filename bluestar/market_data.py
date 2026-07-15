@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -61,6 +62,32 @@ def _trend_str(last: float, prev: float, pct_decimals: int = 1) -> str:
     chg = (last - prev) / prev * 100
     arrow = "↑" if chg > 0.05 else "↓" if chg < -0.05 else "→"
     return f"{arrow} {fr_num(abs(chg), pct_decimals)}%"
+
+
+_LEADING_NUMBER_RE = re.compile(r"^\s*[-+]?\d+(?:[.,]\d+)?")
+
+
+def _parse_override_leading_number(raw: str) -> Optional[float]:
+    """Extract a leading numeric value from a free-text override string.
+
+    AUDIT-FIX (15/07/2026): mirrored from ``oanda_data.py`` per this
+    module's own docstring contract ("Any fix applied ... must be mirrored
+    here to keep the two in sync"). See ``oanda_data.py`` for the full
+    rationale — in short, GDP_NOWCAST/SURPRISE_IDX overrides used to build
+    ``Datum(None, ..., display=raw_text, ...)``, leaving ``.value`` at
+    ``None`` and breaking every ``.available`` check downstream even
+    though the number was present in the display text. Returns ``None``
+    (old behaviour, zero regression) when no leading number is found.
+    """
+    if raw is None:
+        return None
+    m = _LEADING_NUMBER_RE.match(str(raw))
+    if not m:
+        return None
+    try:
+        return float(m.group(0).strip().replace(",", "."))
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +205,8 @@ def build_market_snapshot(
     for gkey in ("GDP_NOWCAST", "SURPRISE_IDX"):
         if gkey in overrides:
             snap.gauges[gkey] = Datum(
-                None, SourceStamp("manual override", Reliability.PROXY),
+                _parse_override_leading_number(overrides[gkey]),
+                SourceStamp("manual override", Reliability.PROXY),
                 str(overrides[gkey]), "",
             )
         else:
