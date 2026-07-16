@@ -345,6 +345,11 @@ def _factor_analysis(
             contradicting.append("VIX et MOVE divergent : tension sur un marché, calme sur l'autre.")
     
     # P/C sentiment — enrichit reinforcing_indicators (S7) ──────────────────
+    # AUDIT-FIX (validation audit, finding P1 — 15/07/2026): previously
+    # required BOTH eq_ma and idx_ma, silently dropping this entirely
+    # whenever "index" failed (its common, structurally-doomed case — see
+    # external_sources.fetch_pc_ratio) even though equity succeeded and
+    # composite_signal was populated (single-leg degraded mode).
     if pc_data is not None:
         equity    = pc_data.get("equity") or {}
         index_pc  = pc_data.get("index")  or {}
@@ -352,12 +357,18 @@ def _factor_analysis(
         eq_ma     = equity.get("ma_5d")
         idx_ma    = index_pc.get("ma_5d")
         stale     = pc_data.get("stale", False)
-        if composite and eq_ma is not None and idx_ma is not None:
+        if composite and eq_ma is not None:
             stale_note = " [données périmées]" if stale else ""
-            reinforcing.append(
-                f"P/C Ratio : Eq.MA5j {eq_ma} · Idx.MA5j {idx_ma}"
-                f" — {composite}{stale_note}."
-            )
+            if idx_ma is not None:
+                reinforcing.append(
+                    f"P/C Ratio : Eq.MA5j {eq_ma} · Idx.MA5j {idx_ma}"
+                    f" — {composite}{stale_note}."
+                )
+            else:
+                reinforcing.append(
+                    f"P/C Ratio (dégradé, equity seul) : Eq.MA5j {eq_ma}"
+                    f" — {composite}{stale_note}."
+                )
 
     return dominant, reinforcing, contradicting
 
@@ -482,13 +493,19 @@ def _volatility_link(
     else:
         direction, mech = "neutral", "vol modérée"
     # Enrich with options flow when available (additive — never alters direction)
+    # AUDIT-FIX (validation audit, finding P1 — 15/07/2026): previously
+    # required BOTH eq_ma and idx_ma — same relaxation as the other two
+    # P/C consumers, see fetch_pc_ratio / _pc_indicator for the rationale.
     if pc_data is not None:
         composite = pc_data.get("composite_signal", "")
         eq_ma  = (pc_data.get("equity") or {}).get("ma_5d")
         idx_ma = (pc_data.get("index")  or {}).get("ma_5d")
-        if composite and eq_ma is not None and idx_ma is not None:
-            mech += (f" · Options flow : Eq.P/C {eq_ma} / Idx.P/C {idx_ma}"
-                     f" ({composite})")
+        if composite and eq_ma is not None:
+            if idx_ma is not None:
+                mech += (f" · Options flow : Eq.P/C {eq_ma} / Idx.P/C {idx_ma}"
+                         f" ({composite})")
+            else:
+                mech += f" · Options flow (dégradé, equity seul) : Eq.P/C {eq_ma} ({composite})"
     return FactorLink("Liquidité", "Volatilité", f"{vol_val} — {mech}",
                       direction, "high" if vix.available else "low")
 
