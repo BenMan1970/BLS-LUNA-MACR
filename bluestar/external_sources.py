@@ -1133,7 +1133,31 @@ def _cboe_fetch_yf(ratio_type: str, ma_days: int) -> Optional[dict]:
         return None   # index P/C: aucune source keyless fiable (N2)
     try:
         import yfinance as yf   # lazy import — only on fallback path
-        hist = yf.Ticker(ticker_sym).history(period=f"{max(ma_days * 3, 15)}d")
+        import random, time as _time
+        # AUDIT-FIX (17/07/2026, synergie avec oanda_data._yf_history):
+        # meme cause racine que le DXY manquant du 16/07 — un seul appel
+        # yfinance, zero retry, alors que Yahoo rate-limite (429) l'IP
+        # entiere independamment du ticker (prouve empiriquement sur
+        # ^PCALL par les deux audits reseau). Jitter + 2 tentatives avec
+        # backoff exponentiel, ciblees sur les erreurs 429/RateLimit
+        # uniquement — meme forme que le fix deja applique dans
+        # oanda_data.py, pour ne pas introduire un second pattern de
+        # retry dans la meme codebase. Additif : signature, type de
+        # retour et degradation finale vers None strictement inchanges.
+        _time.sleep(random.uniform(0, 0.4))
+        hist = None
+        _last_exc: Exception | None = None
+        for _attempt in range(3):
+            try:
+                hist = yf.Ticker(ticker_sym).history(period=f"{max(ma_days * 3, 15)}d")
+                break
+            except Exception as _e:
+                _last_exc = _e
+                _is_rl = "429" in str(_e) or "RateLimit" in type(_e).__name__
+                if _attempt < 2 and _is_rl:
+                    _time.sleep(1.5 ** (_attempt + 1) + random.uniform(0, 0.4))
+                    continue
+                raise
         if hist is None or hist.empty or "Close" not in hist.columns:
             logger.warning("CBOE yfinance %s: empty history for %s",
                            ratio_type, ticker_sym)
@@ -1308,4 +1332,3 @@ def fetch_pc_ratio(
         out["composite_signal"] = _pc_composite(eq_ma, idx_ma, eq_sev, idx_sev)
 
     return out
-
