@@ -550,16 +550,32 @@ def fetch_gdpnow_full() -> Optional[GdpNow]:
         if not obs:
             return None
         cur = round(float(obs[0]["value"]), 1)
-        pub_date = obs[0]["date"]
+        # AUDIT-FIX (17/07/2026, audit A2 root cause): FRED's 'date' field on
+        # a GDPNOW observation is the *reference quarter* start (e.g.
+        # "2026-04-01" for Q2), not when that estimate was actually
+        # calculated/published — confirmed against FRED API docs, which
+        # document 'realtime_start' as the vintage/publication date of the
+        # specific observation value. Using 'date' here is what produced the
+        # "réf. 01/04" display (audit finding) while the nowcast was really
+        # last updated 08/07. 'quarter' below still correctly uses 'date'
+        # (the reference period), since that label is about the *quarter
+        # being estimated*, not about freshness — only the freshness/pub_date
+        # figure was wrong. Falls back to 'date' if 'realtime_start' is ever
+        # absent from the payload (defensive; never seen missing from FRED,
+        # never invents a value).
+        quarter_ref_date = obs[0]["date"]
+        pub_date = obs[0].get("realtime_start") or quarter_ref_date
         prev = delta = None
         if len(obs) > 1:
             prev = round(float(obs[1]["value"]), 1)
             delta = round(cur - prev, 1)
-        # Fiscal quarter label from the observation date
+        # Fiscal quarter label from the *reference* observation date (not
+        # pub_date, which now correctly points at realtime_start — using it
+        # here would mislabel a Q2 nowcast published in July as "T3").
         try:
-            m = int(pub_date[5:7])
+            m = int(quarter_ref_date[5:7])
             q = (m - 1) // 3 + 1
-            quarter = f"T{q} {pub_date[:4]}"
+            quarter = f"T{q} {quarter_ref_date[:4]}"
         except Exception:
             quarter = ""
         if delta is not None:
