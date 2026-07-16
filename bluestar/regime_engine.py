@@ -311,6 +311,13 @@ def _pc_indicator(pc_data: Optional[dict]) -> RegimeIndicator | None:
       COUVERTURE*  → risk_off  (hedging flow confirms caution)
       DANGER ZONE / PEUR EXTREME / DIVERGENCE / NEUTRE → neutral
     Never raises — returns None on any missing or incomplete data.
+
+    AUDIT-FIX (validation audit, finding P1 — 15/07/2026): previously
+    required BOTH eq_ma and idx_ma, so this indicator was always absent
+    whenever "index" failed (its structurally-doomed common case — see
+    external_sources.fetch_pc_ratio) even when equity succeeded and
+    composite_signal was populated (single-leg degraded mode). Only
+    eq_ma is required now; idx_ma is used when present, omitted otherwise.
     """
     if pc_data is None:
         return None
@@ -321,17 +328,24 @@ def _pc_indicator(pc_data: Optional[dict]) -> RegimeIndicator | None:
     idx_ma    = index.get("ma_5d")
     stale     = pc_data.get("stale", False)
 
-    if not composite or eq_ma is None or idx_ma is None:
+    if not composite or eq_ma is None:
         return None
 
-    value_str  = f"Eq.P/C {eq_ma} · Idx.P/C {idx_ma}"
+    value_str  = f"Eq.P/C {eq_ma} · Idx.P/C {idx_ma}" if idx_ma is not None else f"Eq.P/C {eq_ma} (dégradé)"
     stale_note = " [STALE]" if stale else ""
     note       = f"{composite}{stale_note}"
 
-    # Signal type — minimal weight, additive only
+    # Signal type — minimal weight, additive only.
+    # AUDIT-FIX: _vix_pc_composite emits the accented "COUVERTURE
+    # GÉNÉRALISÉE — RISQUE SYSTÉMIQUE"; _pc_composite (VIX-unavailable
+    # fallback) emits the unaccented "COUVERTURE GENERALISEE". The old
+    # check here only matched the unaccented spelling plus "COUVERTURE
+    # ÉLEVÉE", a string neither generator produces — so this branch could
+    # never fire on the (more common) VIX-composite path. Both real
+    # spellings are matched now.
     if "COMPLACENCE" in composite and "DANGER" not in composite:
         signal = "risk_on"
-    elif any(x in composite for x in ("COUVERTURE GENERALISEE", "COUVERTURE ÉLEVÉE")):
+    elif any(x in composite for x in ("COUVERTURE GENERALISEE", "COUVERTURE GÉNÉRALISÉE")):
         signal = "risk_off"
     else:
         signal = "neutral"   # NEUTRE / DANGER ZONE / PEUR EXTREME / DIVERGENCE
