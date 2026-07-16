@@ -385,6 +385,21 @@ def assess_regime(
         regime_name, category = "Mixed / Selective", "transitional"
         opposing_signal = None  # no clean antonym for the collapsed label
 
+    # AUDIT-FIX (validation audit, finding P2 — 15/07/2026): when _classify()
+    # *natively* returns "Mixed / Selective" with confidence below floor
+    # (e.g. an exact tie between two opposing buckets, confidence == 0),
+    # the guard above never fires — regime_name is already "Mixed /
+    # Selective", so there is nothing to "downgrade" — and the raw
+    # near-zero confidence used to reach the reader with no explanation at
+    # all: "régime identifié : Mixed / Selective à 0% de confiance" reads
+    # like an unexplained contradiction instead of the honest tied-vote
+    # result it actually is. tie_at_zero covers exactly this residual case,
+    # kept distinct from floor_applied (which covers a genuinely different
+    # regime being downgraded to Mixed/Selective) so the two narrative
+    # notes stay unambiguous about which scenario occurred.
+    tie_at_zero = (regime_name == "Mixed / Selective"
+                  and confidence < floor and not floor_applied)
+
     # Audit fix ("Mixed sans contradiction"): every RegimeIndicator is built
     # with supports=True hardcoded at construction time (the individual
     # _xxx_indicator() helpers cannot know the final regime yet), so
@@ -412,6 +427,13 @@ def assess_regime(
             f" → Note : « {raw_candidate} » était en tête du vote mais avec une "
             f"confiance de {confidence:.0%} (< seuil {floor:.0%}) — régime "
             f"reclassé en Mixed / Selective plutôt que publié comme signal ferme."
+        )
+    elif tie_at_zero:
+        narrative += (
+            f" → Note : signaux à parité stricte (confiance {confidence:.0%}, "
+            f"seuil {floor:.0%}) — aucun régime dominant ne s'est dégagé du "
+            f"vote pondéré ; \"Mixed / Selective\" reflète une égalité réelle, "
+            f"pas une absence de lecture."
         )
 
     return RegimeAssessment(
