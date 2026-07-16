@@ -1138,8 +1138,39 @@ def fetch_pc_ratio(
 
     out: dict = {"equity": equity, "index": index}
 
-    # Early return for partial failure — no composite possible.
+    # AUDIT-FIX (validation audit, finding P1 — 15/07/2026): this used to be
+    # an unconditional early return with no composite_signal/stale at all
+    # whenever EITHER leg was missing — including "index", which has no
+    # yfinance fallback by design (_CBOE_YF_TICKERS["index"] is None) and is
+    # therefore the leg most likely to fail whenever the direct CBOE fetch
+    # is blocked (the module's own docstrings document this as an expected
+    # scenario, e.g. cloud-host IP blocking). That silently discarded a
+    # real, available equity P/C reading every time. Degrade gracefully
+    # instead: when exactly one leg succeeded, expose a single-leg
+    # composite (clearly labelled as degraded) so the sentiment layer isn't
+    # fully blind just because the other leg has no fallback path. The
+    # true both-missing case (both equity and index unavailable) still
+    # returns ``None`` above — nothing to salvage there.
     if equity is None or index is None:
+        available, leg_name, other_leg = (
+            (equity, "equity", "index") if equity is not None else (index, "index", "equity")
+        )
+        if available is not None:
+            today = datetime.date.today()
+            stale = False
+            obs_str = available.get("observation_date")
+            if obs_str:
+                try:
+                    obs_date = datetime.datetime.strptime(obs_str, "%m/%d/%Y").date()
+                    stale = (today - obs_date).days > _CBOE_STALE_DAYS
+                except ValueError:
+                    pass   # unparseable date — not flagged (avoid false positives)
+            out["stale"] = stale
+            out["degraded_single_leg"] = leg_name
+            out["composite_signal"] = (
+                f"{available['signal']} — {leg_name} seul "
+                f"({other_leg} P/C indisponible)"
+            )
         return out
 
     # ── M2 FIX: staleness flag ────────────────────────────────────────────────
