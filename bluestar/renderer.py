@@ -281,16 +281,36 @@ def _render_cb_simple(cb) -> str:
       <div class="cb"><div class="cb-flag">{cb.flag}</div><div class="cb-name">{_e(cb.name)}</div><div class="cb-rate">{_e(cb.rate_display)} <span style="font-size:9px;font-weight:400;color:var(--muted)">{_e(cb.stamp.render())}</span></div><div class="cb-biais"><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">FAIT ·</span> {_e(cb.fact)}<br><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">BIAIS ·</span> {_e(cb.bias_interpretation)}</div><div class="cb-next">Prochaine : {_e(cb.next_meeting)}</div></div>"""
 
 
+def _kpi_sub(datum, flat_label: str) -> str:
+    """Resolve a KPI subtitle without conflating 'no data' with 'flat trend'.
+
+    AUDIT-FIX (17/07/2026, audit A4 — MOVE 66,8): the previous call sites
+    used ``g(key).trend or "<generic label>"`` for every gauge, so an
+    unavailable datum (``trend == ""`` because ``Datum`` defaults to
+    ``""``) rendered the exact same placeholder text as a genuinely flat,
+    real trend — the reader could not tell "66,8 but no trend data" from
+    "66,8, real value, unchanged". A gauge that is actually unavailable now
+    shows its real provenance tag (``stamp.render()`` -> ``[N/A · ...]``),
+    matching the pattern already used for GDP_NOWCAST/SURPRISE_IDX below.
+    Only the display text changes; ``.display``/``.value`` are untouched.
+    """
+    if datum.trend:
+        return datum.trend
+    if not datum.available:
+        return datum.stamp.render()
+    return flat_label
+
+
 def _render_section3(ctx: BriefingContext) -> str:
     m = ctx.market
     g = m.gauge
     kpis = "".join([
-        _kpi("VIX", g("VIX").display, g("VIX").trend or "tendance n/d", "amber"),
-        _kpi("MOVE Index", g("MOVE").display, g("MOVE").trend or "calme/ n/d", "blue"),
-        _kpi("DXY", g("DXY").display, g("DXY").trend or "n/d", "green"),
+        _kpi("VIX", g("VIX").display, _kpi_sub(g("VIX"), "tendance stable"), "amber"),
+        _kpi("MOVE Index", g("MOVE").display, _kpi_sub(g("MOVE"), "calme"), "blue"),
+        _kpi("DXY", g("DXY").display, _kpi_sub(g("DXY"), "stable"), "green"),
         _kpi("US10Y", (g("US10Y").display + "%") if g("US10Y").available else "N/A",
-             g("US10Y").trend or "n/d", "amber"),
-        _kpi("Or XAU", g("XAU/USD").display, g("XAU/USD").trend or "n/d", "amber"),
+             _kpi_sub(g("US10Y"), "stable"), "amber"),
+        _kpi("Or XAU", g("XAU/USD").display, _kpi_sub(g("XAU/USD"), "stable"), "amber"),
         _kpi("GDP Nowcast", g("GDP_NOWCAST").display,
              g("GDP_NOWCAST").trend or g("GDP_NOWCAST").stamp.render(), "blue"),
         _kpi("Surprise Idx", g("SURPRISE_IDX").display,
