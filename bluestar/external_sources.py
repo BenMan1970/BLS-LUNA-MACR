@@ -31,6 +31,28 @@ Changelog — institutional audit patch (2026-07-11):
   M3  _cboe_parse: ma_incomplete flag + ma_Nd_obs observation count added.
   m1  _cboe_signal: guard for unknown ratio_type → returns "N/A".
   m2  _cboe_parse: data_start is None vs == 0 produce distinct error messages.
+
+Changelog — réseau vérifié empiriquement (2026-07-17, deux environnements
+indépendants : crawler le 16/07 ~02:01 UTC + sandbox BLUESTAR le 17/07) :
+  N1  §5 CBOE : les URLs .../datahouse/equitypc.csv & indexpc.csv sont MORTES
+      (301/404 — infra retirée lors de la refonte du site CBOE, PAS un blocage
+      WAF comme le supposait l'ancien commentaire). Elles coûtaient 1 requête
+      HTTP inutile par jambe à chaque run. Supprimées de la chaîne active ;
+      _cboe_parse conservé pour un éventuel miroir CSV futur (voir §5).
+  N2  §5 CBOE : preuve que CBOE ne distribue plus les P/C ratios en public —
+      cdn.cboe.com sert _VIX.json (1 153 407 octets) et _SKEW.json normalement
+      depuis la même IP, mais _PCALL/_EQUITYPC/_TOTALPC/_INDEXPC/_VIXPC/PCALL
+      .json renvoient tous 403 AccessDenied (objet absent). Donnée déplacée
+      derrière DataShop / All Access API (payant). Jambe index : aucune source
+      keyless fiable — dégradation vers None assumée (mode single-leg P1).
+  N3  §5 CBOE : ^PCALL confirmé symbole RÉEL et vivant, MAIS Yahoo
+      rate-limite (HTTP 429) les IPs de crawler indépendamment du ticker —
+      fallback yfinance conservé en best-effort, étiqueté honnêtement.
+  N4  §2 FedWatch : la probabilité rendue pouvait rester figée ~1 semaine sans
+      indice de fraîcheur (anomalie audit A1 du 16/07). La clé additive
+      "as_of" est désormais extraite du payload BCM quand elle y est présente
+      (best-effort, schéma-agnostique — jamais inventée) pour que l'aval
+      affiche la date de prélèvement.
 """
 from __future__ import annotations
 
@@ -443,8 +465,60 @@ def fetch_liquidity_stress() -> Optional[float]:
 _FEDWATCH_URL = "https://www.cmegroup.com/CmeWS/md/BCM/BCM.json"
 
 
-def fetch_fedwatch_probabilities() -> Optional[dict[str, int]]:
-    """Return ``{'pause_pct', 'cut_pct', 'hike_pct'}`` for the next FOMC, or None."""
+# Clés de fraîcheur candidates dans les payloads JSON de marché (schéma BCM
+# non documenté publiquement — liste normalisée, comparée sans '_' ni espaces,
+# en minuscules). La clé "date" seule est volontairement EXCLUE : dans ce
+# payload elle porte la date de RÉUNION FOMC (cible), pas l'horodatage de
+# prélèvement — l'accepter afficherait une fausse fraîcheur.
+_FEDWATCH_TS_KEYS = frozenset({
+    "lastupdated", "lastupdate", "updated", "updatetime", "updatetimeutc",
+    "timestamp", "asof", "asofdate", "quotedate", "quotetime",
+    "tradedate", "lasttradedate", "pricedate", "lastpriceupdate",
+})
+
+
+def _fedwatch_extract_timestamp(data) -> Optional[str]:
+    """Best-effort : extrait l'horodatage de fraîcheur du payload BCM.
+
+    Schéma-agnostique (le parser de probabilités ci-dessous l'est déjà) :
+    retourne la première valeur textuelle non vide trouvée sous une clé de
+    ``_FEDWATCH_TS_KEYS``, tronquée à 40 caractères — ou ``None`` si le
+    payload n'en porte aucune (cas parfaitement admis : l'aval masque alors
+    simplement la mention). N'invente jamais de valeur, ne lève jamais.
+    """
+    try:
+        found: list[str] = []
+
+        def _walk(node) -> None:
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    norm = str(k).lower().replace("_", "").replace(" ", "")
+                    if norm in _FEDWATCH_TS_KEYS and isinstance(v, str) and v.strip():
+                        found.append(v.strip())
+                    _walk(v)
+            elif isinstance(node, list):
+                for item in node:
+                    _walk(item)
+
+        _walk(data)
+        if not found:
+            return None
+        # Plusieurs candidats possibles (payload multi-nœuds) : le max
+        # lexicographique = le plus récent pour les formats ISO-like ; pour
+        # les formats non triables l'ordre est arbitraire mais reste réel.
+        return max(found)[:40]
+    except Exception:
+        return None
+
+
+def fetch_fedwatch_probabilities() -> Optional[dict]:
+    """Return ``{'pause_pct', 'cut_pct', 'hike_pct'}`` for the next FOMC, or None.
+
+    N4 (2026-07-17) : clé additive ``'as_of'`` (str) présente uniquement quand
+    le payload BCM porte lui-même un horodatage exploitable — date de
+    prélèvement affichée en aval (audit A1 : probabilités figées ~1 semaine
+    sans mention de fraîcheur). Les trois clés historiques sont inchangées.
+    """
     r = _get(_FEDWATCH_URL)
     if r is None:
         return None
@@ -483,6 +557,10 @@ def fetch_fedwatch_probabilities() -> Optional[dict[str, int]]:
         if drift:
             biggest = max(result, key=result.get)
             result[biggest] += drift
+        # N4 : horodatage de prélèvement quand le payload le fournit (additif).
+        ts = _fedwatch_extract_timestamp(data)
+        if ts:
+            result["as_of"] = ts
         return result
     except Exception as exc:
         logger.warning("FedWatch parse failed (schema drift?): %s", exc)
@@ -727,29 +805,46 @@ def fetch_gdp_nowcast() -> Optional[float]:
 # 5. CBOE Put/Call Ratios (Equity · Index)
 #
 # Audit patch 2026-07-11 — corrections C1/C2/C3/C4/M1/M2/M3/m1/m2 applied.
+# Réseau vérifié 2026-07-16/17 (deux environnements indépendants) — N1/N2/N3 :
+# les endpoints CSV publics sont retirés de la distribution CBOE ; la chaîne
+# active est désormais yfinance best-effort → dégradation honnête vers None.
 # ===========================================================================
 
-# Browser-like headers for CBOE — Cloudflare WAF bypasses plain Python-requests
-# User-Agent. Streamlit Cloud IPs may still be IP-blocked; in that case the
-# graceful-degradation path (pc_data = None) applies automatically.
+# Headers navigateur conservés pour la voie de réactivation documentée dans
+# _cboe_fetch_one (miroir CSV futur / accès DataShop authentifié).
 _CBOE_HEADERS: dict[str, str] = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/125.0.0.0 Safari/537.36"
     ),
-    "Accept":          "text/csv,text/plain,*/*;q=0.8",
+    "Accept":          "application/json,text/csv,text/plain,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Referer": "https://www.cboe.com/us/equities/market_statistics/historical_data/",
+    "Referer":         "https://www.cboe.com/us/indices/dashboard/PCALL/",
     "Origin":          "https://www.cboe.com",
     "Connection":      "keep-alive",
 }
 
-_CBOE_URLS: dict[str, str] = {
-    "equity": "https://www.cboe.com/publish/scheduledtask/mktdata/datahouse/equitypc.csv",
-    "index":  "https://www.cboe.com/publish/scheduledtask/mktdata/datahouse/indexpc.csv",
-}
+# N1 — ANCIENS ENDPOINTS MORTS, NE PAS RÉINTRODUIRE TELS QUELS (vérifié
+# 2026-07-16 crawler + 2026-07-17 sandbox, deux IPs indépendantes) :
+#   https://www.cboe.com/publish/scheduledtask/mktdata/datahouse/equitypc.csv
+#   https://www.cboe.com/publish/scheduledtask/mktdata/datahouse/indexpc.csv
+# → 301/404 (page HTML « 404 Page Not Found | Cboe ») : infra RETIRÉE par CBOE
+# lors de la refonte du site (SPA Next.js + CDN S3). Ce n'était PAS un blocage
+# Cloudflare/WAF comme le supposait l'ancien commentaire : le fetch « échouait
+# silencieusement » parce qu'il recevait du HTML 404 (statut 200) et que
+# _cboe_parse renvoyait None sans bruit.
+#
+# N2 — Le CDN moderne ne publie PAS les P/C ratios (preuve par témoin) :
+#   cdn.cboe.com/.../historical/_VIX.json  → 200, 1 153 407 octets (OK)
+#   cdn.cboe.com/.../historical/_SKEW.json → 200, 1 184 801 octets (OK)
+#   cdn.cboe.com/.../historical/_PCALL.json    → 403 AccessDenied (S3)
+#   .../_EQUITYPC/_TOTALPC/_INDEXPC/_VIXPC/PCALL.json → tous 403
+# _VIX et _SKEW (indices value-only, comme un P/C) passent depuis la même IP :
+# les 403 ne sont donc PAS un blocage mais des objets absents. CBOE a déplacé
+# la donnée derrière DataShop / Cboe All Access API (payant). Autres voies
+# keyless testées et mortes : Nasdaq Data Link (403 Incapsula + clé requise),
+# Stooq ^pcall (challenge JS proof-of-work inexploitable en requests).
 
 # C3 FIX — Equity thresholds recalibrated on post-2015 empirical distribution.
 # Zero-commission structural shift (2019-2020) lowered the mean permanently.
@@ -1015,28 +1110,31 @@ def _cboe_parse(text: str, ratio_type: str, ma_days: int) -> Optional[dict]:
 
 
 
-# yfinance ticker for P/C fallback when CBOE direct fetch is blocked.
-# ^PCALL = CBOE Total Put/Call (equity-weighted) — closest to equity P/C distribution.
-# Index P/C has no reliable yfinance equivalent — returns None (partial degradation).
+# N3 — ^PCALL est un symbole RÉEL et vivant (coté ~0,68 par les screeners de
+# marché au 2026-07-16), MAIS non garanti via yfinance : Yahoo rate-limite
+# (HTTP 429) les IPs de crawler indépendamment du ticker, et renvoie souvent
+# un historique vide pour ces indices value-only. Best-effort uniquement.
+# Index P/C : AUCUNE source keyless fiable (N2) — dégradation vers None assumée.
 _CBOE_YF_TICKERS: dict[str, str | None] = {
-    "equity": "^PCALL",   # CBOE Total P/C — approximation acceptable
-    "index":  None,        # no reliable yfinance source for index-only P/C
+    "equity": "^PCALL",   # CBOE Total P/C — proxy keyless le plus proche de l'equity
+    "index":  None,       # aucune source keyless fiable — mode single-leg P1 en aval
 }
 
 
 def _cboe_fetch_yf(ratio_type: str, ma_days: int) -> Optional[dict]:
-    """yfinance fallback when CBOE direct fetch is blocked (e.g. Streamlit Cloud IP).
+    """Fallback yfinance — seule voie keyless active depuis le retrait CBOE (N1/N2).
 
-    yfinance is already in requirements.txt — zero new dependency.
-    Returns None on any failure; contract unchanged vs direct fetch.
+    Best-effort assumé (N3) : ^PCALL est réel mais Yahoo rate-limite les IPs
+    de crawler ; un échec renvoie None, jamais d'exception, jamais de valeur
+    inventée. yfinance est déjà dans requirements.txt — zéro dépendance.
     """
     ticker_sym = _CBOE_YF_TICKERS.get(ratio_type)
     if not ticker_sym:
-        return None   # index P/C: no yfinance equivalent
+        return None   # index P/C: aucune source keyless fiable (N2)
     try:
         import yfinance as yf   # lazy import — only on fallback path
-        hist = yf.Ticker(ticker_sym).history(period=f"{ma_days * 3}d")
-        if hist.empty or "Close" not in hist.columns:
+        hist = yf.Ticker(ticker_sym).history(period=f"{max(ma_days * 3, 15)}d")
+        if hist is None or hist.empty or "Close" not in hist.columns:
             logger.warning("CBOE yfinance %s: empty history for %s",
                            ratio_type, ticker_sym)
             return None
@@ -1054,8 +1152,12 @@ def _cboe_fetch_yf(ratio_type: str, ma_days: int) -> Optional[dict]:
             "ma_incomplete":      len(window) < ma_days,
             f"ma_{ma_days}d_obs": len(window),
             "observation_date":   hist.index[-1].strftime("%m/%d/%Y"),
+            # Étiquette honnête (N1/N2) : c'est le TOTAL P/C servi comme proxy
+            # de l'equity, la distribution publique CBOE ayant été retirée —
+            # ce n'est PAS un blocage contournable.
             "source":             (
-                f"CBOE TOTAL P/C · yfinance {ticker_sym} [fallback — CBOE bloqué]"
+                f"CBOE TOTAL P/C · yfinance {ticker_sym} "
+                "[fallback/PROXY · distribution publique CBOE retirée]"
             ),
         }
     except Exception as exc:
@@ -1064,27 +1166,26 @@ def _cboe_fetch_yf(ratio_type: str, ma_days: int) -> Optional[dict]:
 
 
 def _cboe_fetch_one(ratio_type: str, ma_days: int) -> Optional[dict]:
-    """Fetch + parse one CBOE P/C series.
+    """Récupère une série P/C — chaîne ordonnée par fiabilité réelle vérifiée.
 
-    Priority:
-      1. Direct CBOE fetch  (browser-like headers — nominal path)
-      2. yfinance fallback  (^PCALL for equity — when CBOE IP-blocked)
-      3. None               → caller degrades gracefully
-    Signature and return schema identical in all three cases.
+      1. (désactivée — N1/N2) Fetch CSV CBOE direct : endpoints publics MORTS
+         au 2026-07-16 (301/404, distribution retirée — PAS un WAF). Ne pas
+         taper une URL 404 à chaque appel. Pour réactiver cette voie si un
+         miroir CSV au schéma legacy (ou un accès DataShop / All Access
+         authentifié) devient disponible, brancher ici ::
+             r = _get(url, extra_headers=_CBOE_HEADERS)
+             if r is not None:
+                 res = _cboe_parse(r.text, ratio_type, ma_days)
+                 if res is not None:
+                     return res
+      2. Fallback yfinance (best-effort — N3).
+      3. None → dégradation propre (mode single-leg P1 côté fetch_pc_ratio).
+
+    Signature et schéma de retour identiques dans tous les cas. Ne lève jamais.
     """
-    url = _CBOE_URLS.get(ratio_type)
-    if not url:
+    if ratio_type not in _CBOE_YF_TICKERS:
         logger.warning("CBOE: unknown ratio_type '%s'", ratio_type)
         return None
-    r = _get(url, extra_headers=_CBOE_HEADERS)
-    if r is not None:
-        result = _cboe_parse(r.text, ratio_type, ma_days)
-        if result is not None:
-            return result                      # live CBOE — nominal path
-        logger.warning(
-            "CBOE %s: live fetch unparseable (bot-challenge?) "
-            "— falling back to yfinance", ratio_type
-        )
     return _cboe_fetch_yf(ratio_type, ma_days)
 
 
@@ -1207,3 +1308,4 @@ def fetch_pc_ratio(
         out["composite_signal"] = _pc_composite(eq_ma, idx_ma, eq_sev, idx_sev)
 
     return out
+
