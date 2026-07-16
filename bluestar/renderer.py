@@ -155,6 +155,19 @@ def _render_event_high(e: MacroEvent, scn: dict) -> str:
     # intraday imminence, especially on weekends.
     date_str = e.date_display if hasattr(e, 'date_display') and e.date_display else ""
     time_label = f"{_e(e.time_display)}" if not date_str else f"{_e(date_str)} · {_e(e.time_display)}"
+    # AUDIT-FIX (validation audit, finding "Warsh" — P2, 15/07/2026): the
+    # calendar layer has no per-event SourceStamp/Reliability mechanism —
+    # event_name is the raw Forex Factory feed title, displayed verbatim
+    # with no provenance tag at all, unlike every other data source in the
+    # pipeline (market, rates, COT all carry a [Source]/[PROXY]/[N/A] tag).
+    # Add a lightweight, honest note on CRITICAL events specifically — the
+    # highest-impact, least-scrutinized tier — rather than hardcoding any
+    # name-specific correction (which this layer can't verify). Purely
+    # additive: HIGH/MEDIUM-priority rendering is untouched.
+    provenance_note = (
+        '<div class="ev-prev" style="font-size:10px;color:var(--muted)">'
+        'Libellé source : Forex Factory · non vérifié</div>'
+    ) if e.priority == "CRITICAL" else ""
     return f"""
     <div class="event high">
       <div class="event-hdr">
@@ -162,6 +175,7 @@ def _render_event_high(e: MacroEvent, scn: dict) -> str:
         <span class="ev-name">{_e(e.event_name)} [{_e(e.currency)}]</span>
         <span class="ev-tag"><span class="badge badge-red">🔴 ÉLEVÉ</span></span>
       </div>
+      {provenance_note}
       <div class="ev-prev">Précédent : <span class="mono bold">{_e(scn.get('prev','—'))}</span> &nbsp;·&nbsp; Consensus : <span class="mono bold amber">{_e(scn.get('cons','—'))}</span></div>
       <div class="ev-scen">
         <div class="s-beat"><div class="s-lbl-b">✅ BEAT</div><div class="s-body">{_e(scn.get('beat_impact',''))}</div><div class="s-act">→ {_e(scn.get('beat_action',''))}</div></div>
