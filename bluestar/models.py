@@ -162,6 +162,17 @@ class CentralBankSnapshot:
     pause_pct: Optional[int] = None
     cut_pct: Optional[int] = None
     hike_pct: Optional[int] = None
+    # N4 (17/07/2026, audit A1): prélèvement FedWatch, affiché sous la barre
+    # de probabilité — None quand le payload BCM n'en porte pas (affichage
+    # alors masqué, comportement historique inchangé). Additif, jamais inventé.
+    fedwatch_as_of: Optional[str] = None
+    # N4bis (17/07/2026, audit A1 — cause racine réelle sur le briefing du
+    # 16/07): True quand les probabilités pause/cut/hike proviennent des
+    # OVERRIDES manuels (cas constaté : 70/0/30 saisi une semaine plus tôt,
+    # stamp carte = [FRED] seul → barre affichée sans provenance). Le renderer
+    # affiche alors « saisie manuelle [PROXY] » sous la barre. Défaut False →
+    # affichage historique inchangé pour les snapshots existants.
+    proba_from_override: bool = False
 
 
 @dataclass
