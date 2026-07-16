@@ -215,12 +215,37 @@ def _assess_usd(
 
     if strong_signals > weak_signals:
         direction = "Le USD est actuellement soutenu par"
+        aligned_sign, opposing_sign = 1, -1
     elif weak_signals > strong_signals:
         direction = "Le USD est actuellement sous pression par"
+        aligned_sign, opposing_sign = -1, 1
     else:
         direction = "Le USD est dans une position neutre, tiraillé entre"
+        aligned_sign, opposing_sign = None, None
 
-    assessment = f"{direction} {len(drivers)} facteur(s) : " + " · ".join(drivers[:4])
+    # AUDIT-FIX (validation audit, finding P2 — 15/07/2026): `direction` is
+    # decided correctly by polarity above, but the sentence used to list
+    # ALL non-empty driver texts under that single directional framing —
+    # including a driver of the OPPOSITE polarity (e.g. "soutenu par...
+    # USD classé faible" when the weak-USD driver was among the 4 listed,
+    # since len(drivers)/drivers[:4] never filtered by polarity). Only
+    # same-polarity (+ neutral, pol==0, which makes no directional claim)
+    # drivers are listed under "direction" now; any opposite-polarity
+    # driver is surfaced separately as an explicit counterbalance instead
+    # of being silently folded into the same count. The tie case (aligned_
+    # sign is None) is unchanged — it already says "tiraillé entre" and
+    # listing everything there was never contradictory.
+    if aligned_sign is not None:
+        aligned = [text for text, pol in factor_results if text and pol != opposing_sign]
+        opposing = [text for text, pol in factor_results if text and pol == opposing_sign]
+        assessment = f"{direction} {len(aligned)} facteur(s) : " + " · ".join(aligned[:4])
+        if opposing:
+            assessment += (
+                f" (à contrebalancer, {len(opposing)} facteur(s) de sens opposé : "
+                + " · ".join(opposing[:2]) + ")"
+            )
+    else:
+        assessment = f"{direction} {len(drivers)} facteur(s) : " + " · ".join(drivers[:4])
     return assessment, drivers
 
 
