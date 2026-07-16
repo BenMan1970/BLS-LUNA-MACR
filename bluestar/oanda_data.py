@@ -604,19 +604,21 @@ def build_market_snapshot(
     # "override always wins" behaviour, swap the first two branches back.
     gdp = _inst.fetch_gdpnow_full() if _inst else None
     if gdp is not None and gdp.value is not None:
-        # AUDIT-FIX (15/07/2026, finding 7 — vérifié): the quarter derived
-        # from gdp.pub_date's month was flagged as possibly off-by-one, but
-        # FRED dates quarterly observations (incl. GDPNOW) to the *start*
-        # of the reference quarter itself (confirmed against FRED/ALFRED:
-        # a Q2 2026 observation is dated 2026-04-01) — so deriving the
-        # quarter from that date's month is correct, not a bug. The actual
-        # issue was the label: "publié {date}" implies gdp.pub_date is a
-        # publication/calculation timestamp, when GDPNow is continuously
-        # recalculated all quarter and this date is only the series' own
-        # quarter-reference date. Relabelled to avoid that false claim.
-        sub = f"FRED · GDPNOW · réf. {gdp.pub_date}"
+        # AUDIT-FIX (15/07/2026, finding 7): superseded by the 17/07 fix in
+        # institutional.fetch_gdpnow_full() (audit A2 root cause) — see that
+        # function's docstring/comments. At the time this label was written,
+        # gdp.pub_date carried FRED's 'date' field (quarter-reference start,
+        # e.g. 2026-04-01), so "publié {date}" was a false claim and got
+        # relabelled to "réf.". Since 17/07, fetch_gdpnow_full() sources
+        # pub_date from FRED's 'realtime_start' instead — the actual
+        # publication/revision date of this specific reading — so "publié"
+        # is accurate again and "réf." would now *undersell* a real
+        # freshness figure. gdp.quarter (still derived from the true
+        # quarter-reference date inside institutional.py) keeps that
+        # semantic separately, so nothing here conflates the two anymore.
+        sub = f"FRED · GDPNOW · publié {gdp.pub_date}"
         if gdp.quarter:
-            sub = f"FRED · GDPNOW · {gdp.quarter} (réf. {gdp.pub_date})"
+            sub = f"FRED · GDPNOW · {gdp.quarter} (publié {gdp.pub_date})"
         if gdp.delta is not None:
             sub += (f" · {'+' if gdp.delta >= 0 else '−'}"
                     f"{fr_num(abs(gdp.delta), 1)} pt vs préc.")
