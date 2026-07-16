@@ -197,11 +197,16 @@ def build_central_bank_context(overrides: Optional[dict]) -> list[CentralBankSna
         cut = o.get("cut")
         hike = o.get("hike")
         fw_used = False
+        fw_as_of = None
         if name == "FED" and pause is None and cut is None and hike is None and fedwatch:
             pause = fedwatch.get("pause_pct")
             cut = fedwatch.get("cut_pct")
             hike = fedwatch.get("hike_pct")
             fw_used = True
+            # N4 (17/07/2026, audit A1): date de prélèvement FedWatch quand
+            # le payload BCM la fournit — affichée sous la barre de proba et
+            # dans la source du risque principal (section 5).
+            fw_as_of = fedwatch.get("as_of")
 
         # --- Stamp reflects the strongest source actually used ---
         # AUDIT-FIX (15/07/2026): FRED-live rate now takes stamp precedence
@@ -226,6 +231,15 @@ def build_central_bank_context(overrides: Optional[dict]) -> list[CentralBankSna
             fact=str(fact), bias_interpretation=str(bias), next_meeting=str(nxt),
             stamp=stamp,
             pause_pct=pause, cut_pct=cut, hike_pct=hike,
+            fedwatch_as_of=fw_as_of,
+            # N4bis (17/07/2026, audit A1): barre de proba alimentée par les
+            # overrides manuels → le renderer l'étiquette honnêtement au lieu
+            # de la laisser muer sous un stamp de taux live (cas du 16/07 :
+            # 70/0/30 figé ~1 semaine, stamp [FRED] seul sur la carte).
+            proba_from_override=(
+                name == "FED" and not fw_used
+                and any(p is not None for p in (pause, cut, hike))
+            ),
         ))
     return out
 
@@ -1239,6 +1253,10 @@ def build_risk_scenarios(events: list[MacroEvent], regime_class: str,
             fed_reliability = getattr(getattr(fed, "stamp", None), "reliability", None)
             if fed_reliability is Reliability.PRIMARY:
                 proba_src = "[CME FedWatch]"
+                # N4 (17/07/2026, audit A1): date de prélèvement quand le
+                # payload la fournit — rend visible une proba figée.
+                if getattr(fed, "fedwatch_as_of", None):
+                    proba_src = f"[CME FedWatch · prélèvement {fed.fedwatch_as_of}]"
             elif fed_reliability is Reliability.PROXY:
                 proba_src = "[PROXY · override manuel]"
             else:
@@ -1425,8 +1443,18 @@ def build_context(
         allow_proxy_levels, cot_label=cot_date,
     )
     
+    # AUDIT-FIX (17/07/2026, anomalie A3 de l'audit externe du 16/07):
+    # build_risk_scenarios recevait `events` (tous les événements enrichis,
+    # passés inclus), donc anchor = events[0] pouvait être un catalyseur DÉJÀ
+    # PUBLIÉ (ex. briefing du 16/07 citant en « risque principal » le Core CPI
+    # sorti le 14/07), en contradiction avec la section 2 qui, elle, filtrait
+    # déjà sur is_upcoming. On passe désormais `upcoming` — le même sous-ensemble
+    # futur que build_macro_overlay reçoit juste au-dessus — donc l'ancre du
+    # scénario est toujours un catalyseur à venir, ou le fallback honnête
+    # « régime de volatilité (pas de catalyseur daté dans la fenêtre) » quand
+    # la fenêtre est vide. Zéro changement de signature.
     risk_main, bull, bear, inval_txt = build_risk_scenarios(
-        events, regime_cls, priority, central_banks
+        upcoming, regime_cls, priority, central_banks
     )
 
     # Diff rate
