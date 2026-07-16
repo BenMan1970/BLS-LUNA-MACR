@@ -13,6 +13,10 @@ New checks in v9.0 (audit fixes):
   * check_no_contradictory_directions: flag all-same-direction setups (A4)
   * check_event_dates: every event card must show a date (A1)
   * check_no_momentum_as_macro: "macro"/"fondamental" must not label momentum (A2)
+
+New check (17/07/2026, anomalie A3 de l'audit externe du 16/07):
+  * check_risk_anchor_upcoming: the main-risk scenario anchor must be an
+    upcoming catalyst, never an already-published one (WARN).
 """
 from __future__ import annotations
 
@@ -273,6 +277,34 @@ def check_staleness(ctx: BriefingContext) -> list[ValidationIssue]:
     return issues
 
 
+def check_risk_anchor_upcoming(ctx: BriefingContext) -> list[ValidationIssue]:
+    """Le catalyseur ancre du risque principal doit être dans la fenêtre future.
+
+    AUDIT-FIX (17/07/2026, anomalie A3 de l'audit externe du 16/07 — et
+    recommandation finale de cet audit : « un test de cohérence "catalyseur
+    cité ∈ fenêtre calendrier future" avant publication »). Le briefing du
+    16/07 citait en « risque principal de la semaine » un Core CPI publié
+    deux jours plus tôt, parce que l'ancre était prise sur la liste complète
+    des événements (passés inclus) au lieu du sous-ensemble à venir.
+
+    Règle : si risk_main s'ancre sur un catalyseur nommé (pas sur le fallback
+    « régime de volatilité »), ce nom doit apparaître parmi les catalyseurs
+    à venir déjà filtrés (catalysts_high + catalysts_medium, tous
+    is_upcoming). WARN seulement — ne bloque jamais la publication.
+    """
+    desc = str(ctx.risk_main.get("desc", ""))
+    if not desc or "régime de volatilité" in desc:
+        return []   # fallback honnête sans ancre datée — rien à vérifier
+    upcoming_names = {e.event_name for e in ctx.catalysts_high + ctx.catalysts_medium}
+    if any(name and name in desc for name in upcoming_names):
+        return []
+    return [ValidationIssue(
+        "risk_anchor_upcoming", "WARN",
+        "Le risque principal cite un catalyseur hors fenêtre d'événements à "
+        "venir — vérifier qu'il n'est pas déjà publié (réconciliation "
+        "scénarios ↔ calendrier).")]
+
+
 def validate_context(ctx: BriefingContext) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     issues += check_max_3_assets(ctx)
@@ -284,6 +316,7 @@ def validate_context(ctx: BriefingContext) -> list[ValidationIssue]:
     issues += check_rr_ratio(ctx)
     issues += check_no_contradictory_directions(ctx)
     issues += check_staleness(ctx)
+    issues += check_risk_anchor_upcoming(ctx)
     return issues
 
 
