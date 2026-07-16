@@ -389,6 +389,48 @@ def _fetch_oanda(
 # Instrument fetch — yfinance fallback path
 # Mirrors market_data._fetch_instrument exactly.
 # ---------------------------------------------------------------------------
+_YF_RETRIES = 2          # additive: mirrors _OANDA candles retry count
+_YF_BACKOFF = 1.5         # seconds, exponential base (same as Oanda path)
+_YF_JITTER_MAX = 0.4      # seconds — desynchronise the concurrent burst below
+
+
+def _yf_history(ticker: str) -> "object":
+    """Single yfinance history() call with retry/backoff on rate-limit.
+
+    AUDIT-FIX (17/07/2026, DXY root-cause): VIX/MOVE/DXY/US10Y/Brent/WTI/
+    indices are *always* routed here (``_YF_ONLY``, 11 keys) and, unlike
+    ``_oanda_candles`` a few lines up, this call had **zero retry** — a
+    single HTTP 429 from Yahoo (observed and reproduced independently on
+    ``^PCALL`` in ``external_sources.py``, confirmed IP-wide and
+    ticker-independent) meant an immediate, silent ``[N/A]`` with no second
+    chance. Worse, ``build_market_snapshot`` fires all instruments
+    concurrently (``ThreadPoolExecutor``, up to ``MARKET_FETCH_MAX_WORKERS``)
+    so up to 11 yfinance calls hit Yahoo in the same instant — the exact
+    pattern that triggers IP-level throttling. A small random jitter before
+    each call desynchronises that burst; a short retry/backoff (same shape
+    as the existing Oanda path, so no new pattern is introduced) absorbs a
+    transient 429 without changing the function's return type or the
+    [N/A]-on-genuine-failure contract. Purely additive — no signature change,
+    no behaviour change on success, same graceful degradation on final
+    failure.
+    """
+    import random
+    time.sleep(random.uniform(0, _YF_JITTER_MAX))
+    last_err: Optional[Exception] = None
+    for attempt in range(_YF_RETRIES + 1):
+        try:
+            return yf.Ticker(ticker).history(period="1mo", interval="1d",
+                                              auto_adjust=False)
+        except Exception as e:  # pragma: no cover
+            last_err = e
+            is_rate_limit = "429" in str(e) or "RateLimit" in type(e).__name__
+            if attempt < _YF_RETRIES and is_rate_limit:
+                time.sleep(_YF_BACKOFF ** (attempt + 1) + random.uniform(0, _YF_JITTER_MAX))
+                continue
+            break
+    raise last_err if last_err is not None else RuntimeError("yfinance unknown failure")
+
+
 def _fetch_yf_fallback(
     key: str,
     now_utc: datetime,
@@ -402,8 +444,7 @@ def _fetch_yf_fallback(
         return Datum(None, na_stamp("no ticker mapping"), "N/A"), None, []
 
     try:
-        df = yf.Ticker(ticker).history(period="1mo", interval="1d",
-                                       auto_adjust=False)
+        df = _yf_history(ticker)
         if df is None or df.empty or len(df) < 2:
             return Datum(None, na_stamp("yfinance empty"), "N/A"), None, []
     except Exception as e:  # pragma: no cover
