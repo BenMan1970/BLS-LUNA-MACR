@@ -1146,20 +1146,33 @@ def _cboe_fetch_yf(ratio_type: str, ma_days: int) -> Optional[dict]:
         # retour et degradation finale vers None strictement inchanges.
         _time.sleep(random.uniform(0, 0.4))
         hist = None
-        _last_exc: Exception | None = None
+        # AUDIT-FIX #2 (17/07/2026): the first pass only retried on a raised
+        # exception (429/RateLimit). But the diagnostic notes already on
+        # record for ^PCALL (macro-cl4_8 report, section on yfinance) state
+        # this ticker frequently returns an HTTP 200 with an EMPTY DataFrame
+        # instead of raising — a silent failure mode with no exception to
+        # catch, so the retry above never fired for it. Retrying is now keyed
+        # on the *outcome* (empty/short history) as well as on exceptions,
+        # for up to 3 attempts total. Still additive: same signature, same
+        # graceful None on final failure, no invented data — an empty result
+        # after all retries is still logged and returned as None exactly as
+        # before.
         for _attempt in range(3):
             try:
                 hist = yf.Ticker(ticker_sym).history(period=f"{max(ma_days * 3, 15)}d")
-                break
             except Exception as _e:
-                _last_exc = _e
+                hist = None
                 _is_rl = "429" in str(_e) or "RateLimit" in type(_e).__name__
                 if _attempt < 2 and _is_rl:
                     _time.sleep(1.5 ** (_attempt + 1) + random.uniform(0, 0.4))
                     continue
                 raise
+            if hist is not None and not hist.empty and "Close" in hist.columns:
+                break   # got real data — stop retrying
+            if _attempt < 2:
+                _time.sleep(1.5 ** (_attempt + 1) + random.uniform(0, 0.4))
         if hist is None or hist.empty or "Close" not in hist.columns:
-            logger.warning("CBOE yfinance %s: empty history for %s",
+            logger.warning("CBOE yfinance %s: empty history for %s after retries",
                            ratio_type, ticker_sym)
             return None
         values = [float(v) for v in hist["Close"].dropna() if v > 0]
