@@ -247,10 +247,25 @@ def _render_fed(cb) -> str:
     hike = cb.hike_pct if cb.hike_pct is not None else 0
     proba = ""
     if cb.pause_pct is not None or cb.cut_pct is not None or cb.hike_pct is not None:
+        # N4 (17/07/2026, audit A1): date de prélèvement FedWatch sous la barre
+        # — rend immédiatement visible une probabilité figée (~1 semaine de
+        # retard constaté sur le briefing du 16/07). Masquée quand le payload
+        # n'en fournit pas (fedwatch_as_of None) — affichage historique inchangé.
+        as_of_line = ""
+        if getattr(cb, "fedwatch_as_of", None):
+            as_of_line = (f'<div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-top:2px">'
+                          f'FedWatch · prélèvement {_e(cb.fedwatch_as_of)}</div>')
+        elif getattr(cb, "proba_from_override", False):
+            # N4bis (17/07/2026, audit A1): probas issues des overrides manuels
+            # — étiquetées honnêtement au lieu d'hériter silencieusement du
+            # stamp live du taux (cause racine du 70/0/30 figé du 16/07).
+            as_of_line = ('<div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-top:2px">'
+                          'Probas : saisie manuelle [PROXY · overrides]</div>')
         proba = f"""
         <div class="proba-wrap">
           <div class="proba-bar"><div class="pb-pause" style="width:{pause}%"></div><div class="pb-cut" style="width:{cut}%"></div><div class="pb-hike" style="width:{hike}%"></div></div>
           <div class="proba-lbls"><span class="pl-p">Pause {pause}%</span><span class="pl-c">Baisse {cut}%</span><span class="pl-h">Hausse {hike}%</span></div>
+          {as_of_line}
         </div>"""
     return f"""
       <div class="cb">
@@ -713,8 +728,12 @@ def render_html(ctx: BriefingContext) -> str:
         + _render_section7_interpretation(ctx)
         + '</div><!-- /wrap -->'
     )
+    # N5 (17/07/2026, audit A5): le footer affichait « Macro_Briefing_v8 »
+    # alors que le système est en v10 (macro_engine.py, BLUESTAR-PATCH v10.0).
+    # Le header « v8.1 » vit dans templates/scaffold_header.html (à bumper
+    # séparément — le template n'est pas modifié ici).
     footer = (f'<div class="footer">CONFIDENTIEL — BLUESTAR SYSTEM · FX INSTITUTIONAL DESK · '
-              f'Macro_Briefing_v8_{ctx.generated_cet:%d-%m-%Y}.pdf · '
+              f'Macro_Briefing_v10_{ctx.generated_cet:%d-%m-%Y}.pdf · '
               f'{fr_date(ctx.generated_cet)} {ctx.generated_cet:%H:%M} CET</div>')
 
     return head + "\n" + header + "\n" + body + "\n" + footer + "\n</div><!-- /page -->\n</body>\n</html>"
