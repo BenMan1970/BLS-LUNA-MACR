@@ -174,6 +174,27 @@ tbody td{padding:8px 12px;vertical-align:middle}
   #page{background:#fff}
   .footer{border-top:1px solid var(--border);padding:6px 12px;break-inside:avoid}
   #pdf-fab{display:none!important}
+  /* AUDIT-FIX (17/07/2026): print-density tightening. Measured objectively
+     (trailing-whitespace analysis on rendered PDF pages) that pages 3/5/6
+     carried 12-20% blank space at the bottom because a full card/section
+     didn't fit the remaining room and break-inside:avoid pushed it whole to
+     the next page. Root cause: screen-optimised padding (built for mouse/
+     touch comfort) left on cards in print, where density matters more than
+     touch targets. Reclaiming vertical space here lets more content fit per
+     page before a push is triggered — additive only, scoped to @media
+     print, does not touch screen rendering or any non-padding/margin
+     property (colors, borders, layout, font-sizes all unchanged).
+  */
+  .section{margin-bottom:6px}
+  .kpi-grid,.cb-grid{gap:8px;margin-bottom:8px}
+  .kpi,.cb{padding:8px 10px}
+  .asset{margin-bottom:8px}
+  .asset-hdr{padding:7px 14px}
+  .field-lbl{padding:5px 14px 1px}
+  .field-val{padding:1px 14px 5px}
+  .asset-action{padding:7px 14px}
+  .brief{padding:9px 14px;margin-bottom:6px}
+  .risk-bull,.risk-bear,.risk-main{padding:8px 12px;margin-bottom:8px}
 }
 #pdf-fab{position:fixed;bottom:28px;right:28px;z-index:9999;display:flex;flex-direction:column;align-items:flex-end;gap:8px}
 #pdf-fab button{background:#1B45B4;color:#fff;border:none;padding:11px 20px;border-radius:8px;font-family:'IBM Plex Mono','Courier New',monospace;font-size:12px;font-weight:700;cursor:pointer;letter-spacing:.06em;box-shadow:0 4px 16px rgba(27,69,180,.45);display:flex;align-items:center;gap:8px;transition:background .15s}
