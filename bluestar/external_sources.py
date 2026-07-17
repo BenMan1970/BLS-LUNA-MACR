@@ -53,6 +53,19 @@ indépendants : crawler le 16/07 ~02:01 UTC + sandbox BLUESTAR le 17/07) :
       "as_of" est désormais extraite du payload BCM quand elle y est présente
       (best-effort, schéma-agnostique — jamais inventée) pour que l'aval
       affiche la date de prélèvement.
+  N5  §5 CBOE : ^PCALL live-testé par l'utilisateur final (17/07/2026) →
+      HTTP 404 "Quote not found for symbol: ^PCALL" / "possibly delisted".
+      N3 ci-dessus est donc caduque : le symbole n'était pas rate-limité,
+      il est supprimé chez Yahoo. Preuve directe, pas une inférence.
+  N6  §5 CBOE : DÉCOMMISSIONNÉ. Sur la base de N2 (CBOE a retiré la
+      distribution publique keyless), N5 (^PCALL confirmé mort, pas
+      throttlé) et de 4 audits croisés indépendants (17/07/2026) n'ayant
+      trouvé aucune source gratuite, documentée et conforme aux CGU,
+      l'implémentation CBOE (~830 lignes) a été retirée. fetch_pc_ratio()
+      est un stub permanent retournant None — voir le commentaire ADR en
+      tête de la section 5 (fin de fichier) pour le raisonnement complet.
+      Le changelog C1→N5 ci-dessus est un historique factuel, pas une
+      description du code actif.
 """
 from __future__ import annotations
 
@@ -802,558 +815,46 @@ def fetch_gdp_nowcast() -> Optional[float]:
 
 
 # ===========================================================================
-# 5. CBOE Put/Call Ratios (Equity · Index)
+# 5. CBOE Put/Call Ratios — DECOMMISSIONED (17/07/2026)
 #
-# Audit patch 2026-07-11 — corrections C1/C2/C3/C4/M1/M2/M3/m1/m2 applied.
-# Réseau vérifié 2026-07-16/17 (deux environnements indépendants) — N1/N2/N3 :
-# les endpoints CSV publics sont retirés de la distribution CBOE ; la chaîne
-# active est désormais yfinance best-effort → dégradation honnête vers None.
+# ADR: feature removed, not just degraded. Root cause proven (not inferred):
+#   - ^PCALL is delisted on Yahoo: live-tested by the end user from their own
+#     machine on 17/07/2026 -> HTTP 404 "Quote not found for symbol: ^PCALL"
+#     / "possibly delisted". Not a rate-limit, not a network fault.
+#   - CBOE's public CDN returns 403 AccessDenied on every P/C endpoint
+#     (_PCALL/_EQUITYPC/_INDEXPC/_TOTALPC/_VIXPC) while _VIX/_SKEW on the
+#     SAME CDN return 200 (byte-exact) -- a deliberate data removal by CBOE,
+#     not a WAF or generic outage.
+#   - Four independent cross-model audits (17/07/2026) found no free,
+#     documented, ToS-compliant programmatic source. The only defensible
+#     paid options (Barchart OnDemand $CPC/$CPCI, YCharts API) are
+#     disproportionate for a signal weighted 0.05 and never regime-
+#     determining alone (see config.REGIME_MATERIAL_SIGNAL_WEIGHT and
+#     regime_engine._pc_indicator's own documented contract).
+#
+# The full CBOE fetch/parse/composite implementation (~830 lines: header
+# spoofing, dead-endpoint diagnostics, yfinance fallback with retry/jitter,
+# FR-labeled signal classification, VIX x P/C and P/C-only composites,
+# single-leg degradation) was deleted rather than left dormant, per the
+# user's explicit decommission decision. It is fully recoverable from git
+# history / the pre-17/07/2026 version of this file if CBOE, Yahoo, or a
+# new provider ever restores a free keyless source.
+#
+# fetch_pc_ratio() is kept as a single, permanent no-op choke point so
+# macro_engine.py needs zero changes to its call site or its downstream
+# handling (pc_data=None already degrades gracefully everywhere it is
+# consumed -- verified against regime_engine._pc_indicator and
+# macro_engine.build_macro_overlay, both of which already treated None as
+# a normal, expected state before this decommission).
 # ===========================================================================
-
-# Headers navigateur conservés pour la voie de réactivation documentée dans
-# _cboe_fetch_one (miroir CSV futur / accès DataShop authentifié).
-_CBOE_HEADERS: dict[str, str] = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/125.0.0.0 Safari/537.36"
-    ),
-    "Accept":          "application/json,text/csv,text/plain,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer":         "https://www.cboe.com/us/indices/dashboard/PCALL/",
-    "Origin":          "https://www.cboe.com",
-    "Connection":      "keep-alive",
-}
-
-# N1 — ANCIENS ENDPOINTS MORTS, NE PAS RÉINTRODUIRE TELS QUELS (vérifié
-# 2026-07-16 crawler + 2026-07-17 sandbox, deux IPs indépendantes) :
-#   https://www.cboe.com/publish/scheduledtask/mktdata/datahouse/equitypc.csv
-#   https://www.cboe.com/publish/scheduledtask/mktdata/datahouse/indexpc.csv
-# → 301/404 (page HTML « 404 Page Not Found | Cboe ») : infra RETIRÉE par CBOE
-# lors de la refonte du site (SPA Next.js + CDN S3). Ce n'était PAS un blocage
-# Cloudflare/WAF comme le supposait l'ancien commentaire : le fetch « échouait
-# silencieusement » parce qu'il recevait du HTML 404 (statut 200) et que
-# _cboe_parse renvoyait None sans bruit.
-#
-# N2 — Le CDN moderne ne publie PAS les P/C ratios (preuve par témoin) :
-#   cdn.cboe.com/.../historical/_VIX.json  → 200, 1 153 407 octets (OK)
-#   cdn.cboe.com/.../historical/_SKEW.json → 200, 1 184 801 octets (OK)
-#   cdn.cboe.com/.../historical/_PCALL.json    → 403 AccessDenied (S3)
-#   .../_EQUITYPC/_TOTALPC/_INDEXPC/_VIXPC/PCALL.json → tous 403
-# _VIX et _SKEW (indices value-only, comme un P/C) passent depuis la même IP :
-# les 403 ne sont donc PAS un blocage mais des objets absents. CBOE a déplacé
-# la donnée derrière DataShop / Cboe All Access API (payant). Autres voies
-# keyless testées et mortes : Nasdaq Data Link (403 Incapsula + clé requise),
-# Stooq ^pcall (challenge JS proof-of-work inexploitable en requests).
-
-# C3 FIX — Equity thresholds recalibrated on post-2015 empirical distribution.
-# Zero-commission structural shift (2019-2020) lowered the mean permanently.
-# Reference percentiles (CBOE Equity P/C MA5j, 2015–2024 approx):
-#   P10 ≈ 0.52 | P25 ≈ 0.60 | P50 ≈ 0.66 | P75 ≈ 0.90 | P90 ≈ 1.10
-# Previous thresholds (0.60/0.70/1.00) placed the median in COMPLACENCE,
-# causing ~55 % of normal sessions to trigger the alert — no discriminant value.
-# Index P/C: mean ~0.95–1.05; calm <0.80; stress >1.50. Seuils conservés.
-_CBOE_THRESHOLDS: dict[str, dict[str, float]] = {
-    "equity": {
-        "extreme_greed": 0.52,   # < P10  → DANGER ZONE       (pré-crack historique)
-        "complacency":   0.60,   # < P25  → COMPLACENCE        (euphorie structurelle)
-        "fear":          0.90,   # > P75  → COUVERTURE         (protection active)
-        "extreme_fear":  1.10,   # > P90  → PEUR EXTREME       (contrarian signal)
-    },
-    "index": {
-        "complacency":   0.80,   # < ~P30 → COMPLACENCE INSTITUTIONNELLE
-        "fear":          1.20,   # > ~P70 → COUVERTURE ELEVEE  (~P70, doc. empirique)
-    },
-}
-
-# C4 FIX — Severity map prevents composite from producing a label softer than
-# the most extreme individual signal (audit finding: DANGER ZONE → COMPLACENCE).
-_CBOE_SEVERITY: dict[str, int] = {
-    "DANGER ZONE":                   5,
-    "PEUR EXTREME":                  5,
-    "COMPLACENCE":                   4,
-    "COMPLACENCE INSTITUTIONNELLE":  4,
-    "COUVERTURE ELEVEE":             3,
-    "COUVERTURE":                    2,
-    "NEUTRE":                        1,
-    "N/A":                           0,
-}
-
-# Staleness threshold: P/C is published post-close J-1; gap > 3 calendar days
-# (covers weekends + public holiday) is considered stale.
-_CBOE_STALE_DAYS = 3
-
-
-def _cboe_signal(ratio_type: str, value: float) -> str:
-    """Map a numeric P/C value to a BLUESTAR signal label.
-
-    C2 contract: MUST be called with the MA value, never the raw daily.
-    m1 FIX: unknown ratio_type returns "N/A" instead of silently falling
-    through to index thresholds via the bare ``else`` branch.
-    """
-    t = _CBOE_THRESHOLDS.get(ratio_type)
-    if t is None:
-        # m1 FIX — guard against future ratio_type additions or typos.
-        logger.warning(
-            "CBOE _cboe_signal: unknown ratio_type '%s' — returning N/A",
-            ratio_type,
-        )
-        return "N/A"
-
-    if ratio_type == "equity":
-        if value < t["extreme_greed"]:
-            return "DANGER ZONE"
-        if value < t["complacency"]:
-            return "COMPLACENCE"
-        if value > t["extreme_fear"]:
-            return "PEUR EXTREME"       # C3: new level (> P90), contrarian signal
-        if value > t["fear"]:
-            return "COUVERTURE"
-        return "NEUTRE"
-
-    else:  # "index" — explicit branch; unknown type already handled above
-        if value < t["complacency"]:
-            return "COMPLACENCE INSTITUTIONNELLE"
-        if value > t["fear"]:
-            return "COUVERTURE ELEVEE"
-        return "NEUTRE"
-
-
-def _vix_pc_composite(vix: float, eq_pc_ma: float, idx_pc_ma: float) -> str:
-    """True VIX × P/C cross-signal for macro regime classification.
-
-    C1 implementation. Called by fetch_pc_ratio() when vix_value is provided,
-    or directly by macro_engine.py for inline regime scoring.
-
-    Operates exclusively on MA values (C2 compliant — never on raw daily).
-    C4 invariant: DANGER ZONE and PEUR EXTREME are never absorbed by a softer
-    composite label, regardless of VIX level.
-
-    VIX regime thresholds (institutional standard):
-        < 15  : vol comprimée
-        15-22 : neutre
-        > 22  : vol élevée
-        > 30  : stress systémique
-
-    P/C thresholds: see _CBOE_THRESHOLDS (C3 recalibration).
-    """
-    vix_compressed = vix < 15.0
-    vix_elevated   = vix > 22.0
-    vix_stress     = vix > 30.0
-
-    # Equity P/C boolean levels (on MA — C2)
-    eq_extreme_greed = eq_pc_ma < 0.52   # DANGER ZONE
-    eq_greed         = eq_pc_ma < 0.60   # COMPLACENCE
-    eq_fear          = eq_pc_ma > 0.90   # COUVERTURE
-    eq_extreme_fear  = eq_pc_ma > 1.10   # PEUR EXTREME
-
-    # Index P/C boolean levels (institutional flow)
-    idx_fear  = idx_pc_ma > 1.20
-    idx_greed = idx_pc_ma < 0.80
-
-    # ── C4: severity floor — DANGER ZONE / PEUR EXTREME cannot be downgraded ──
-    if eq_extreme_greed and vix_compressed:
-        return "DANGER ZONE — COMPLACENCE EXTRÊME SOUS VOL BASSE"
-    if eq_extreme_greed:
-        return "DANGER ZONE — PROTECTION RETAIL ABSENTE"
-    if eq_extreme_fear and vix_stress:
-        return "CAPITULATION — SIGNAL CONTRARIAN HAUSSIER FORT"
-    if eq_extreme_fear:
-        return "PEUR EXTREME — SIGNAL CONTRARIAN"
-
-    # ── Main VIX × P/C regimes ────────────────────────────────────────────────
-    if vix_compressed and eq_greed and not idx_fear:
-        return "COMPLACENCE GENERALISEE — TAIL RISK ÉLEVÉ"
-    if vix_compressed and eq_greed and idx_fear:
-        return "COMPLACENCE RETAIL + HEDGE INSTITUTIONNEL"
-    if vix_compressed and not eq_greed and not eq_fear:
-        return "NEUTRE — VOL BASSE, POSITIONNEMENT ÉQUILIBRÉ"
-    if vix_elevated and eq_fear and idx_fear:
-        return "COUVERTURE GÉNÉRALISÉE — RISQUE SYSTÉMIQUE"
-    if vix_elevated and not eq_fear and idx_greed:
-        return "SQUEEZE POTENTIEL — CHOC SANS PROTECTION"
-    if vix_elevated and eq_fear and idx_greed:
-        return "DIVERGENCE — RETAIL FEARFUL / INSTIT COMPLACENT"   # M1 regime
-    if not vix_compressed and not vix_elevated and eq_greed:
-        return "COMPLACENCE PARTIELLE — SURVEILLER"
-
-    return "NEUTRE"
-
-
-def _pc_composite(eq_ma: float, idx_ma: float,
-                  eq_sev: int, idx_sev: int) -> str:
-    """P/C × P/C composite — backward-compat mode when VIX is unavailable.
-
-    C4 fix: severity floor enforced — the composite cannot be softer than
-    the most extreme individual signal.
-    M1 fix: 6-quadrant matrix fills the two previously unclassified regimes:
-      - Retail fearful + Institutions complacentes (contrarian bullish)
-      - Prudence émergente retail + Index neutre
-    """
-    # C4: severity floor — highest individual signal sets composite minimum.
-    max_sev = max(eq_sev, idx_sev)
-    if max_sev >= 5:
-        # DANGER ZONE or PEUR EXTREME present in at least one leg — cannot dilute.
-        if eq_ma < 0.52:
-            return "DANGER ZONE — PROTECTION RETAIL ABSENTE"
-        return "PEUR EXTREME — SIGNAL CONTRARIAN"
-
-    # 6-quadrant matrix — ordered from most to least extreme (M1).
-    if eq_ma < 0.60 and idx_ma < 0.80:
-        return "COMPLACENCE GENERALISEE"
-    if eq_ma < 0.60 and idx_ma >= 0.80:
-        return "COMPLACENCE RETAIL + HEDGE INSTITUTIONNEL"
-    if eq_ma > 1.10 and idx_ma < 0.80:
-        return "DIVERGENCE — RETAIL FEARFUL / INSTIT COMPLACENT"   # M1: was NEUTRE
-    if eq_ma > 0.90 and idx_ma > 1.20:
-        return "COUVERTURE GENERALISEE"
-    if 0.60 <= eq_ma < 0.70 and 0.80 <= idx_ma < 1.00:
-        return "PRUDENCE ÉMERGENTE"                                  # M1: was NEUTRE
-    return "NEUTRE"
-
-
-def _cboe_parse(text: str, ratio_type: str, ma_days: int) -> Optional[dict]:
-    """Parse a raw CBOE P/C CSV string. Returns a result dict or None.
-
-    CBOE CSV format (stable since 2015):
-      line 0 : "Chicago Board Options Exchange"   ← banner, ignored
-      line 1 : ""                                 ← blank, ignored
-      line 2 : DATE,CALLS,PUTS,TOTAL,P/C RATIO   ← column header
-      line 3+: MM/DD/YYYY,...                     ← observations
-
-    Strategy: scan forward until a line whose first field matches the date
-    pattern — index minus 1 is the header. Robust to extra banner lines.
-
-    C2 FIX  : signal keyed on MA window, not raw daily.
-    M3 FIX  : ma_incomplete flag + ma_Nd_obs observation count exposed.
-    M2 PREP : last observation date captured for upstream staleness check.
-    m2 FIX  : data_start is None vs == 0 produce distinct, accurate messages.
-    """
-    try:
-        lines = text.splitlines()
-
-        # Locate first data row (MM/DD/YYYY format).
-        data_start: Optional[int] = None
-        for i, line in enumerate(lines):
-            first_field = line.split(",")[0].strip().strip('"')
-            if re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", first_field):
-                data_start = i
-                break
-
-        # m2 FIX: two distinct error messages for two distinct failure modes.
-        if data_start is None:
-            logger.warning(
-                "CBOE %s: no date-formatted rows found in CSV — schema changed?",
-                ratio_type,
-            )
-            return None
-        if data_start == 0:
-            logger.warning(
-                "CBOE %s: data rows start at line 0 — no preceding header row;"
-                " CSV schema changed?",
-                ratio_type,
-            )
-            return None
-
-        header_line = lines[data_start - 1]
-        body = "\n".join(lines[data_start:])
-        reader = csv.DictReader(io.StringIO(header_line + "\n" + body))
-
-        values: list[float] = []
-        last_date: Optional[str] = None
-
-        for row in reader:
-            # M2 PREP: capture last observation date.
-            date_key = next((k for k in row if k and "DATE" in k.upper()), None)
-            if date_key and row.get(date_key, "").strip():
-                last_date = row[date_key].strip()
-
-            # Locate P/C ratio column (name varies slightly across CBOE files).
-            pc_key = next((k for k in row if k and "P/C" in k.upper()), None)
-            if pc_key is None:
-                continue
-            raw = (row[pc_key] or "").strip()
-            if not raw or raw == ".":
-                continue
-            try:
-                v = float(raw)
-            except ValueError:
-                continue
-            if v > 0:
-                values.append(v)
-
-        if not values:
-            logger.warning("CBOE %s: no valid P/C observations parsed", ratio_type)
-            return None
-
-        latest  = values[-1]
-        window  = values[-ma_days:]
-        ma      = sum(window) / len(window)   # len(window) >= 1 — guaranteed
-
-        # C2 FIX: signal on MA; signal_raw on latest (additive — for reference only).
-        # M3 FIX: expose window size so callers know if MA is based on fewer obs.
-        return {
-            "pc_ratio":           round(latest, 2),
-            f"ma_{ma_days}d":     round(ma, 2),
-            "signal":             _cboe_signal(ratio_type, ma),        # C2: MA
-            "signal_raw":         _cboe_signal(ratio_type, latest),    # additive
-            "ma_incomplete":      len(window) < ma_days,               # M3
-            f"ma_{ma_days}d_obs": len(window),                         # M3
-            "observation_date":   last_date,                           # M2 prep
-            "source":             f"CBOE {ratio_type.upper()} P/C · clôture J-1",
-        }
-
-    except Exception as exc:   # defensive: unknown CSV schema must not raise
-        logger.warning("CBOE %s parse error (schema drift?): %s", ratio_type, exc)
-        return None
-
-
-
-
-# N3 — ^PCALL est un symbole RÉEL et vivant (coté ~0,68 par les screeners de
-# marché au 2026-07-16), MAIS non garanti via yfinance : Yahoo rate-limite
-# (HTTP 429) les IPs de crawler indépendamment du ticker, et renvoie souvent
-# un historique vide pour ces indices value-only. Best-effort uniquement.
-# Index P/C : AUCUNE source keyless fiable (N2) — dégradation vers None assumée.
-# N6 (audit 17/07/2026, non-regression prudente) : deux runs de production
-# consecutifs (2 patches retry differents) ont echoue a obtenir une seule
-# donnee via ^PCALL — DataFrame vide, HTTP 200, jamais d'exception. Un audit
-# independant rapporte que le lookup Yahoo repond "No results for '^PCALL'"
-# HORS chemin rate-limite (429) — indice fort que le symbole n'est plus
-# servi, pas seulement throttle. PRUDENCE : ce temoin est unique, non
-# redonde (l'API search JSON etait 429 au moment du test). Mis a None par
-# precaution operationnelle — arreter d'interroger une adresse qui echoue
-# a 100% sur 3 runs observes, sans emettre de requete vouee a l'echec.
-# Aucune perte fonctionnelle : la jambe equity etait deja [N/A] a chaque
-# run. A reactiver UNIQUEMENT si un test manuel confirme un symbole vivant
-# (ex.: recherche Yahoo hors periode de rate-limit, ou provider alternatif).
-_CBOE_YF_TICKERS: dict[str, str | None] = {
-    "equity": None,   # ^PCALL suspecte mort chez Yahoo (temoin unique, cf. commentaire ci-dessus)
-    "index":  None,   # aucune source keyless fiable (N2)
-}
-
-
-def _cboe_fetch_yf(ratio_type: str, ma_days: int) -> Optional[dict]:
-    """Fallback yfinance — seule voie keyless active depuis le retrait CBOE (N1/N2).
-
-    Best-effort assumé (N3) : ^PCALL est réel mais Yahoo rate-limite les IPs
-    de crawler ; un échec renvoie None, jamais d'exception, jamais de valeur
-    inventée. yfinance est déjà dans requirements.txt — zéro dépendance.
-    """
-    ticker_sym = _CBOE_YF_TICKERS.get(ratio_type)
-    if not ticker_sym:
-        return None   # index P/C: aucune source keyless fiable (N2)
-    try:
-        import yfinance as yf   # lazy import — only on fallback path
-        import random, time as _time
-        # AUDIT-FIX (17/07/2026, synergie avec oanda_data._yf_history):
-        # meme cause racine que le DXY manquant du 16/07 — un seul appel
-        # yfinance, zero retry, alors que Yahoo rate-limite (429) l'IP
-        # entiere independamment du ticker (prouve empiriquement sur
-        # ^PCALL par les deux audits reseau). Jitter + 2 tentatives avec
-        # backoff exponentiel, ciblees sur les erreurs 429/RateLimit
-        # uniquement — meme forme que le fix deja applique dans
-        # oanda_data.py, pour ne pas introduire un second pattern de
-        # retry dans la meme codebase. Additif : signature, type de
-        # retour et degradation finale vers None strictement inchanges.
-        _time.sleep(random.uniform(0, 0.4))
-        hist = None
-        # AUDIT-FIX #2 (17/07/2026): the first pass only retried on a raised
-        # exception (429/RateLimit). But the diagnostic notes already on
-        # record for ^PCALL (macro-cl4_8 report, section on yfinance) state
-        # this ticker frequently returns an HTTP 200 with an EMPTY DataFrame
-        # instead of raising — a silent failure mode with no exception to
-        # catch, so the retry above never fired for it. Retrying is now keyed
-        # on the *outcome* (empty/short history) as well as on exceptions,
-        # for up to 3 attempts total. Still additive: same signature, same
-        # graceful None on final failure, no invented data — an empty result
-        # after all retries is still logged and returned as None exactly as
-        # before.
-        for _attempt in range(3):
-            try:
-                hist = yf.Ticker(ticker_sym).history(period=f"{max(ma_days * 3, 15)}d")
-            except Exception as _e:
-                hist = None
-                _is_rl = "429" in str(_e) or "RateLimit" in type(_e).__name__
-                if _attempt < 2 and _is_rl:
-                    _time.sleep(1.5 ** (_attempt + 1) + random.uniform(0, 0.4))
-                    continue
-                raise
-            if hist is not None and not hist.empty and "Close" in hist.columns:
-                break   # got real data — stop retrying
-            if _attempt < 2:
-                _time.sleep(1.5 ** (_attempt + 1) + random.uniform(0, 0.4))
-        if hist is None or hist.empty or "Close" not in hist.columns:
-            logger.warning("CBOE yfinance %s: empty history for %s after retries",
-                           ratio_type, ticker_sym)
-            return None
-        values = [float(v) for v in hist["Close"].dropna() if v > 0]
-        if not values:
-            return None
-        latest = values[-1]
-        window = values[-ma_days:]
-        ma     = sum(window) / len(window)
-        return {
-            "pc_ratio":           round(latest, 2),
-            f"ma_{ma_days}d":     round(ma, 2),
-            "signal":             _cboe_signal(ratio_type, ma),
-            "signal_raw":         _cboe_signal(ratio_type, latest),
-            "ma_incomplete":      len(window) < ma_days,
-            f"ma_{ma_days}d_obs": len(window),
-            "observation_date":   hist.index[-1].strftime("%m/%d/%Y"),
-            # Étiquette honnête (N1/N2) : c'est le TOTAL P/C servi comme proxy
-            # de l'equity, la distribution publique CBOE ayant été retirée —
-            # ce n'est PAS un blocage contournable.
-            "source":             (
-                f"CBOE TOTAL P/C · yfinance {ticker_sym} "
-                "[fallback/PROXY · distribution publique CBOE retirée]"
-            ),
-        }
-    except Exception as exc:
-        logger.warning("CBOE %s yfinance fallback failed: %s", ratio_type, exc)
-        return None
-
-
-def _cboe_fetch_one(ratio_type: str, ma_days: int) -> Optional[dict]:
-    """Récupère une série P/C — chaîne ordonnée par fiabilité réelle vérifiée.
-
-      1. (désactivée — N1/N2) Fetch CSV CBOE direct : endpoints publics MORTS
-         au 2026-07-16 (301/404, distribution retirée — PAS un WAF). Ne pas
-         taper une URL 404 à chaque appel. Pour réactiver cette voie si un
-         miroir CSV au schéma legacy (ou un accès DataShop / All Access
-         authentifié) devient disponible, brancher ici ::
-             r = _get(url, extra_headers=_CBOE_HEADERS)
-             if r is not None:
-                 res = _cboe_parse(r.text, ratio_type, ma_days)
-                 if res is not None:
-                     return res
-      2. Fallback yfinance (best-effort — N3).
-      3. None → dégradation propre (mode single-leg P1 côté fetch_pc_ratio).
-
-    Signature et schéma de retour identiques dans tous les cas. Ne lève jamais.
-    """
-    if ratio_type not in _CBOE_YF_TICKERS:
-        logger.warning("CBOE: unknown ratio_type '%s'", ratio_type)
-        return None
-    return _cboe_fetch_yf(ratio_type, ma_days)
-
 
 def fetch_pc_ratio(
     ma_days: int = 5,
     vix_value: Optional[float] = None,
 ) -> Optional[dict]:
-    """Return CBOE Equity and Index P/C ratios with MA and signal qualifiers.
+    """Decommissioned. Always returns None -- no network call, no exception.
 
-    Both series are fetched concurrently (ThreadPoolExecutor × 2).
-
-    C1 FIX: ``vix_value`` optional parameter (default None — fully backward-
-        compatible). When provided, ``composite_signal`` becomes a true
-        VIX × P/C cross-signal via ``_vix_pc_composite()``. When None,
-        ``composite_signal`` is computed from P/C × P/C only via
-        ``_pc_composite()`` (C4+M1 corrected).
-
-    Return schema — all existing keys preserved (zero regression).
-    New additive keys marked [NEW]::
-
-        {
-          "equity": {
-              "pc_ratio":     0.57,              # raw daily — display only
-              "ma_5d":        0.61,              # MA (signal basis — C2)
-              "signal":       "COMPLACENCE",     # on MA — C2 fix
-              "signal_raw":   "DANGER ZONE",     # [NEW] raw daily ref
-              "ma_incomplete": False,            # [NEW] M3
-              "ma_5d_obs":    5,                 # [NEW] M3
-              "observation_date": "07/10/2026",  # [NEW] M2 prep
-              "source":       "CBOE EQUITY P/C · clôture J-1",
-          },
-          "index":        { ... },               # same structure
-          "delta_eq_idx": -0.24,
-          "composite_signal": "COMPLACENCE RETAIL + HEDGE INSTITUTIONNEL",
-          "stale":        False,                 # [NEW] M2
-        }
-
-    Partial failure (one series unavailable) → dict returned without
-        ``delta_eq_idx`` / ``composite_signal`` / ``stale``.
-    Both unavailable → ``None``. Never raises.
+    See the module-level ADR comment above for why. Signature unchanged
+    from the pre-decommission version so call sites need no edits.
     """
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
-        fut_eq  = ex.submit(_cboe_fetch_one, "equity", ma_days)
-        fut_idx = ex.submit(_cboe_fetch_one, "index",  ma_days)
-        equity  = fut_eq.result()
-        index   = fut_idx.result()
-
-    if equity is None and index is None:
-        logger.warning("fetch_pc_ratio: both CBOE series unavailable")
-        return None
-
-    out: dict = {"equity": equity, "index": index}
-
-    # AUDIT-FIX (validation audit, finding P1 — 15/07/2026): this used to be
-    # an unconditional early return with no composite_signal/stale at all
-    # whenever EITHER leg was missing — including "index", which has no
-    # yfinance fallback by design (_CBOE_YF_TICKERS["index"] is None) and is
-    # therefore the leg most likely to fail whenever the direct CBOE fetch
-    # is blocked (the module's own docstrings document this as an expected
-    # scenario, e.g. cloud-host IP blocking). That silently discarded a
-    # real, available equity P/C reading every time. Degrade gracefully
-    # instead: when exactly one leg succeeded, expose a single-leg
-    # composite (clearly labelled as degraded) so the sentiment layer isn't
-    # fully blind just because the other leg has no fallback path. The
-    # true both-missing case (both equity and index unavailable) still
-    # returns ``None`` above — nothing to salvage there.
-    if equity is None or index is None:
-        available, leg_name, other_leg = (
-            (equity, "equity", "index") if equity is not None else (index, "index", "equity")
-        )
-        if available is not None:
-            today = datetime.date.today()
-            stale = False
-            obs_str = available.get("observation_date")
-            if obs_str:
-                try:
-                    obs_date = datetime.datetime.strptime(obs_str, "%m/%d/%Y").date()
-                    stale = (today - obs_date).days > _CBOE_STALE_DAYS
-                except ValueError:
-                    pass   # unparseable date — not flagged (avoid false positives)
-            out["stale"] = stale
-            out["degraded_single_leg"] = leg_name
-            out["composite_signal"] = (
-                f"{available['signal']} — {leg_name} seul "
-                f"({other_leg} P/C indisponible)"
-            )
-        return out
-
-    # ── M2 FIX: staleness flag ────────────────────────────────────────────────
-    # P/C is published post-close J-1. Gap > _CBOE_STALE_DAYS calendar days
-    # (covers weekends + public holidays) flags the data as stale.
-    # VIX-vs-P/C timestamp comparison requires VIX date → handled in
-    # macro_engine.py which owns both values.
-    today = datetime.date.today()
-    stale = False
-    for series in (equity, index):
-        obs_str = series.get("observation_date")
-        if obs_str:
-            try:
-                obs_date = datetime.datetime.strptime(obs_str, "%m/%d/%Y").date()
-                if (today - obs_date).days > _CBOE_STALE_DAYS:
-                    stale = True
-                    break
-            except ValueError:
-                pass   # unparseable date — not flagged (avoid false positives)
-    out["stale"] = stale
-
-    # ── Composite signal ──────────────────────────────────────────────────────
-    eq_ma   = equity[f"ma_{ma_days}d"]
-    idx_ma  = index[f"ma_{ma_days}d"]
-    eq_sev  = _CBOE_SEVERITY.get(equity["signal"], 0)
-    idx_sev = _CBOE_SEVERITY.get(index["signal"], 0)
-
-    out["delta_eq_idx"] = round(equity["pc_ratio"] - index["pc_ratio"], 2)
-
-    # C1 FIX: true VIX × P/C when VIX available; P/C-only otherwise.
-    if vix_value is not None:
-        out["composite_signal"] = _vix_pc_composite(vix_value, eq_ma, idx_ma)
-    else:
-        out["composite_signal"] = _pc_composite(eq_ma, idx_ma, eq_sev, idx_sev)
-
-    return out
+    return None
