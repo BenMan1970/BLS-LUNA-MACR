@@ -1115,9 +1115,21 @@ def _cboe_parse(text: str, ratio_type: str, ma_days: int) -> Optional[dict]:
 # (HTTP 429) les IPs de crawler indépendamment du ticker, et renvoie souvent
 # un historique vide pour ces indices value-only. Best-effort uniquement.
 # Index P/C : AUCUNE source keyless fiable (N2) — dégradation vers None assumée.
+# N6 (audit 17/07/2026, non-regression prudente) : deux runs de production
+# consecutifs (2 patches retry differents) ont echoue a obtenir une seule
+# donnee via ^PCALL — DataFrame vide, HTTP 200, jamais d'exception. Un audit
+# independant rapporte que le lookup Yahoo repond "No results for '^PCALL'"
+# HORS chemin rate-limite (429) — indice fort que le symbole n'est plus
+# servi, pas seulement throttle. PRUDENCE : ce temoin est unique, non
+# redonde (l'API search JSON etait 429 au moment du test). Mis a None par
+# precaution operationnelle — arreter d'interroger une adresse qui echoue
+# a 100% sur 3 runs observes, sans emettre de requete vouee a l'echec.
+# Aucune perte fonctionnelle : la jambe equity etait deja [N/A] a chaque
+# run. A reactiver UNIQUEMENT si un test manuel confirme un symbole vivant
+# (ex.: recherche Yahoo hors periode de rate-limit, ou provider alternatif).
 _CBOE_YF_TICKERS: dict[str, str | None] = {
-    "equity": "^PCALL",   # CBOE Total P/C — proxy keyless le plus proche de l'equity
-    "index":  None,       # aucune source keyless fiable — mode single-leg P1 en aval
+    "equity": None,   # ^PCALL suspecte mort chez Yahoo (temoin unique, cf. commentaire ci-dessus)
+    "index":  None,   # aucune source keyless fiable (N2)
 }
 
 
