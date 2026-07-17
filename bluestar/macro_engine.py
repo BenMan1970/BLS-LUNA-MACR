@@ -1169,33 +1169,26 @@ def build_macro_overlay(market: MarketSnapshot, regime: str,
         vol_impl = (f"Méthode : {method}. "
                     + ("Vol comprimée → stops plus serrés viables." if vix.value < 18
                        else "Vol modérée à élevée → réduire la taille, élargir les stops."))
-        # C1/M2 FIX: enrich vol_regime and vol_impl with P/C data when available.
-        # Fully additive — original strings unchanged when pc_data is None.
-        if pc_data is not None:
-            eq        = pc_data.get("equity") or {}
-            idx       = pc_data.get("index")  or {}
-            eq_pc     = eq.get("pc_ratio")
-            idx_pc    = idx.get("pc_ratio")
-            composite = pc_data.get("composite_signal", "")
-            stale     = pc_data.get("stale", False)
-            if eq_pc is not None and idx_pc is not None:
-                stale_flag = " [STALE]" if stale else ""
-                vol_regime = (
-                    f"VIX {vix.display} · MOVE {move.display if move.available else 'N/A'}"
-                    f" · Eq.P/C {eq_pc} · Idx.P/C {idx_pc}{stale_flag}"
-                )
-            else:
-                # Audit fix: pc_data was returned but incomplete — say so
-                # instead of leaving P/C absent with no explanation.
-                vol_impl += " P/C [N/A] — composite incomplet."
-            if composite:
-                stale_note = " · données P/C potentiellement périmées" if stale else ""
-                vol_impl += f" Signal P/C : {composite}{stale_note}."
-        else:
-            # Audit fix (P/C invisible when CBOE blocks, problem 11): make the
-            # absence explicit instead of letting the whole options-flow
-            # enrichment silently vanish from the briefing.
-            vol_impl += " · P/C [N/A] — CBOE indisponible (flux bloqué ou non atteint)."
+        # DECOMMISSIONED (17/07/2026, ADR): CBOE Put/Call ratio removed from
+        # the briefing. Root cause proven, not inferred: ^PCALL returns a
+        # confirmed 404 "Quote not found" from Yahoo (delisted, verified live
+        # by the user from their own machine), CBOE stopped public keyless
+        # distribution of the aggregate ratio (403 AccessDenied on all
+        # _PCALL/_EQUITYPC/_INDEXPC/_TOTALPC endpoints while _VIX/_SKEW on
+        # the same CDN return 200 — a deliberate removal, not a network
+        # fault), and four independent cross-model audits (17/07/2026) found
+        # no free, documented, ToS-compliant programmatic source. The only
+        # defensible paid options (Barchart OnDemand $CPC/$CPCI, YCharts API)
+        # are disproportionate for a signal weighted 0.05 and never
+        # regime-determining alone (see config.REGIME_MATERIAL_SIGNAL_WEIGHT
+        # and _pc_indicator's own contract in regime_engine.py). Rather than
+        # a permanent "[N/A] — CBOE indisponible" placeholder implying a
+        # transient/fixable outage, the mention is removed outright — an
+        # accurate reflection of a feature that has been retired, not one
+        # that is temporarily broken. `pc_data` stays wired through
+        # unchanged (still passed to _assess_regime/build_interpretation as
+        # None) since both already degrade gracefully on None — no other
+        # file needs to change.
     else:
         vol_regime = "VIX [N/A]"
         vol_impl = "Méthode indisponible — régime vol non évaluable [N/A]."
@@ -1364,9 +1357,13 @@ def build_context(
     central_banks = build_central_bank_context(overrides)
     ips, cot_ref_label = build_ips_scores(overrides, now_utc)
     sofr_effr_bp = fetch_liquidity_stress()
-    # C1: P/C ratio — true VIX × P/C composite (external_sources §5).
-    # vix_value injecté → _vix_pc_composite() actif (pas le fallback P/C-only).
-    # Best-effort : pc_data = None si CBOE indisponible — overlay dégrade silencieusement.
+    # DECOMMISSIONED (17/07/2026, ADR — see build_macro_overlay comment for
+    # full rationale): fetch_pc_ratio() is now a documented no-op stub in
+    # external_sources.py that returns None instantly, no network call.
+    # Left wired (not deleted) so pc_data continues to flow through
+    # unchanged to _assess_regime/build_interpretation exactly as it already
+    # did during the weeks CBOE was unreachable — zero behavioural change
+    # downstream, just no more wasted HTTP attempts.
     try:
         _vix_gauge = market.gauge("VIX")
         pc_data = fetch_pc_ratio(
