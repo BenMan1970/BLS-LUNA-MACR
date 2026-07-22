@@ -907,13 +907,14 @@ def _build_setup_levels(p: float, atr, direction: int, asset: str) -> tuple:
 
 
 # Currencies with no standalone CFTC Non-Commercials contract in
-# institutional.CFTC_MARKETS (USD is the implicit counter-currency in all
-# 7 legacy majors, not a line item itself; a separate ICE USD Index
-# contract exists but is not currently integrated). Audit fix: previously
-# these currencies were silently dropped from `candidates`, so a USD pair
-# only ever showed squeeze risk on its non-USD leg with no indication that
-# the USD leg was simply never measured.
-_NO_STANDALONE_CFTC_CONTRACT = {"USD"}
+# institutional.CFTC_MARKETS. Kept as a mechanism (not deleted) in case a
+# currency's CFTC coverage is ever lost again.
+# P0 FIX (audit 22/07/2026): USD now has a standalone contract (USD Index,
+# ICE, code 098662) wired into institutional.CFTC_MARKETS -- it is no longer
+# silently dropped, so it's removed from this set. If the market name added
+# there turns out to be wrong (see comment in institutional.py), USD will
+# simply fall back to the [N/A] note below again -- no crash either way.
+_NO_STANDALONE_CFTC_CONTRACT: set[str] = set()
 
 
 def _build_setup_positioning(ccys, ips_by_ccy: dict, cot_label: str) -> tuple:
