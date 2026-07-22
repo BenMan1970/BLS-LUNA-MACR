@@ -762,13 +762,23 @@ def _render_data_integrity_footer(ctx: BriefingContext) -> str:
     else:
         issues_html = '<div style="margin-top:4px">✅ Aucune anomalie détectée.</div>'
 
+    # Display-only dedup: gauges and prices can legitimately share a field
+    # name (e.g. WTI/Brent/XAU-USD are tracked as both a headline gauge and a
+    # tradable price). staleness.build_coverage_report counts both slots on
+    # purpose for the RC2 coverage-ratio gate -- that math is untouched below
+    # (report.summary_line() still reflects all `report.total_fields`). Only
+    # the human-readable table collapses duplicate field names to one row.
+    seen_fields: dict[str, object] = {}
+    for f in report.fields:
+        seen_fields.setdefault(f.field_name, f)
+
     freshness_rows = "".join(
         f'<tr><td>{_e(f.field_name)}</td><td>{_e(f.reliability.value)}</td>'
         f'<td>{_e(f.freshness.value)}</td>'
         f'<td>{_e(f"{f.age_hours:.1f}h" if f.age_hours is not None else "—")}</td>'
         f'<td>{_e(f.fetch_timestamp or "—")}</td>'
         f'<td>{_e(f.note or "—")}</td></tr>'
-        for f in report.fields
+        for f in seen_fields.values()
     )
     freshness_table = (
         '<table style="width:100%;font-size:10px;border-collapse:collapse;margin-top:6px">'
