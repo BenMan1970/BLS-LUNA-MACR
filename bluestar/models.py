@@ -312,6 +312,9 @@ class BriefingContext:
     # v9.0: Enhanced regime and interpretation layers
     regime_assessment: object = None  # RegimeAssessment (avoid circular import)
     interpretation: object = None     # InterpretationLayer
- 
-
- 
+    # P0-1 FIX (Incident Review Board, RC3): whether the calendar feed
+    # (Forex Factory) was reachable on this run. Defaults to True so any
+    # existing caller that doesn't pass it (e.g. hand-built test fixtures)
+    # keeps today's "quiet day" rendering -- no behaviour change unless a
+    # caller explicitly sets it to False.
+    calendar_reachable: bool = True
