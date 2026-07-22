@@ -140,7 +140,8 @@ _CB_DEFS = [
 ]
 
 
-def build_central_bank_context(overrides: Optional[dict]) -> list[CentralBankSnapshot]:
+def build_central_bank_context(overrides: Optional[dict],
+                               now_utc: Optional[datetime] = None) -> list[CentralBankSnapshot]:
     """Build the four central-bank blocks.
 
     Sourcing precedence:
@@ -220,7 +221,7 @@ def build_central_bank_context(overrides: Optional[dict]) -> list[CentralBankSna
             src = central_bank_rate_source(name) if rate_is_live else ""
             if fw_used:
                 src = (src + " + CME FedWatch").strip(" +")
-            stamp = SourceStamp(src or "external", Reliability.PRIMARY)
+            stamp = SourceStamp(src or "external", Reliability.PRIMARY, timestamp=now_utc)
         elif o:
             stamp = proxy_stamp("manual override")
         else:
@@ -476,7 +477,8 @@ def _ips_label_for(score: int) -> str:
     return "Normal"
 
 
-def _ips_from_institutional(ref_label: str) -> list[CotPositioning]:
+def _ips_from_institutional(ref_label: str,
+                            now_utc: Optional[datetime] = None) -> list[CotPositioning]:
     """Path 1: real z-scores/percentiles from institutional layer."""
     if _inst is None:
         return []
@@ -501,6 +503,7 @@ def _ips_from_institutional(ref_label: str) -> list[CotPositioning]:
             stamp=SourceStamp(
                 f"OBSERVÉ — CFTC Non-Commercials | z={stat.zscore} | {int(stat.percentile)}e pct | {stat.report_date}",
                 Reliability.PRIMARY,
+                timestamp=now_utc,
                 note=f"z-score {stat.zscore}, percentile {int(stat.percentile) if stat.percentile is not None else '?'}",
             ),
         ))
@@ -588,7 +591,7 @@ def build_ips_scores(overrides: Optional[dict],
 
     cot_over = (overrides or {}).get("cot", {})
 
-    rows = _ips_from_institutional(ref_label)
+    rows = _ips_from_institutional(ref_label, now_utc)
     if not rows and cot_over:
         rows = _ips_from_overrides(cot_over, ref_label)
     if not rows:
@@ -1354,7 +1357,7 @@ def build_context(
 
     # A6-fix: sequential execution to avoid SIGSEGV from nested
     # ThreadPoolExecutor + curl_cffi/libcurl thread-unsafety.
-    central_banks = build_central_bank_context(overrides)
+    central_banks = build_central_bank_context(overrides, now_utc)
     ips, cot_ref_label = build_ips_scores(overrides, now_utc)
     sofr_effr_bp = fetch_liquidity_stress()
     # DECOMMISSIONED (17/07/2026, ADR — see build_macro_overlay comment for
@@ -1521,4 +1524,8 @@ def build_context(
         bull=bull,
         bear=bear,
         invalidation_principal=inval_txt,
+        # P0-1 FIX (Incident Review Board, RC3): surface calendar reachability
+        # so the renderer can show an explicit "feed unreachable" banner
+        # instead of silently rendering an empty catalyst list.
+        calendar_reachable=bool((calendar or {}).get("metadata", {}).get("reachable", True)),
     )
