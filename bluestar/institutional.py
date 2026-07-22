@@ -253,6 +253,15 @@ CFTC_MARKETS = {
     "CAD": "CANADIAN DOLLAR - CHICAGO MERCANTILE EXCHANGE",
     "CHF": "SWISS FRANC - CHICAGO MERCANTILE EXCHANGE",
     "NZD": "NZ DOLLAR - CHICAGO MERCANTILE EXCHANGE",
+    # P0 FIX (audit 22/07/2026, gap identifiée dans BLUESTAR_DataSource_
+    # Integration_Spec.md, §2.3 + IDRA cross-check): USD Index (ICE), code
+    # CFTC 098662. Nom vérifié via CFTC.gov (deanybtsf.htm, "USD INDEX -
+    # ICE FUTURES U.S. Code-098662") et Tradingster (même libellé) -- non
+    # confirmé par une requête Socrata réussie en direct (réseau restreint
+    # dans ce sandbox), donc à valider sur le premier run réel : si stats
+    # ["USD"] reste vide, ce nom de marché est probablement légèrement
+    # différent et devra être corrigé.
+    "USD": "USD INDEX - ICE FUTURES U.S.",
 }
 
 
