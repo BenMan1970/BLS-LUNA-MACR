@@ -156,7 +156,7 @@ with right:
 if "html" not in st.session_state:
     st.session_state.html = None
 
-if generate:
+if generate or refresh:  # RC1 FIX: Refresh must regenerate the report, not keep the stale one
     now_utc = datetime.now(TZ_UTC)
     ctx = build_context(now_utc, market, calendar, overrides, mode, allow_proxy_levels)
     issues = validate_context(ctx)
@@ -181,11 +181,8 @@ if st.session_state.html:
 
     st.subheader("Briefing HTML")
     fname = f"Macro_Briefing_BLUESTAR_{now_cet:%d-%m-%Y}.html"
-    st.download_button("📥 Télécharger HTML",
-                       data=st.session_state.html.encode("utf-8"),
-                       file_name=fname,
-                       mime="text/html; charset=utf-8",
-                       use_container_width=False)
+    st.download_button("📥 Télécharger HTML", data=st.session_state.html,
+                       file_name=fname, mime="text/html", use_container_width=False)
     st.caption("Astuce PDF : ouvrir le HTML → bouton « 📥 Télécharger PDF » (window.print) "
                "→ Chrome → activer « Graphiques d'arrière-plan ».")
 
@@ -249,3 +246,4 @@ if show_raw_json:
 
 st.caption("BLUESTAR SYSTEM · MACRO BRIEFING ENGINE · "
            "Aucune donnée inventée — [N/A]/[PROXY] partout où la source manque.")
+
