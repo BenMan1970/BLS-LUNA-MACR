@@ -47,9 +47,10 @@ def generate_briefing(
         allow_proxy_levels=allow_proxy_levels,
     )
     ctx = build_context(now_utc, market, calendar, overrides, mode, allow_proxy_levels)
-    issues = validate_context(ctx)
+    context_issues = validate_context(ctx)
+    ctx.issues = context_issues  # visible to render_html's data-integrity footer
     html = render_html(ctx)
-    issues += validate_html(html)
+    issues = context_issues + validate_html(html)
     ctx.issues = issues
     errors = [i for i in issues if i.severity == "ERROR"]
     if errors:
