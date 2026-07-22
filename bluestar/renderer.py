@@ -757,3 +757,4 @@ def render_html(ctx: BriefingContext) -> str:
               f'{fr_date(ctx.generated_cet)} {ctx.generated_cet:%H:%M} CET</div>')
 
     return head + "\n" + header + "\n" + body + "\n" + footer + "\n</div><!-- /page -->\n</body>\n</html>"
+
