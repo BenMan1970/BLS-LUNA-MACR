@@ -313,3 +313,5 @@ class BriefingContext:
     regime_assessment: object = None  # RegimeAssessment (avoid circular import)
     interpretation: object = None     # InterpretationLayer
  
+
+ 
