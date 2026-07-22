@@ -159,9 +159,10 @@ if "html" not in st.session_state:
 if generate or refresh:  # RC1 FIX: Refresh must regenerate the report, not keep the stale one
     now_utc = datetime.now(TZ_UTC)
     ctx = build_context(now_utc, market, calendar, overrides, mode, allow_proxy_levels)
-    issues = validate_context(ctx)
+    context_issues = validate_context(ctx)
+    ctx.issues = context_issues  # visible to render_html's data-integrity footer
     html = render_html(ctx)
-    issues += validate_html(html)
+    issues = context_issues + validate_html(html)
     ctx.issues = issues
     st.session_state.html = html
     st.session_state.ctx_issues = issues
@@ -181,8 +182,18 @@ if st.session_state.html:
 
     st.subheader("Briefing HTML")
     fname = f"Macro_Briefing_BLUESTAR_{now_cet:%d-%m-%Y}.html"
-    st.download_button("📥 Télécharger HTML", data=st.session_state.html,
-                       file_name=fname, mime="text/html", use_container_width=False)
+    # P0-3 FIX (Incident Review Board): the coverage/validation ERROR was
+    # previously advisory-only -- the download button rendered unconditionally
+    # even when publication_blocked was True. Gate it on any ERROR-severity
+    # issue from this run.
+    has_error = any(i.severity == "ERROR" for i in issues)
+    if has_error:
+        st.error("📥 Téléchargement bloqué — au moins une anomalie ERROR "
+                 "(voir « Validation qualité » ci-dessous / le bloc « Intégrité "
+                 "des données » dans le HTML).")
+    else:
+        st.download_button("📥 Télécharger HTML", data=st.session_state.html,
+                           file_name=fname, mime="text/html", use_container_width=False)
     st.caption("Astuce PDF : ouvrir le HTML → bouton « 📥 Télécharger PDF » (window.print) "
                "→ Chrome → activer « Graphiques d'arrière-plan ».")
 
@@ -246,4 +257,3 @@ if show_raw_json:
 
 st.caption("BLUESTAR SYSTEM · MACRO BRIEFING ENGINE · "
            "Aucune donnée inventée — [N/A]/[PROXY] partout où la source manque.")
-
