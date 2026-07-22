@@ -141,8 +141,18 @@ class CoverageReport:
 
     @property
     def publication_blocked(self) -> bool:
-        """True if the live coverage is too low to publish."""
-        return self.live_ratio < MIN_LIVE_COVERAGE_RATIO
+        """True if the usable coverage is too low to publish.
+
+        RC2 FIX (Incident Review Board) [DATA-GOVERNANCE POLICY — flagged for
+        sign-off]: gate on ``usable_ratio`` (live + fresh fallback) instead of
+        ``live_ratio`` (PRIMARY only). In the sanctioned zero-key mode every
+        market field is a *fresh* yfinance FALLBACK (freshness=LIVE,
+        is_stale=False), so live_ratio is structurally 0% and the briefing could
+        NEVER publish even with 22/25 fresh fields (demonstrated: usable_ratio
+        88% while live_ratio 0%). usable_ratio still excludes stale/unavailable
+        data, so genuinely degraded runs remain blocked. One-line semantic change;
+        no other behaviour altered."""
+        return self.usable_ratio < MIN_LIVE_COVERAGE_RATIO
 
     def summary_line(self) -> str:
         """One-line human-readable summary for the HTML footer."""
