@@ -79,18 +79,9 @@ def fetch_raw(url: str = FF_JSON_URL) -> List[Dict]:
     no-calendar state rather than crashing).
     """
     last_err: Optional[Exception] = None
-    # RC3 FIX (Incident Review Board): envoie un User-Agent browser-like. L'absence
-    # d'UA exposait le flux Forex Factory Ã  des 403 anti-bot (le 429 rate-limit
-    # reste gÃ©rÃ© par le retry/backoff ci-dessous et, cÃ´tÃ© rendu, par la banniÃ¨re
-    # explicite "calendrier injoignable" â€” plus de fallback silencieux).
-    _ff_headers = {
-        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"),
-        "Accept": "application/json,text/plain,*/*",
-    }
     for attempt in range(HTTP_RETRIES + 1):
         try:
-            r = requests.get(url, headers=_ff_headers, timeout=HTTP_TIMEOUT)
+            r = requests.get(url, timeout=HTTP_TIMEOUT)
             r.raise_for_status()
             return r.json()
         except (requests.RequestException, ValueError) as e:  # noqa: PERF203
@@ -129,9 +120,9 @@ def enrich(event: Dict, event_time_ref: datetime) -> Optional[Dict]:
             "time_display": t_utc.strftime("%H:%M UTC"),
             "day_of_week": t_utc.strftime("%A").upper(),
             "impact": (event.get("impact") or "High").lower(),
-            "forecast": event.get("forecast", "") or "â€”",
-            "previous": event.get("previous", "") or "â€”",
-            "actual": event.get("actual", "") or "â€”",
+            "forecast": event.get("forecast", "") or "—",
+            "previous": event.get("previous", "") or "—",
+            "actual": event.get("actual", "") or "—",
             "hours_until": round(h, 2),
             "hours_until_display": fmt_until(h),
             "is_upcoming": h > 0,
@@ -163,9 +154,9 @@ def build_calendar(now_utc: Optional[datetime] = None,
     if raw_data is None:
         raw_data = fetch_raw()
 
-    # MACRO-A3 FIX : .lower() rend le filtre robuste Ã  un changement de casse
-    # du flux Forex Factory (ex: "High" vs "high"). Ne peut pas causer de rÃ©gression
-    # car il Ã©largit le pÃ©rimÃ¨tre de capture au lieu de le rÃ©trÃ©cir.
+    # MACRO-A3 FIX : .lower() rend le filtre robuste à un changement de casse
+    # du flux Forex Factory (ex: "High" vs "high"). Ne peut pas causer de régression
+    # car il élargit le périmètre de capture au lieu de le rétrécir.
     all_events = [
         e for ev in raw_data
         if (ev.get("impact") or "").strip().lower() == "high"
@@ -175,7 +166,7 @@ def build_calendar(now_utc: Optional[datetime] = None,
 
     daily: Dict[str, List[str]] = defaultdict(list)
     for ev in all_events:
-        daily[ev["datetime_utc"][:10]].append(f"{ev['currency']} â€“ {ev['event_name']}")
+        daily[ev["datetime_utc"][:10]].append(f"{ev['currency']} – {ev['event_name']}")
     summary_by_day = dict(sorted(daily.items()))
 
     events_engine = [
