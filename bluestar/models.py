@@ -41,10 +41,10 @@ class SourceStamp:
     def render(self) -> str:
         """Return the bracket tag shown in the briefing."""
         if self.reliability is Reliability.UNAVAILABLE:
-            return f"[N/A · {self.note}]" if self.note else "[N/A]"
+            return f"[N/A Â· {self.note}]" if self.note else "[N/A]"
         if self.reliability is Reliability.PROXY:
             label = self.source_name or "PROXY"
-            return f"[PROXY · {label}]" if self.source_name else "[PROXY]"
+            return f"[PROXY Â· {label}]" if self.source_name else "[PROXY]"
         ts = self.timestamp
         if ts is not None:
             cet = ts.astimezone(TZ_CET)
@@ -119,9 +119,9 @@ class MacroEvent:
             time_display=d.get("time_display", ""),
             day_of_week=d.get("day_of_week", ""),
             impact=d.get("impact", "high"),
-            forecast=d.get("forecast", "—"),
-            previous=d.get("previous", "—"),
-            actual=d.get("actual", "—"),
+            forecast=d.get("forecast", "â€”"),
+            previous=d.get("previous", "â€”"),
+            actual=d.get("actual", "â€”"),
             hours_until=float(d.get("hours_until", 0.0)),
             priority=d.get("priority", "MEDIUM"),
             session=d.get("session", "OFF"),
@@ -153,7 +153,7 @@ class CentralBankSnapshot:
 
     name: str
     flag: str
-    rate_display: str            # e.g. "3,50–3,75%"
+    rate_display: str            # e.g. "3,50â€“3,75%"
     fact: str                    # FAIT: rate + next-decision probability (sourced)
     bias_interpretation: str     # BIAIS: hawkish/dovish/neutre + 1-line argument
     next_meeting: str            # date or [PROXY]/[N/A]
@@ -162,16 +162,16 @@ class CentralBankSnapshot:
     pause_pct: Optional[int] = None
     cut_pct: Optional[int] = None
     hike_pct: Optional[int] = None
-    # N4 (17/07/2026, audit A1): prélèvement FedWatch, affiché sous la barre
-    # de probabilité — None quand le payload BCM n'en porte pas (affichage
-    # alors masqué, comportement historique inchangé). Additif, jamais inventé.
+    # N4 (17/07/2026, audit A1): prÃ©lÃ¨vement FedWatch, affichÃ© sous la barre
+    # de probabilitÃ© â€” None quand le payload BCM n'en porte pas (affichage
+    # alors masquÃ©, comportement historique inchangÃ©). Additif, jamais inventÃ©.
     fedwatch_as_of: Optional[str] = None
-    # N4bis (17/07/2026, audit A1 — cause racine réelle sur le briefing du
-    # 16/07): True quand les probabilités pause/cut/hike proviennent des
-    # OVERRIDES manuels (cas constaté : 70/0/30 saisi une semaine plus tôt,
-    # stamp carte = [FRED] seul → barre affichée sans provenance). Le renderer
-    # affiche alors « saisie manuelle [PROXY] » sous la barre. Défaut False →
-    # affichage historique inchangé pour les snapshots existants.
+    # N4bis (17/07/2026, audit A1 â€” cause racine rÃ©elle sur le briefing du
+    # 16/07): True quand les probabilitÃ©s pause/cut/hike proviennent des
+    # OVERRIDES manuels (cas constatÃ© : 70/0/30 saisi une semaine plus tÃ´t,
+    # stamp carte = [FRED] seul â†’ barre affichÃ©e sans provenance). Le renderer
+    # affiche alors Â« saisie manuelle [PROXY] Â» sous la barre. DÃ©faut False â†’
+    # affichage historique inchangÃ© pour les snapshots existants.
     proba_from_override: bool = False
 
 
@@ -215,7 +215,7 @@ class AssetSetup:
     conviction: int              # 1-5 stars (after adjustments)
     action: str                  # CHERCHER LONG / CHERCHER SHORT / ATTENDRE
     action_class: str            # long / short / wait
-    arrow: str                   # ↑ / ↓ / ⏸
+    arrow: str                   # â†‘ / â†“ / â¸
     # Levels (each with an origin tag)
     zone_buy: str = "[N/A]"
     origin_buy: str = "[N/A]"
@@ -225,7 +225,7 @@ class AssetSetup:
     origin_stop: str = "[N/A]"
     expected_move: str = "[N/A]"
     em_method: str = "[N/A]"
-    session: str = "—"
+    session: str = "â€”"
     session_reason: str = ""
     invalidation_risk: str = ""
     invalidation_level: str = "[N/A]"
@@ -234,9 +234,9 @@ class AssetSetup:
     ips_summary: str = "[N/A]"
     squeeze_risk: str = "Faible"
     squeeze_class: str = "green"
-    # AUDIT-FIX (15/07/2026, finding 6 — MINEURE): 'sizing_factor' removed.
+    # AUDIT-FIX (15/07/2026, finding 6 â€” MINEURE): 'sizing_factor' removed.
     # It was computed every run (compute_sizing_factor in macro_engine.py)
-    # but never read by renderer.py or anywhere else — v9.0 replaced the
+    # but never read by renderer.py or anywhere else â€” v9.0 replaced the
     # Sizing Factor display with the R:R ratio below (see
     # validation.check_sizing_formula_present's own comment: "In v9.0,
     # Sizing Factor is replaced by R:R"), leaving this a pure
@@ -312,4 +312,13 @@ class BriefingContext:
     # v9.0: Enhanced regime and interpretation layers
     regime_assessment: object = None  # RegimeAssessment (avoid circular import)
     interpretation: object = None     # InterpretationLayer
+    # v10.1 (Incident Review Board â€” P0 certification, zero-regression): champs
+    # ADDITIFS (defaults) pour la certification de fraÃ®cheur, la couverture des
+    # sources et le diagnostic du calendrier. N'affectent ni la construction
+    # positionnelle existante ni aucune valeur mÃ©tier.
+    calendar_reachable: bool = True
+    calendar_source: str = "Forex Factory"
+    coverage: object = None                 # CoverageReport â€” 'object' Ã©vite l'import circulaire
+    coverage_summary: str = ""
+    stale_fields: list = field(default_factory=list)
  
