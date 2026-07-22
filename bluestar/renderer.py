@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .models import AssetSetup, BriefingContext, MacroEvent
 from .macro_engine import fr_date, fr_day_name, session_label
+from .staleness import build_coverage_report, stale_fields_summary
 
 _TPL_DIR = Path(__file__).parent / "templates"
 
@@ -217,8 +218,16 @@ def _render_section2(ctx: BriefingContext) -> str:
         sec_sub = "Calendrier macro — fenêtre glissante 72h (marché fermé)"
 
     if not ctx.catalysts_high and not ctx.catalysts_medium:
-        body = ('<div class="abox wait" style="font-size:12px"><span>Aucun catalyseur '
-                'high-impact à venir dans la fenêtre du calendrier [Forex Factory].</span></div>')
+        if not ctx.calendar_reachable:
+            # P0-1 FIX (Incident Review Board, RC3): an unreachable feed (429/
+            # timeout) must never render identically to a genuinely quiet day.
+            body = ('<div class="abox wait" style="font-size:12px;border-color:#c0392b">'
+                    '<span>⚠️ Flux Forex Factory injoignable (HTTP 429/timeout) — '
+                    'calendrier indisponible sur ce run, ceci n\'est pas un calendrier '
+                    'vide.</span></div>')
+        else:
+            body = ('<div class="abox wait" style="font-size:12px"><span>Aucun catalyseur '
+                    'high-impact à venir dans la fenêtre du calendrier [Forex Factory].</span></div>')
     else:
         highs = "".join(_render_event_high(e, ctx.catalyst_scenarios.get(e.datetime_utc + e.event_name, {}))
                         for e in ctx.catalysts_high)
@@ -725,6 +734,62 @@ def _render_section7_interpretation(ctx: BriefingContext) -> str:
 # ---------------------------------------------------------------------------
 # Top-level render
 # ---------------------------------------------------------------------------
+def _render_data_integrity_footer(ctx: BriefingContext) -> str:
+    """P0-2/P0-3 + FRESHNESS block (Incident Review Board recommendations).
+
+    Renders, in the HTML itself (previously only in the Streamlit diagnostics
+    panel -- never in the downloaded HTML/PDF):
+      * the coverage summary line + stale-field list (P0-2/P0-3);
+      * every WARN/ERROR/INFO validation issue (``ctx.issues``);
+      * the mandated per-field freshness block (Source / Acquisition UTC /
+        Age / TTL-relevant reliability / Validation), built from the same
+        ``StalenessReport`` list the coverage report already computes.
+
+    Purely additive: does not alter any existing section, and reads only
+    already-computed data (``ctx.market``, ``ctx.generated_utc``,
+    ``ctx.issues``).
+    """
+    report = build_coverage_report(ctx.market, ctx.generated_utc)
+    stale_txt = stale_fields_summary(report)
+
+    issues_html = ""
+    if ctx.issues:
+        rows = []
+        for i in ctx.issues:
+            icon = "🔴" if i.severity == "ERROR" else "🟡" if i.severity == "WARN" else "🔵"
+            rows.append(f'<li>{icon} <b>{_e(i.rule)}</b> — {_e(i.message)}</li>')
+        issues_html = f'<ul style="margin:4px 0 0 0;padding-left:18px">{"".join(rows)}</ul>'
+    else:
+        issues_html = '<div style="margin-top:4px">✅ Aucune anomalie détectée.</div>'
+
+    freshness_rows = "".join(
+        f'<tr><td>{_e(f.field_name)}</td><td>{_e(f.reliability.value)}</td>'
+        f'<td>{_e(f.freshness.value)}</td>'
+        f'<td>{_e(f"{f.age_hours:.1f}h" if f.age_hours is not None else "—")}</td>'
+        f'<td>{_e(f.fetch_timestamp or "—")}</td>'
+        f'<td>{_e(f.note or "—")}</td></tr>'
+        for f in report.fields
+    )
+    freshness_table = (
+        '<table style="width:100%;font-size:10px;border-collapse:collapse;margin-top:6px">'
+        '<thead><tr style="text-align:left;border-bottom:1px solid #dde3f5">'
+        '<th>Champ</th><th>Fiabilité</th><th>Fraîcheur</th><th>Âge</th>'
+        '<th>Horodatage acquisition (UTC)</th><th>Note</th></tr></thead>'
+        f'<tbody>{freshness_rows}</tbody></table>'
+    )
+
+    return (
+        '<div class="section" style="font-size:11px">'
+        '<div class="sec-hdr"><div class="sec-ttl">Intégrité des données</div></div>'
+        '<div class="sec-body">'
+        f'<div>{_e(report.summary_line())}</div>'
+        + (f'<div style="margin-top:2px">{_e(stale_txt)}</div>' if stale_txt else '')
+        + f'<div style="margin-top:6px"><b>Validation</b></div>{issues_html}'
+        + f'<div style="margin-top:6px"><b>Fraîcheur par champ</b></div>{freshness_table}'
+        + '</div></div>'
+    )
+
+
 def render_html(ctx: BriefingContext) -> str:
     """Render the complete BLUESTAR briefing HTML for ``ctx``."""
     head = _load("scaffold_head.html").replace("{{DATE}}", fr_date(ctx.generated_cet))
@@ -746,6 +811,7 @@ def render_html(ctx: BriefingContext) -> str:
         + _render_section5(ctx)
         + _render_section6_regime(ctx)
         + _render_section7_interpretation(ctx)
+        + _render_data_integrity_footer(ctx)
         + '</div><!-- /wrap -->'
     )
     # N5 (17/07/2026, audit A5): le footer affichait « Macro_Briefing_v8 »
@@ -757,4 +823,3 @@ def render_html(ctx: BriefingContext) -> str:
               f'{fr_date(ctx.generated_cet)} {ctx.generated_cet:%H:%M} CET</div>')
 
     return head + "\n" + header + "\n" + body + "\n" + footer + "\n</div><!-- /page -->\n</body>\n</html>"
-
