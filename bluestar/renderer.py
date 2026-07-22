@@ -40,7 +40,7 @@ def _cs_source_tag(currency_strength: list) -> str:
     if not currency_strength:
         return "[PROXY]"
     if any("Oanda" in (getattr(r, "driver", "") or "") for r in currency_strength):
-        return "[Oanda v20 · D1]"
+        return "[Oanda v20 Â· D1]"
     return "[PROXY]"
 
 
@@ -56,11 +56,11 @@ def _render_top_card(s: AssetSetup) -> str:
           <span style="font-size:13px;color:var(--amber)">{_stars(s.conviction)}</span>
         </div>
         <div class="top-body">
-          <div class="top-biais {s.bias_class}">{_e(s.arrow)} {_e(s.bias)} — {_e(s.reason_short)}</div>
+          <div class="top-biais {s.bias_class}">{_e(s.arrow)} {_e(s.bias)} â€” {_e(s.reason_short)}</div>
           <div class="top-row"><span class="lbl">Achat macro</span><span class="vg">{_e(s.zone_buy)}</span></div>
           <div class="top-row"><span class="lbl">Vente macro</span><span class="vr">{_e(s.zone_sell)}</span></div>
           <div class="top-row"><span class="lbl">Stop macro</span><span class="vr">{_e(s.stop)}</span></div>
-          <div class="top-row"><span class="lbl">Expected Move</span><span class="va">±{_e(s.expected_move)}</span></div>
+          <div class="top-row"><span class="lbl">Expected Move</span><span class="va">Â±{_e(s.expected_move)}</span></div>
           <div class="top-row"><span class="lbl">IPS / COT</span><span class="va">{_e(s.ips_summary)}</span></div>
           <div class="top-action {s.action_class}">{_e(s.action)}</div>
         </div>
@@ -82,9 +82,9 @@ def _headline_regime(ctx: BriefingContext) -> tuple[str, str]:
 
     Previously Section 1 always read the VIX-only ``ctx.regime`` while
     Section 6 independently displayed the multi-factor ``regime_assessment``
-    — the two could (and did) disagree in the same document (e.g. "MIXTE"
+    â€” the two could (and did) disagree in the same document (e.g. "MIXTE"
     vs "Reflation"). Section 1 now prefers the multi-factor assessment
-    (which itself applies the confidence floor — see regime_engine.py) and
+    (which itself applies the confidence floor â€” see regime_engine.py) and
     falls back to the legacy VIX-only regime only when no assessment could
     be computed for this run.
     """
@@ -101,23 +101,23 @@ def _render_section1(ctx: BriefingContext) -> str:
     op_note = ""
     if ctx.operational_note:
         op_note = (f'<div class="abox wait" style="font-size:11px;margin-bottom:14px">'
-                   f'<span>⚠️ <span class="bold">NOTE OPÉRATIONNELLE :</span> '
+                   f'<span>âš ï¸ <span class="bold">NOTE OPÃ‰RATIONNELLE :</span> '
                    f'{_e(ctx.operational_note)}</span></div>')
 
     if ctx.priority_assets:
         cards = "".join(_render_top_card(s) for s in ctx.priority_assets)
         priority_block = f'<div class="top-grid">{cards}</div>'
     else:
-        # AUDIT-ENRICHMENT (15/07/2026): 🛑 (stop sign) read as an alarm in
+        # AUDIT-ENRICHMENT (15/07/2026): ðŸ›‘ (stop sign) read as an alarm in
         # an emoji font, which is the wrong register for a decision-support
-        # tool that is explicitly choosing not to force a trade — it's a
+        # tool that is explicitly choosing not to force a trade â€” it's a
         # calm, deliberate "nothing meets the bar today", not an error
-        # state. Swapped for 🧭 (compass — "no clear directional read"),
+        # state. Swapped for ðŸ§­ (compass â€” "no clear directional read"),
         # same neutral dashed-border box (.no-setup CSS untouched), purely
         # cosmetic, no change to no_setup_reason logic or when this
         # branch fires.
-        priority_block = (f'<div class="no-setup"><div class="no-setup-icon">🧭</div>'
-                          f'<div class="no-setup-title">Aucun actif ne réunit les critères aujourd\'hui</div>'
+        priority_block = (f'<div class="no-setup"><div class="no-setup-icon">ðŸ§­</div>'
+                          f'<div class="no-setup-title">Aucun actif ne rÃ©unit les critÃ¨res aujourd\'hui</div>'
                           f'<div class="no-setup-sub">{_e(ctx.no_setup_reason or "")}</div></div>')
 
     if ctx.avoid_assets:
@@ -126,22 +126,22 @@ def _render_section1(ctx: BriefingContext) -> str:
             f'<span class="avoid-reason">{_e(r)}</span></div>'
             for a, r in ctx.avoid_assets)
     else:
-        avoid_items = ('<div class="avoid-item"><span class="avoid-asset">—</span>'
-                       '<span class="avoid-reason">Aucun actif explicitement à éviter aujourd\'hui.</span></div>')
+        avoid_items = ('<div class="avoid-item"><span class="avoid-asset">â€”</span>'
+                       '<span class="avoid-reason">Aucun actif explicitement Ã  Ã©viter aujourd\'hui.</span></div>')
 
     return f"""
 <div class="section">
-  <div class="sec-hdr"><div class="sec-num">1</div><div class="sec-ttl">Tableau de Bord Exécutif</div><div class="sec-sub">Où agir aujourd'hui — lecture en 30 sec</div></div>
+  <div class="sec-hdr"><div class="sec-num">1</div><div class="sec-ttl">Tableau de Bord ExÃ©cutif</div><div class="sec-sub">OÃ¹ agir aujourd'hui â€” lecture en 30 sec</div></div>
   <div class="sec-body">
     <div class="regime-bar">
-      <span class="regime-lbl">Régime du jour</span>
+      <span class="regime-lbl">RÃ©gime du jour</span>
       <span class="regime-val {headline_class}">{_e(headline_regime)}</span>
-      <span style="margin-left:auto;font-size:11px;color:var(--muted)">VIX : <span class="mono bold amber">{_e(vix.display)}</span> · MOVE : <span class="mono bold blue">{_e(move.display)}</span> · Depuis {_e(ctx.regime_since)}</span>
+      <span style="margin-left:auto;font-size:11px;color:var(--muted)">VIX : <span class="mono bold amber">{_e(vix.display)}</span> Â· MOVE : <span class="mono bold blue">{_e(move.display)}</span> Â· Depuis {_e(ctx.regime_since)}</span>
     </div>
     {op_note}
-    <div class="sub-lbl">🎯 ACTIFS PRIORITAIRES DU JOUR</div>
+    <div class="sub-lbl">ðŸŽ¯ ACTIFS PRIORITAIRES DU JOUR</div>
     {priority_block}
-    <div class="sub-lbl">🚫 ÉVITER AUJOURD'HUI</div>
+    <div class="sub-lbl">ðŸš« Ã‰VITER AUJOURD'HUI</div>
     <div class="avoid-list">{avoid_items}</div>
   </div>
 </div>"""
@@ -154,50 +154,50 @@ def _render_event_high(e: MacroEvent, scn: dict) -> str:
     # Audit A1 fix: display the date alongside the time to avoid false
     # intraday imminence, especially on weekends.
     date_str = e.date_display if hasattr(e, 'date_display') and e.date_display else ""
-    time_label = f"{_e(e.time_display)}" if not date_str else f"{_e(date_str)} · {_e(e.time_display)}"
-    # AUDIT-FIX (validation audit, finding "Warsh" — P2, 15/07/2026): the
-    # calendar layer has no per-event SourceStamp/Reliability mechanism —
+    time_label = f"{_e(e.time_display)}" if not date_str else f"{_e(date_str)} Â· {_e(e.time_display)}"
+    # AUDIT-FIX (validation audit, finding "Warsh" â€” P2, 15/07/2026): the
+    # calendar layer has no per-event SourceStamp/Reliability mechanism â€”
     # event_name is the raw Forex Factory feed title, displayed verbatim
     # with no provenance tag at all, unlike every other data source in the
     # pipeline (market, rates, COT all carry a [Source]/[PROXY]/[N/A] tag).
-    # Add a lightweight, honest note on CRITICAL events specifically — the
-    # highest-impact, least-scrutinized tier — rather than hardcoding any
+    # Add a lightweight, honest note on CRITICAL events specifically â€” the
+    # highest-impact, least-scrutinized tier â€” rather than hardcoding any
     # name-specific correction (which this layer can't verify). Purely
     # additive: HIGH/MEDIUM-priority rendering is untouched.
     provenance_note = (
         '<div class="ev-prev" style="font-size:10px;color:var(--muted)">'
-        'Libellé source : Forex Factory · non vérifié</div>'
+        'LibellÃ© source : Forex Factory Â· non vÃ©rifiÃ©</div>'
     ) if e.priority == "CRITICAL" else ""
     return f"""
     <div class="event high">
       <div class="event-hdr">
         <span class="ev-time">{time_label}</span>
         <span class="ev-name">{_e(e.event_name)} [{_e(e.currency)}]</span>
-        <span class="ev-tag"><span class="badge badge-red">🔴 ÉLEVÉ</span></span>
+        <span class="ev-tag"><span class="badge badge-red">ðŸ”´ Ã‰LEVÃ‰</span></span>
       </div>
       {provenance_note}
-      <div class="ev-prev">Précédent : <span class="mono bold">{_e(scn.get('prev','—'))}</span> &nbsp;·&nbsp; Consensus : <span class="mono bold amber">{_e(scn.get('cons','—'))}</span></div>
+      <div class="ev-prev">PrÃ©cÃ©dent : <span class="mono bold">{_e(scn.get('prev','â€”'))}</span> &nbsp;Â·&nbsp; Consensus : <span class="mono bold amber">{_e(scn.get('cons','â€”'))}</span></div>
       <div class="ev-scen">
-        <div class="s-beat"><div class="s-lbl-b">✅ BEAT</div><div class="s-body">{_e(scn.get('beat_impact',''))}</div><div class="s-act">→ {_e(scn.get('beat_action',''))}</div></div>
-        <div class="s-miss"><div class="s-lbl-m">❌ MISS</div><div class="s-body">{_e(scn.get('miss_impact',''))}</div><div class="s-act">→ {_e(scn.get('miss_action',''))}</div></div>
+        <div class="s-beat"><div class="s-lbl-b">âœ… BEAT</div><div class="s-body">{_e(scn.get('beat_impact',''))}</div><div class="s-act">â†’ {_e(scn.get('beat_action',''))}</div></div>
+        <div class="s-miss"><div class="s-lbl-m">âŒ MISS</div><div class="s-body">{_e(scn.get('miss_impact',''))}</div><div class="s-act">â†’ {_e(scn.get('miss_action',''))}</div></div>
       </div>
-      <div class="ev-conseil">💡 CONSEIL : {_e(scn.get('advice',''))}</div>
+      <div class="ev-conseil">ðŸ’¡ CONSEIL : {_e(scn.get('advice',''))}</div>
     </div>"""
 
 
 def _render_event_medium(e: MacroEvent) -> str:
-    pairs = " · ".join(e.pairs_affected[:4]) if e.pairs_affected else "—"
+    pairs = " Â· ".join(e.pairs_affected[:4]) if e.pairs_affected else "â€”"
     # Audit A1 fix: display the date alongside the time.
     date_str = e.date_display if hasattr(e, 'date_display') and e.date_display else ""
-    time_label = f"{_e(e.time_display)}" if not date_str else f"{_e(date_str)} · {_e(e.time_display)}"
+    time_label = f"{_e(e.time_display)}" if not date_str else f"{_e(date_str)} Â· {_e(e.time_display)}"
     return f"""
     <div class="event medium">
       <div class="event-hdr">
         <span class="ev-time">{time_label}</span>
         <span class="ev-name">{_e(e.event_name)} [{_e(e.currency)}]</span>
-        <!-- MACRO-A3 FIX : Le flux FF n'a pas de "Medium". Ces events sont "High" à >48h. -->
-        <!-- Remplacement de "🟡 MODÉRÉ" par "🟡 ÉLEVÉ · >48h" pour honnêteté du risque. -->
-        <span class="ev-tag"><span class="badge badge-yellow">🟡 ÉLEVÉ · &gt;48h</span></span>
+        <!-- MACRO-A3 FIX : Le flux FF n'a pas de "Medium". Ces events sont "High" Ã  >48h. -->
+        <!-- Remplacement de "ðŸŸ¡ MODÃ‰RÃ‰" par "ðŸŸ¡ Ã‰LEVÃ‰ Â· >48h" pour honnÃªtetÃ© du risque. -->
+        <span class="ev-tag"><span class="badge badge-yellow">ðŸŸ¡ Ã‰LEVÃ‰ Â· &gt;48h</span></span>
         <span style="margin-left:auto;font-size:11px;color:var(--muted)">{_e(pairs)}</span>
       </div>
     </div>"""
@@ -205,7 +205,7 @@ def _render_event_medium(e: MacroEvent) -> str:
 
 def _render_section2(ctx: BriefingContext) -> str:
     # Audit A1 fix: adapt the section title to the actual time context.
-    # On a weekend or outside live session, events are "à venir" not "du jour".
+    # On a weekend or outside live session, events are "Ã  venir" not "du jour".
     # C2 (certification, cause racine R-2): the section title is a Contract
     # invariant (table 1.5 / STR-11, IMMUABLE) and MUST stay constant. The
     # live/closed nuance is carried by the sub-title only, which the Contract
@@ -214,11 +214,19 @@ def _render_section2(ctx: BriefingContext) -> str:
     if ctx.is_live_session:
         sec_sub = "News qui peuvent invalider un setup"
     else:
-        sec_sub = "Calendrier macro — fenêtre glissante 72h (marché fermé)"
+        sec_sub = "Calendrier macro â€” fenÃªtre glissante 72h (marchÃ© fermÃ©)"
 
-    if not ctx.catalysts_high and not ctx.catalysts_medium:
+    if not getattr(ctx, "calendar_reachable", True):
+        # RC3 FIX (Incident Review Board): un calendrier INJOIGNABLE (429/timeout)
+        # ne doit plus Ãªtre confondu avec un "jour calme" â€” banniÃ¨re explicite.
+        body = ('<div class="abox wait" style="font-size:12px;border-left:4px solid #c0392b;">'
+                '<span>âš ï¸ Flux calendrier <b>' + _e(getattr(ctx, "calendar_source", "Forex Factory")) +
+                '</b> injoignable (HTTP 429 / timeout) â€” donnÃ©es calendrier <b>indisponibles</b> '
+                "pour cette exÃ©cution. Ceci n'est pas un calendrier vide : relancez (Refresh) "
+                'ou vÃ©rifiez la connectivitÃ© au flux.</span></div>')
+    elif not ctx.catalysts_high and not ctx.catalysts_medium:
         body = ('<div class="abox wait" style="font-size:12px"><span>Aucun catalyseur '
-                'high-impact à venir dans la fenêtre du calendrier [Forex Factory].</span></div>')
+                'high-impact Ã  venir dans la fenÃªtre du calendrier [Forex Factory].</span></div>')
     else:
         highs = "".join(_render_event_high(e, ctx.catalyst_scenarios.get(e.datetime_utc + e.event_name, {}))
                         for e in ctx.catalysts_high)
@@ -247,20 +255,20 @@ def _render_fed(cb) -> str:
     hike = cb.hike_pct if cb.hike_pct is not None else 0
     proba = ""
     if cb.pause_pct is not None or cb.cut_pct is not None or cb.hike_pct is not None:
-        # N4 (17/07/2026, audit A1): date de prélèvement FedWatch sous la barre
-        # — rend immédiatement visible une probabilité figée (~1 semaine de
-        # retard constaté sur le briefing du 16/07). Masquée quand le payload
-        # n'en fournit pas (fedwatch_as_of None) — affichage historique inchangé.
+        # N4 (17/07/2026, audit A1): date de prÃ©lÃ¨vement FedWatch sous la barre
+        # â€” rend immÃ©diatement visible une probabilitÃ© figÃ©e (~1 semaine de
+        # retard constatÃ© sur le briefing du 16/07). MasquÃ©e quand le payload
+        # n'en fournit pas (fedwatch_as_of None) â€” affichage historique inchangÃ©.
         as_of_line = ""
         if getattr(cb, "fedwatch_as_of", None):
             as_of_line = (f'<div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-top:2px">'
-                          f'FedWatch · prélèvement {_e(cb.fedwatch_as_of)}</div>')
+                          f'FedWatch Â· prÃ©lÃ¨vement {_e(cb.fedwatch_as_of)}</div>')
         elif getattr(cb, "proba_from_override", False):
             # N4bis (17/07/2026, audit A1): probas issues des overrides manuels
-            # — étiquetées honnêtement au lieu d'hériter silencieusement du
-            # stamp live du taux (cause racine du 70/0/30 figé du 16/07).
+            # â€” Ã©tiquetÃ©es honnÃªtement au lieu d'hÃ©riter silencieusement du
+            # stamp live du taux (cause racine du 70/0/30 figÃ© du 16/07).
             as_of_line = ('<div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-top:2px">'
-                          'Probas : saisie manuelle [PROXY · overrides]</div>')
+                          'Probas : saisie manuelle [PROXY Â· overrides]</div>')
         proba = f"""
         <div class="proba-wrap">
           <div class="proba-bar"><div class="pb-pause" style="width:{pause}%"></div><div class="pb-cut" style="width:{cut}%"></div><div class="pb-hike" style="width:{hike}%"></div></div>
@@ -272,25 +280,25 @@ def _render_fed(cb) -> str:
         <div class="cb-flag">{cb.flag}</div><div class="cb-name">{_e(cb.name)}</div><div class="cb-rate">{_e(cb.rate_display)} <span style="font-size:9px;font-weight:400;color:var(--muted)">{_e(cb.stamp.render())}</span></div>
         {proba}
         <div class="cb-next">Prochaine : {_e(cb.next_meeting)}</div>
-        <div class="cb-biais"><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">FAIT ·</span> {_e(cb.fact)}<br><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">BIAIS ·</span> {_e(cb.bias_interpretation)}</div>
+        <div class="cb-biais"><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">FAIT Â·</span> {_e(cb.fact)}<br><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">BIAIS Â·</span> {_e(cb.bias_interpretation)}</div>
       </div>"""
 
 
 def _render_cb_simple(cb) -> str:
     return f"""
-      <div class="cb"><div class="cb-flag">{cb.flag}</div><div class="cb-name">{_e(cb.name)}</div><div class="cb-rate">{_e(cb.rate_display)} <span style="font-size:9px;font-weight:400;color:var(--muted)">{_e(cb.stamp.render())}</span></div><div class="cb-biais"><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">FAIT ·</span> {_e(cb.fact)}<br><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">BIAIS ·</span> {_e(cb.bias_interpretation)}</div><div class="cb-next">Prochaine : {_e(cb.next_meeting)}</div></div>"""
+      <div class="cb"><div class="cb-flag">{cb.flag}</div><div class="cb-name">{_e(cb.name)}</div><div class="cb-rate">{_e(cb.rate_display)} <span style="font-size:9px;font-weight:400;color:var(--muted)">{_e(cb.stamp.render())}</span></div><div class="cb-biais"><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">FAIT Â·</span> {_e(cb.fact)}<br><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">BIAIS Â·</span> {_e(cb.bias_interpretation)}</div><div class="cb-next">Prochaine : {_e(cb.next_meeting)}</div></div>"""
 
 
 def _kpi_sub(datum, flat_label: str) -> str:
     """Resolve a KPI subtitle without conflating 'no data' with 'flat trend'.
 
-    AUDIT-FIX (17/07/2026, audit A4 — MOVE 66,8): the previous call sites
+    AUDIT-FIX (17/07/2026, audit A4 â€” MOVE 66,8): the previous call sites
     used ``g(key).trend or "<generic label>"`` for every gauge, so an
     unavailable datum (``trend == ""`` because ``Datum`` defaults to
     ``""``) rendered the exact same placeholder text as a genuinely flat,
-    real trend — the reader could not tell "66,8 but no trend data" from
+    real trend â€” the reader could not tell "66,8 but no trend data" from
     "66,8, real value, unchanged". A gauge that is actually unavailable now
-    shows its real provenance tag (``stamp.render()`` -> ``[N/A · ...]``),
+    shows its real provenance tag (``stamp.render()`` -> ``[N/A Â· ...]``),
     matching the pattern already used for GDP_NOWCAST/SURPRISE_IDX below.
     Only the display text changes; ``.display``/``.value`` are untouched.
     """
@@ -321,14 +329,14 @@ def _render_section3(ctx: BriefingContext) -> str:
         "".join(_render_cb_simple(cb) for cb in ctx.central_banks[1:])
     return f"""
 <div class="section">
-  <div class="sec-hdr"><div class="sec-num">3</div><div class="sec-ttl">Contexte Macro & Banques Centrales</div><div class="sec-sub">Le vent de fond — différentiel de taux</div></div>
+  <div class="sec-hdr"><div class="sec-num">3</div><div class="sec-ttl">Contexte Macro & Banques Centrales</div><div class="sec-sub">Le vent de fond â€” diffÃ©rentiel de taux</div></div>
   <div class="sec-body">
     <div class="kpi-grid">{kpis}</div>
-    <div class="sub-lbl">🏦 BANQUES CENTRALES</div>
+    <div class="sub-lbl">ðŸ¦ BANQUES CENTRALES</div>
     <div class="cb-grid">{cb_blocks}
     </div>
     <div class="abox wait" style="font-size:12px">
-      <span><span class="bold">📊 DIFFÉRENTIEL DOMINANT :</span> {_e(ctx.diff_dominant)} — {_e(ctx.diff_implication)}</span>
+      <span><span class="bold">ðŸ“Š DIFFÃ‰RENTIEL DOMINANT :</span> {_e(ctx.diff_dominant)} â€” {_e(ctx.diff_implication)}</span>
     </div>
   </div>
 </div>"""
@@ -341,7 +349,7 @@ def _render_section3b(ctx: BriefingContext) -> str:
     squeeze_badge = ""
     if ctx.squeeze_currency:
         squeeze_badge = (f'<span class="badge badge-red" style="margin-left:6px">'
-                         f'⚠️ SQUEEZE RISK {_e(ctx.squeeze_currency)}</span>')
+                         f'âš ï¸ SQUEEZE RISK {_e(ctx.squeeze_currency)}</span>')
     cs_rows = "".join(
         f'<div class="rank-row"><span class="rank-lbl">{i+1}. {_e(r.currency)}</span>'
         f'<div class="rank-bar"><div class="rank-fill {r.css_class}" style="width:{r.score}%"></div></div>'
@@ -355,19 +363,19 @@ def _render_section3b(ctx: BriefingContext) -> str:
             f'<span class="rank-val {"weak" if r.is_extreme else "neutral"}">{r.ips_score} {_e(r.ips_label)} ({_e(r.delta_week)}, {_e(r.momentum)})</span></div>'
             for r in ctx.ips_scores)
     else:
-        ips_rows = ('<div class="rank-row"><span class="rank-lbl">—</span>'
+        ips_rows = ('<div class="rank-row"><span class="rank-lbl">â€”</span>'
                     '<div class="rank-bar"><div class="rank-fill norm" style="width:0%"></div></div>'
-                    '<span class="rank-val neutral">[N/A] — aucune donnée COT chargée (saisir en overrides)</span></div>')
+                    '<span class="rank-val neutral">[N/A] â€” aucune donnÃ©e COT chargÃ©e (saisir en overrides)</span></div>')
 
     alert = ""
     if ctx.positioning_alert:
         alert = (f'<div class="abox wait" style="font-size:12px;margin-top:12px">'
-                 f'<span>⚠️ <span class="bold">POSITIONING ALERT :</span> '
+                 f'<span>âš ï¸ <span class="bold">POSITIONING ALERT :</span> '
                  f'{_e(ctx.positioning_alert)}</span></div>')
 
     return f"""
 <div class="section">
-  <div class="sec-hdr"><div class="sec-num">M</div><div class="sec-ttl">Macro Overlay</div><div class="sec-sub">Contexte institutionnel — colore le jugement, ne filtre pas les setups</div></div>
+  <div class="sec-hdr"><div class="sec-num">M</div><div class="sec-ttl">Macro Overlay</div><div class="sec-sub">Contexte institutionnel â€” colore le jugement, ne filtre pas les setups</div></div>
   <div class="sec-body">
     <div class="brief">
       <div class="brief-grid">
@@ -378,22 +386,22 @@ def _render_section3b(ctx: BriefingContext) -> str:
         <span class="brief-lbl">DXY Context</span>
         <span>{_e(ctx.dxy_context)} <span style="font-size:10px;color:var(--muted)">{_e(ctx.dxy_src)}</span></span>
         <span class="brief-lbl">Volatility</span>
-        <span>{_e(ctx.vol_regime)} → <span style="font-style:italic">{_e(ctx.vol_implication)}</span></span>
+        <span>{_e(ctx.vol_regime)} â†’ <span style="font-style:italic">{_e(ctx.vol_implication)}</span></span>
         <span class="brief-lbl">Correlation</span>
-        <span class="mono" style="font-size:11px">{_e(ctx.correlation_summary)} <span style="font-size:10px;color:var(--muted)">[PROXY · échantillon court]</span></span>
+        <span class="mono" style="font-size:11px">{_e(ctx.correlation_summary)} <span style="font-size:10px;color:var(--muted)">[PROXY Â· Ã©chantillon court]</span></span>
         <span class="brief-lbl">Liquidity &amp; Flow</span>
         <span>{_e(ctx.liquidity_flow)}</span>
       </div>
     </div>
-    <div class="sub-lbl">💪 CURRENCY STRENGTH RANKING — 8 devises majeures</div>
+    <div class="sub-lbl">ðŸ’ª CURRENCY STRENGTH RANKING â€” 8 devises majeures</div>
     <div style="font-family:var(--mono);font-size:11px">
       {cs_rows}
-      <div style="font-size:10px;color:var(--muted);margin-top:4px">Score relatif · 0–100 <span class="amber">{_e(_cs_source_tag(ctx.currency_strength))}</span></div>
+      <div style="font-size:10px;color:var(--muted);margin-top:4px">Score relatif Â· 0â€“100 <span class="amber">{_e(_cs_source_tag(ctx.currency_strength))}</span></div>
     </div>
-    <div class="sub-lbl">📊 INSTITUTIONAL POSITIONING SCORE (IPS 0–100) — Non-Commercials CFTC</div>
+    <div class="sub-lbl">ðŸ“Š INSTITUTIONAL POSITIONING SCORE (IPS 0â€“100) â€” Non-Commercials CFTC</div>
     <div style="font-family:var(--mono);font-size:11px">
       {ips_rows}
-      <div style="font-size:10px;color:var(--muted);margin-top:4px">Lecture : &gt;80 = Crowded · 20–80 = Normal · &lt;20 = Capitulation. <span class="amber">[{_e(ctx.cot_date)}]</span></div>
+      <div style="font-size:10px;color:var(--muted);margin-top:4px">Lecture : &gt;80 = Crowded Â· 20â€“80 = Normal Â· &lt;20 = Capitulation. <span class="amber">[{_e(ctx.cot_date)}]</span></div>
     </div>
     {alert}
   </div>
@@ -413,15 +421,15 @@ def _render_asset_card(s: AssetSetup) -> str:
         <span class="asset-price">{_e(s.price_display)}</span>
       </div>
       <div class="asset-fields">
-        <div><div class="field-lbl">1. Biais momentum (prix D1)</div><div class="field-val {s.bias_class}">{_e(s.bias)} — {_e(s.reason_macro)}</div></div>
+        <div><div class="field-lbl">1. Biais momentum (prix D1)</div><div class="field-val {s.bias_class}">{_e(s.bias)} â€” {_e(s.reason_macro)}</div></div>
         <div><div class="field-lbl">2. Zone d'achat macro</div><div class="field-val green">{_e(s.zone_buy)} <span style="font-size:9px;color:var(--muted);font-weight:400">{_e(s.origin_buy)}</span></div></div>
         <div><div class="field-lbl">3. Zone de vente macro</div><div class="field-val red">{_e(s.zone_sell)} <span style="font-size:9px;color:var(--muted);font-weight:400">{_e(s.origin_sell)}</span></div></div>
         <div><div class="field-lbl">4. Stop macro</div><div class="field-val red">{_e(s.stop)} <span style="font-size:9px;color:var(--muted);font-weight:400">{_e(s.origin_stop)}</span></div></div>
-        <div><div class="field-lbl">5. Expected Move</div><div class="field-val amber">±{_e(s.expected_move)} [{_e(s.em_method)}]</div></div>
-        <div><div class="field-lbl">6. Session idéale</div><div class="field-val">{_e(s.session)} — {_e(s.session_reason)}</div></div>
-        <div style="grid-column:1/-1"><div class="field-lbl">7. Risque d'invalidation</div><div class="field-val orange">{_e(s.invalidation_risk)} → <span style="font-weight:700">invalide si {_e(s.invalidation_level)}</span></div></div>
-        <div><div class="field-lbl">8. Lien Positioning ↔ Setup</div><div class="field-val orange">{_e(s.positioning_link)}</div></div>
-        <div><div class="field-lbl">9. Corrélation clé</div><div class="field-val orange">{_e(s.correlation_key)}</div></div>
+        <div><div class="field-lbl">5. Expected Move</div><div class="field-val amber">Â±{_e(s.expected_move)} [{_e(s.em_method)}]</div></div>
+        <div><div class="field-lbl">6. Session idÃ©ale</div><div class="field-val">{_e(s.session)} â€” {_e(s.session_reason)}</div></div>
+        <div style="grid-column:1/-1"><div class="field-lbl">7. Risque d'invalidation</div><div class="field-val orange">{_e(s.invalidation_risk)} â†’ <span style="font-weight:700">invalide si {_e(s.invalidation_level)}</span></div></div>
+        <div><div class="field-lbl">8. Lien Positioning â†” Setup</div><div class="field-val orange">{_e(s.positioning_link)}</div></div>
+        <div><div class="field-lbl">9. CorrÃ©lation clÃ©</div><div class="field-val orange">{_e(s.correlation_key)}</div></div>
       </div>
       <div class="asset-action {s.action_class}">{_e(s.arrow)} {_e(s.action)}</div>
     </div>"""
@@ -431,14 +439,14 @@ def _render_section4(ctx: BriefingContext) -> str:
     if ctx.priority_assets:
         body = "".join(_render_asset_card(s) for s in ctx.priority_assets)
     else:
-        # AUDIT-ENRICHMENT (15/07/2026): same swap as Section 1 above — 🧭
-        # instead of 🛑, cosmetic only.
-        body = (f'<div class="no-setup"><div class="no-setup-icon">🧭</div>'
+        # AUDIT-ENRICHMENT (15/07/2026): same swap as Section 1 above â€” ðŸ§­
+        # instead of ðŸ›‘, cosmetic only.
+        body = (f'<div class="no-setup"><div class="no-setup-icon">ðŸ§­</div>'
                 f'<div class="no-setup-title">Aucune fiche actif aujourd\'hui</div>'
                 f'<div class="no-setup-sub">{_e(ctx.no_setup_reason or "")}</div></div>')
     return f"""
 <div class="section">
-  <div class="sec-hdr"><div class="sec-num">4</div><div class="sec-ttl">Fiches Actifs — Plan pour TradingView</div><div class="sec-sub">Uniquement actifs 🟢 et 🟡</div></div>
+  <div class="sec-hdr"><div class="sec-num">4</div><div class="sec-ttl">Fiches Actifs â€” Plan pour TradingView</div><div class="sec-sub">Uniquement actifs ðŸŸ¢ et ðŸŸ¡</div></div>
   <div class="sec-body">{body}
   </div>
 </div>"""
@@ -455,7 +463,7 @@ def _bear_style(r: str) -> str:
 
 
 def _render_recap_row(s: AssetSetup) -> str:
-    dot = "🟢" if s.color == "green" else "🟡"
+    dot = "ðŸŸ¢" if s.color == "green" else "ðŸŸ¡"
     biais_col = "green" if s.bias_class == "long" else "red"
     return f"""
           <tr>
@@ -466,7 +474,7 @@ def _render_recap_row(s: AssetSetup) -> str:
             <td class="mono green sm">{_e(s.zone_buy)}</td>
             <td class="mono red sm">{_e(s.zone_sell)}</td>
             <td class="mono red sm">{_e(s.stop)}</td>
-            <td class="mono amber sm">±{_e(s.expected_move)}</td>
+            <td class="mono amber sm">Â±{_e(s.expected_move)}</td>
             <td class="mono {s.squeeze_class} sm">{_e(s.squeeze_risk)}</td>
             <td class="mono blue sm">{_e(s.risk_reward)}</td>
             <td class="sm bold">{_e(s.action)}</td>
@@ -490,29 +498,29 @@ def _render_section5(ctx: BriefingContext) -> str:
 
     return f"""
 <div class="section">
-  <div class="sec-hdr"><div class="sec-num">5</div><div class="sec-ttl">Risques & Scénarios d'Invalidation</div><div class="sec-sub">Ce qui peut tout changer aujourd'hui</div></div>
+  <div class="sec-hdr"><div class="sec-num">5</div><div class="sec-ttl">Risques & ScÃ©narios d'Invalidation</div><div class="sec-sub">Ce qui peut tout changer aujourd'hui</div></div>
   <div class="sec-body">
     <div class="risk-main">
-      <strong>⚠️ RISQUE PRINCIPAL</strong>
-      {_e(rm['desc'])} → Si réalisé : <span class="mono bold">{_e(rm['asset'])}</span> vers <span class="mono bold">{_e(rm['level'])}</span>
-      <span style="font-size:10px;display:block;margin-top:4px">Probabilité estimée : {_e(rm['proba'])} {_e(rm['source'])}</span>
+      <strong>âš ï¸ RISQUE PRINCIPAL</strong>
+      {_e(rm['desc'])} â†’ Si rÃ©alisÃ© : <span class="mono bold">{_e(rm['asset'])}</span> vers <span class="mono bold">{_e(rm['level'])}</span>
+      <span style="font-size:10px;display:block;margin-top:4px">ProbabilitÃ© estimÃ©e : {_e(rm['proba'])} {_e(rm['source'])}</span>
     </div>
     <div class="risk-grid">
       <div class="risk-bull">
-        <div class="risk-ttl">📈 {_e(ctx.bull.title)} — {_e(ctx.bull.proba)}</div>
-        <div class="risk-proba">Déclencheur ancré : {_e(ctx.bull.trigger)} {_e(ctx.bull.trigger_source)}</div>
+        <div class="risk-ttl">ðŸ“ˆ {_e(ctx.bull.title)} â€” {_e(ctx.bull.proba)}</div>
+        <div class="risk-proba">DÃ©clencheur ancrÃ© : {_e(ctx.bull.trigger)} {_e(ctx.bull.trigger_source)}</div>
         {bull_rows}
       </div>
       <div class="risk-bear">
-        <div class="risk-ttl">📉 {_e(ctx.bear.title)} — {_e(ctx.bear.proba)}</div>
-        <div class="risk-proba">Déclencheur ancré : {_e(ctx.bear.trigger)} {_e(ctx.bear.trigger_source)}</div>
+        <div class="risk-ttl">ðŸ“‰ {_e(ctx.bear.title)} â€” {_e(ctx.bear.proba)}</div>
+        <div class="risk-proba">DÃ©clencheur ancrÃ© : {_e(ctx.bear.trigger)} {_e(ctx.bear.trigger_source)}</div>
         {bear_rows}
       </div>
     </div>
     <div class="abox wait" style="font-size:11px;margin-bottom:14px">
-      <span>🔄 <span class="bold">INVALIDATION DU SCÉNARIO PRINCIPAL :</span> {_e(ctx.invalidation_principal)}</span>
+      <span>ðŸ”„ <span class="bold">INVALIDATION DU SCÃ‰NARIO PRINCIPAL :</span> {_e(ctx.invalidation_principal)}</span>
     </div>
-    <div class="sub-lbl">📊 RÉCAPITULATIF FINAL — VUE DESK</div>
+    <div class="sub-lbl">ðŸ“Š RÃ‰CAPITULATIF FINAL â€” VUE DESK</div>
     <div class="tw">
       <table>
         <thead><tr><th>Actif</th><th>Signal</th><th>Biais</th><th>Conviction</th><th>Achat</th><th>Vente</th><th>Stop</th><th>EM</th><th>Squeeze</th><th>R:R</th><th>Action</th></tr></thead>
@@ -521,14 +529,14 @@ def _render_section5(ctx: BriefingContext) -> str:
       </table>
     </div>
     <div style="font-size:10px;color:var(--muted);margin-top:10px;font-family:var(--mono)">
-      R:R = ratio reward/risk (reward = distance entrée→objectif, risk = distance entrée→stop). Squeeze Risk = Élevé si IPS&gt;80 ou &lt;20 sur une devise du setup, sinon Modéré/Faible. ATR = Wilder EMA-14 (réconciliable avec MT4/TradingView). Figures COT Non-Commercials : {_e(ctx.cot_date)}.
+      R:R = ratio reward/risk (reward = distance entrÃ©eâ†’objectif, risk = distance entrÃ©eâ†’stop). Squeeze Risk = Ã‰levÃ© si IPS&gt;80 ou &lt;20 sur une devise du setup, sinon ModÃ©rÃ©/Faible. ATR = Wilder EMA-14 (rÃ©conciliable avec MT4/TradingView). Figures COT Non-Commercials : {_e(ctx.cot_date)}.
     </div>
   </div>
 </div>"""
 
 
 # ---------------------------------------------------------------------------
-# Section 6 — Market Regime Engine (v9.0)
+# Section 6 â€” Market Regime Engine (v9.0)
 # ---------------------------------------------------------------------------
 def _render_section6_regime(ctx: BriefingContext) -> str:
     """Render the multi-factor regime assessment section."""
@@ -540,9 +548,9 @@ def _render_section6_regime(ctx: BriefingContext) -> str:
         # block instead of disappearing (preserving the 8-section structure).
         return """
 <div class="section">
-  <div class="sec-hdr"><div class="sec-num">6</div><div class="sec-ttl">Moteur de Régime</div><div class="sec-sub">Identification multi-facteur du régime de marché</div></div>
+  <div class="sec-hdr"><div class="sec-num">6</div><div class="sec-ttl">Moteur de RÃ©gime</div><div class="sec-sub">Identification multi-facteur du rÃ©gime de marchÃ©</div></div>
   <div class="sec-body">
-    <div class="abox wait" style="font-size:12px"><span>[N/A] — évaluation de régime indisponible pour cette génération.</span></div>
+    <div class="abox wait" style="font-size:12px"><span>[N/A] â€” Ã©valuation de rÃ©gime indisponible pour cette gÃ©nÃ©ration.</span></div>
   </div>
 </div>"""
     
@@ -550,32 +558,32 @@ def _render_section6_regime(ctx: BriefingContext) -> str:
     supporting_rows = ""
     for ind in ra.supporting:
         supporting_rows += (
-            f'<div class="rank-row"><span class="rank-lbl">✅ {_e(ind.name)}</span>'
-            f'<span style="font-size:11px;color:var(--green)">{_e(ind.value)} — {_e(ind.note)}</span></div>'
+            f'<div class="rank-row"><span class="rank-lbl">âœ… {_e(ind.name)}</span>'
+            f'<span style="font-size:11px;color:var(--green)">{_e(ind.value)} â€” {_e(ind.note)}</span></div>'
         )
     
     # Contradicting indicators
     contradicting_rows = ""
     for ind in ra.contradicting:
         contradicting_rows += (
-            f'<div class="rank-row"><span class="rank-lbl">❌ {_e(ind.name)}</span>'
-            f'<span style="font-size:11px;color:var(--red)">{_e(ind.value)} — {_e(ind.note)}</span></div>'
+            f'<div class="rank-row"><span class="rank-lbl">âŒ {_e(ind.name)}</span>'
+            f'<span style="font-size:11px;color:var(--red)">{_e(ind.value)} â€” {_e(ind.note)}</span></div>'
         )
     
     # Transition triggers
     trigger_rows = ""
     for t in ra.transition_triggers:
-        trigger_rows += f'<div class="risk-row">→ {_e(t)}</div>'
+        trigger_rows += f'<div class="risk-row">â†’ {_e(t)}</div>'
     
     confidence_pct = int(ra.confidence * 100)
     conf_color = "green" if ra.confidence >= 0.6 else "yellow" if ra.confidence >= 0.3 else "red"
     
     return f"""
 <div class="section">
-  <div class="sec-hdr"><div class="sec-num">6</div><div class="sec-ttl">Moteur de Régime</div><div class="sec-sub">Identification multi-facteur du régime de marché</div></div>
+  <div class="sec-hdr"><div class="sec-num">6</div><div class="sec-ttl">Moteur de RÃ©gime</div><div class="sec-sub">Identification multi-facteur du rÃ©gime de marchÃ©</div></div>
   <div class="sec-body">
     <div class="regime-bar">
-      <span class="regime-lbl">Régime identifié</span>
+      <span class="regime-lbl">RÃ©gime identifiÃ©</span>
       <span class="regime-val">{_e(ra.name)}</span>
       <span style="margin-left:auto;font-size:11px;color:var(--muted)">Confiance : <span class="mono bold {conf_color}">{confidence_pct}%</span></span>
     </div>
@@ -588,21 +596,21 @@ def _render_section6_regime(ctx: BriefingContext) -> str:
       </div>
     </div>
     <div class="brief">
-      <div class="sub-lbl" style="margin-top:0">✅ INDICATEURS DE SOUTIEN</div>
+      <div class="sub-lbl" style="margin-top:0">âœ… INDICATEURS DE SOUTIEN</div>
       <div style="font-family:var(--mono);font-size:11px">
-        {supporting_rows or '<div class="rank-row"><span class="rank-lbl">—</span><span>Aucun indicateur de soutien.</span></div>'}
+        {supporting_rows or '<div class="rank-row"><span class="rank-lbl">â€”</span><span>Aucun indicateur de soutien.</span></div>'}
       </div>
     </div>
     <div class="brief">
-      <div class="sub-lbl" style="margin-top:0">❌ INDICATEURS DE CONTRADICTION</div>
+      <div class="sub-lbl" style="margin-top:0">âŒ INDICATEURS DE CONTRADICTION</div>
       <div style="font-family:var(--mono);font-size:11px">
-        {contradicting_rows or '<div class="rank-row"><span class="rank-lbl">—</span><span>Aucun indicateur contradictoire.</span></div>'}
+        {contradicting_rows or '<div class="rank-row"><span class="rank-lbl">â€”</span><span>Aucun indicateur contradictoire.</span></div>'}
       </div>
     </div>
     <div class="brief" style="margin-bottom:0">
-      <div class="sub-lbl" style="margin-top:0">🔄 DÉCLENCHEURS DE TRANSITION</div>
+      <div class="sub-lbl" style="margin-top:0">ðŸ”„ DÃ‰CLENCHEURS DE TRANSITION</div>
       <div style="font-family:var(--mono);font-size:11px">
-        {trigger_rows or '<div class="risk-row">Aucun déclencheur identifié.</div>'}
+        {trigger_rows or '<div class="risk-row">Aucun dÃ©clencheur identifiÃ©.</div>'}
       </div>
     </div>
   </div>
@@ -610,7 +618,7 @@ def _render_section6_regime(ctx: BriefingContext) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Section 7 — Interpretation Engine (v9.0)
+# Section 7 â€” Interpretation Engine (v9.0)
 # ---------------------------------------------------------------------------
 def _render_section7_interpretation(ctx: BriefingContext) -> str:
     """Render the interpretation layer section."""
@@ -622,9 +630,9 @@ def _render_section7_interpretation(ctx: BriefingContext) -> str:
         # block instead of disappearing (preserving the 8-section structure).
         return """
 <div class="section">
-  <div class="sec-hdr"><div class="sec-num">7</div><div class="sec-ttl">Moteur d'Interprétation</div><div class="sec-sub">Pourquoi ce régime, quels facteurs dominent, quels risques</div></div>
+  <div class="sec-hdr"><div class="sec-num">7</div><div class="sec-ttl">Moteur d'InterprÃ©tation</div><div class="sec-sub">Pourquoi ce rÃ©gime, quels facteurs dominent, quels risques</div></div>
   <div class="sec-body">
-    <div class="abox wait" style="font-size:12px"><span>[N/A] — couche d'interprétation indisponible pour cette génération.</span></div>
+    <div class="abox wait" style="font-size:12px"><span>[N/A] â€” couche d'interprÃ©tation indisponible pour cette gÃ©nÃ©ration.</span></div>
   </div>
 </div>"""
     
@@ -637,32 +645,32 @@ def _render_section7_interpretation(ctx: BriefingContext) -> str:
     # USD drivers
     driver_rows = ""
     for d in interp.usd_drivers:
-        driver_rows += f'<div class="risk-row">· {_e(d)}</div>'
+        driver_rows += f'<div class="risk-row">Â· {_e(d)}</div>'
     
     # Dominant factors
     dominant_rows = ""
     for f in interp.dominant_factors:
-        dominant_rows += f'<div class="risk-row">⭐ {_e(f)}</div>'
+        dominant_rows += f'<div class="risk-row">â­ {_e(f)}</div>'
     
     # Reinforcing
     reinforcing_rows = ""
     for r in interp.reinforcing_indicators:
-        reinforcing_rows += f'<div class="risk-row">✅ {_e(r)}</div>'
+        reinforcing_rows += f'<div class="risk-row">âœ… {_e(r)}</div>'
     
     # Contradicting
     contradicting_rows = ""
     for c in interp.contradicting_indicators:
-        contradicting_rows += f'<div class="risk-row">❌ {_e(c)}</div>'
+        contradicting_rows += f'<div class="risk-row">âŒ {_e(c)}</div>'
     
     # Invalidation risks
     risk_rows = ""
     for r in interp.invalidation_risks:
-        risk_rows += f'<div class="risk-row">⚠️ {_e(r)}</div>'
+        risk_rows += f'<div class="risk-row">âš ï¸ {_e(r)}</div>'
     
     # Narrative chain
     chain_rows = ""
     for link in interp.narrative_chain:
-        arrow = "→" if link.direction == "positive" else "←" if link.direction == "negative" else "↔"
+        arrow = "â†’" if link.direction == "positive" else "â†" if link.direction == "negative" else "â†”"
         chain_rows += (
             f'<div class="rank-row">'
             f'<span class="rank-lbl">{_e(link.upstream)}</span>'
@@ -679,43 +687,43 @@ def _render_section7_interpretation(ctx: BriefingContext) -> str:
     
     return f"""
 <div class="section">
-  <div class="sec-hdr"><div class="sec-num">7</div><div class="sec-ttl">Moteur d'Interprétation</div><div class="sec-sub">Pourquoi ce régime, quels facteurs dominent, quels risques</div></div>
+  <div class="sec-hdr"><div class="sec-num">7</div><div class="sec-ttl">Moteur d'InterprÃ©tation</div><div class="sec-sub">Pourquoi ce rÃ©gime, quels facteurs dominent, quels risques</div></div>
   <div class="sec-body">
     {usd_block}
     <div class="brief">
-      <div class="sub-lbl" style="margin-top:0">🔑 FACTEURS DOMINANTS</div>
+      <div class="sub-lbl" style="margin-top:0">ðŸ”‘ FACTEURS DOMINANTS</div>
       <div style="font-family:var(--mono);font-size:11px">
-        {dominant_rows or '<div class="risk-row">Aucun facteur dominant identifié.</div>'}
+        {dominant_rows or '<div class="risk-row">Aucun facteur dominant identifiÃ©.</div>'}
       </div>
     </div>
     <div class="brief">
-      <div class="sub-lbl" style="margin-top:0">✅ INDICATEURS QUI SE RENFORCENT</div>
+      <div class="sub-lbl" style="margin-top:0">âœ… INDICATEURS QUI SE RENFORCENT</div>
       <div style="font-family:var(--mono);font-size:11px">
-        {reinforcing_rows or '<div class="risk-row">Aucun renforcement détecté.</div>'}
+        {reinforcing_rows or '<div class="risk-row">Aucun renforcement dÃ©tectÃ©.</div>'}
       </div>
     </div>
     <div class="brief">
-      <div class="sub-lbl" style="margin-top:0">❌ INDICATEURS QUI SE CONTREDISENT</div>
+      <div class="sub-lbl" style="margin-top:0">âŒ INDICATEURS QUI SE CONTREDISENT</div>
       <div style="font-family:var(--mono);font-size:11px">
-        {contradicting_rows or '<div class="risk-row">Aucune contradiction détectée.</div>'}
+        {contradicting_rows or '<div class="risk-row">Aucune contradiction dÃ©tectÃ©e.</div>'}
       </div>
     </div>
     <div class="brief">
-      <div class="sub-lbl" style="margin-top:0">🔗 CHAÎNE DE TRANSMISSION MACRO</div>
+      <div class="sub-lbl" style="margin-top:0">ðŸ”— CHAÃŽNE DE TRANSMISSION MACRO</div>
       <div style="font-family:var(--mono);font-size:11px">
         {chain_rows}
       </div>
     </div>
     <div class="brief">
-      <div class="sub-lbl" style="margin-top:0">📋 POURQUOI CES ACTIFS SONT SÉLECTIONNÉS</div>
+      <div class="sub-lbl" style="margin-top:0">ðŸ“‹ POURQUOI CES ACTIFS SONT SÃ‰LECTIONNÃ‰S</div>
       <div style="font-family:var(--mono);font-size:11px">
-        {asset_rows or '<div class="risk-row">Aucun actif sélectionné.</div>'}
+        {asset_rows or '<div class="risk-row">Aucun actif sÃ©lectionnÃ©.</div>'}
       </div>
     </div>
     <div class="brief" style="margin-bottom:0">
-      <div class="sub-lbl" style="margin-top:0">⚠️ RISQUES D'INVALIDATION</div>
+      <div class="sub-lbl" style="margin-top:0">âš ï¸ RISQUES D'INVALIDATION</div>
       <div style="font-family:var(--mono);font-size:11px">
-        {risk_rows or '<div class="risk-row">Aucun risque identifié.</div>'}
+        {risk_rows or '<div class="risk-row">Aucun risque identifiÃ©.</div>'}
       </div>
     </div>
   </div>
@@ -725,6 +733,89 @@ def _render_section7_interpretation(ctx: BriefingContext) -> str:
 # ---------------------------------------------------------------------------
 # Top-level render
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Section 8 â€” Certification des DonnÃ©es (P0-2/P0-3 + Freshness certification)
+# ---------------------------------------------------------------------------
+def _render_section8_certification(ctx: BriefingContext) -> str:
+    """Bloc de certification: statut de publication, couverture des sources,
+    fraÃ®cheur par champ et issues de validation.
+
+    v10.1 (Incident Review Board â€” P0). 100% ADDITIF: cette section n'existe pas
+    dans la version originale et ne modifie aucune autre section. Elle ne rend
+    que des donnÃ©es dÃ©jÃ  prÃ©sentes dans ``ctx`` (coverage, issues, calendar_*) â€”
+    aucune valeur n'est inventÃ©e (no-hallucination policy).
+    """
+    cov = getattr(ctx, "coverage", None)
+    issues = getattr(ctx, "issues", []) or []
+    n_err = sum(1 for i in issues if getattr(i, "severity", "") == "ERROR")
+    n_warn = sum(1 for i in issues if getattr(i, "severity", "") == "WARN")
+    if n_err:
+        status_color, status_txt = "#c0392b", f"â›” PUBLICATION BLOQUÃ‰E â€” {n_err} erreur(s) de validation"
+    elif n_warn:
+        status_color, status_txt = "#e67e22", f"âš ï¸ Publication avec {n_warn} avertissement(s)"
+    else:
+        status_color, status_txt = "#27ae60", "âœ… Validation conforme â€” aucune anomalie"
+
+    rows = ""
+    if cov is not None and getattr(cov, "fields", None):
+        for f in cov.fields:
+            rel = getattr(f.reliability, "value", str(f.reliability))
+            fresh = getattr(f.freshness, "value", str(f.freshness))
+            is_stale = bool(getattr(f, "is_stale", False))
+            stale_txt, stale_color = ("STALE", "#c0392b") if is_stale else ("OK", "#27ae60")
+            acq = getattr(f, "fetch_timestamp", "") or "â€”"
+            age = getattr(f, "age_hours", None)
+            age_s = f"{age:.1f} h" if isinstance(age, (int, float)) else "â€”"
+            cell = "padding:3px 6px;border-bottom:1px solid #eef1f8;"
+            rows += (f"<tr><td style='{cell}'>{_e(f.field_name)}</td>"
+                     f"<td style='{cell}'>{_e(rel)}</td>"
+                     f"<td style='{cell}'>{_e(fresh)}</td>"
+                     f"<td style='{cell}'>{_e(acq)}</td>"
+                     f"<td style='{cell}'>{_e(age_s)}</td>"
+                     f"<td style='{cell}color:{stale_color};font-weight:700;'>{_e(stale_txt)}</td></tr>")
+        table = ('<table style="width:100%;font-size:11px;border-collapse:collapse;">'
+                 '<thead><tr style="text-align:left;background:#f5f7fc;">'
+                 '<th style="padding:4px 6px;">Champ</th><th style="padding:4px 6px;">FiabilitÃ©</th>'
+                 '<th style="padding:4px 6px;">FraÃ®cheur</th><th style="padding:4px 6px;">Acquisition (UTC)</th>'
+                 '<th style="padding:4px 6px;">Ã‚ge</th><th style="padding:4px 6px;">Statut</th></tr></thead>'
+                 f'<tbody>{rows}</tbody></table>')
+    else:
+        table = '<div class="abox wait" style="font-size:12px"><span>Rapport de couverture indisponible.</span></div>'
+
+    summary = _e(getattr(ctx, "coverage_summary", "") or "â€”")
+    cal_src = _e(getattr(ctx, "calendar_source", "Forex Factory"))
+    cal_ok = bool(getattr(ctx, "calendar_reachable", True))
+    cal_txt, cal_color = ("joignable", "#27ae60") if cal_ok else ("INJOIGNABLE (429/timeout)", "#c0392b")
+
+    if issues:
+        items = ""
+        for i in issues:
+            sev = getattr(i, "severity", "")
+            icon = "ðŸ”´" if sev == "ERROR" else "ðŸŸ¡" if sev == "WARN" else "ðŸ”µ"
+            items += (f'<div style="font-size:11px;margin:2px 0;">{icon} '
+                      f'<b>{_e(getattr(i, "rule", ""))}</b> â€” {_e(getattr(i, "message", ""))}</div>')
+    else:
+        items = '<div style="font-size:11px;">âœ… Aucune anomalie de validation.</div>'
+
+    rendered_cet = _e(f"{ctx.generated_cet:%d/%m/%Y %H:%M}")
+    return (
+        '\n<div class="section">\n'
+        '  <div class="sec-hdr"><div class="sec-num">8</div><div class="sec-ttl">Certification des DonnÃ©es</div>'
+        '<div class="sec-sub">Couverture Â· FraÃ®cheur Â· Validation</div></div>\n'
+        '  <div class="sec-body">\n'
+        f'    <div class="abox" style="font-size:13px;border-left:4px solid {status_color};margin-bottom:10px;"><span>{status_txt}</span></div>\n'
+        f'    <div style="font-size:11px;margin-bottom:8px;"><b>Couverture des sources :</b> {summary}<br>\n'
+        f'      <b>Calendrier :</b> {cal_src} â€” <span style="color:{cal_color};font-weight:700;">{cal_txt}</span> Â· '
+        f'<b>Rendu (CET) :</b> {rendered_cet}</div>\n'
+        '    <div style="font-size:12px;font-weight:700;margin:8px 0 4px;">FraÃ®cheur par champ (sources marchÃ©)</div>\n'
+        f'    {table}\n'
+        '    <div style="font-size:12px;font-weight:700;margin:10px 0 4px;">Issues de validation</div>\n'
+        f'    {items}\n'
+        '  </div>\n</div>'
+    )
+
+
 def render_html(ctx: BriefingContext) -> str:
     """Render the complete BLUESTAR briefing HTML for ``ctx``."""
     head = _load("scaffold_head.html").replace("{{DATE}}", fr_date(ctx.generated_cet))
@@ -746,14 +837,15 @@ def render_html(ctx: BriefingContext) -> str:
         + _render_section5(ctx)
         + _render_section6_regime(ctx)
         + _render_section7_interpretation(ctx)
+        + _render_section8_certification(ctx)
         + '</div><!-- /wrap -->'
     )
-    # N5 (17/07/2026, audit A5): le footer affichait « Macro_Briefing_v8 »
-    # alors que le système est en v10 (macro_engine.py, BLUESTAR-PATCH v10.0).
-    # Le header « v8.1 » vit dans templates/scaffold_header.html (à bumper
-    # séparément — le template n'est pas modifié ici).
-    footer = (f'<div class="footer">CONFIDENTIEL — BLUESTAR SYSTEM · FX INSTITUTIONAL DESK · '
-              f'Macro_Briefing_v10_{ctx.generated_cet:%d-%m-%Y}.pdf · '
+    # N5 (17/07/2026, audit A5): le footer affichait Â« Macro_Briefing_v8 Â»
+    # alors que le systÃ¨me est en v10 (macro_engine.py, BLUESTAR-PATCH v10.0).
+    # Le header Â« v8.1 Â» vit dans templates/scaffold_header.html (Ã  bumper
+    # sÃ©parÃ©ment â€” le template n'est pas modifiÃ© ici).
+    footer = (f'<div class="footer">CONFIDENTIEL â€” BLUESTAR SYSTEM Â· FX INSTITUTIONAL DESK Â· '
+              f'Macro_Briefing_v10_{ctx.generated_cet:%d-%m-%Y}.pdf Â· '
               f'{fr_date(ctx.generated_cet)} {ctx.generated_cet:%H:%M} CET</div>')
 
     return head + "\n" + header + "\n" + body + "\n" + footer + "\n</div><!-- /page -->\n</body>\n</html>"
