@@ -30,6 +30,17 @@ from .config import (
 
 logger = logging.getLogger(__name__)
 
+# P0-1 FIX (Incident Review Board, RC3): fetch_raw sent no User-Agent at all.
+# This did not cause the observed 429s (rate-limiting, not UA-blocking -- see
+# audit section3), but a bare python-requests UA is best avoided on a public
+# JSON feed. Additive only: does not change retry/backoff/timeout behaviour.
+_FF_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
+}
+
 # Currency -> affected pairs (verbatim from the validated module).
 PAIRS_MAP: Dict[str, List[str]] = {
     "USD": ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CAD", "AUD/USD", "NZD/USD", "USD/CHF"],
@@ -81,7 +92,7 @@ def fetch_raw(url: str = FF_JSON_URL) -> List[Dict]:
     last_err: Optional[Exception] = None
     for attempt in range(HTTP_RETRIES + 1):
         try:
-            r = requests.get(url, timeout=HTTP_TIMEOUT)
+            r = requests.get(url, timeout=HTTP_TIMEOUT, headers=_FF_HEADERS)
             r.raise_for_status()
             return r.json()
         except (requests.RequestException, ValueError) as e:  # noqa: PERF203
