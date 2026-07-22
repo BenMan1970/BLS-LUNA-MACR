@@ -31,8 +31,8 @@ from bluestar.validation import validate_context, validate_html
 
 logging.basicConfig(level=logging.WARNING)
 
-st.set_page_config(page_title="BLUESTAR Â· Macro Briefing Engine",
-                   page_icon="ðŸ›°ï¸", layout="wide",
+st.set_page_config(page_title="BLUESTAR · Macro Briefing Engine",
+                   page_icon="🛰️", layout="wide",
                    initial_sidebar_state="expanded")
 
 # --------------------------------------------------------------------------
@@ -67,16 +67,16 @@ now_cet = datetime.now(TZ_CET)
 label, is_live = session_label(now_cet)
 
 with st.sidebar:
-    st.caption("â¬¡ BLUESTAR SYSTEM")
+    st.caption("⬡ BLUESTAR SYSTEM")
     st.markdown(f"### MACRO BRIEFING ENGINE\n`v{__version__}`")
     st.divider()
     st.caption("HORLOGE")
     st.markdown(f"**{fr_day_name(now_cet)} {fr_date(now_cet)}**")
-    st.markdown(f"ðŸ• {now_cet:%H:%M} CET â€” {label}")
-    st.markdown("ðŸŸ¢ Session live" if is_live else "ðŸ”´ Hors session FX")
+    st.markdown(f"🕐 {now_cet:%H:%M} CET — {label}")
+    st.markdown("🟢 Session live" if is_live else "🔴 Hors session FX")
     st.divider()
 
-    mode = st.selectbox("Mode opÃ©ratoire", MODES, index=1)
+    mode = st.selectbox("Mode opératoire", MODES, index=1)
     allow_proxy_levels = st.toggle("Autoriser les niveaux [PROXY] (ATR)", value=True)
     show_diagnostics = st.toggle("Afficher diagnostics data/source", value=True)
     show_raw_json = st.toggle("Afficher le JSON calendrier brut", value=False)
@@ -84,10 +84,10 @@ with st.sidebar:
 
     st.caption("OVERRIDES MANUELS (JSON)")
     st.caption(
-        "Champs sans source sans clÃ© : **taux CB** et **FedWatch** â†’ stampÃ©s [PROXY]. "
-        "**COT Non-Commercials** â†’ stampÃ© [OBSERVÃ‰ â€” CFTC | vendredi de rÃ©fÃ©rence calculÃ©] "
-        "dÃ¨s que les chiffres sont saisis (le vendredi CFTC en vigueur est calculÃ© automatiquement). "
-        "Prix marchÃ©s : rÃ©cupÃ©rÃ©s via yfinance â€” saisir un bloc 'market' uniquement pour forcer une valeur."
+        "Champs sans source sans clé : **taux CB** et **FedWatch** → stampés [PROXY]. "
+        "**COT Non-Commercials** → stampé [OBSERVÉ — CFTC | vendredi de référence calculé] "
+        "dès que les chiffres sont saisis (le vendredi CFTC en vigueur est calculé automatiquement). "
+        "Prix marchés : récupérés via yfinance — saisir un bloc 'market' uniquement pour forcer une valeur."
     )
     sample_path = Path(__file__).parent / "sample_overrides.json"
     use_sample = st.toggle("Charger l'exemple fourni", value=True)
@@ -95,7 +95,7 @@ with st.sidebar:
     overrides_text = st.text_area("Overrides", value=default_text, height=240,
                                   label_visibility="collapsed")
     st.divider()
-    refresh = st.button("ðŸ”„ Refresh data", use_container_width=True)
+    refresh = st.button("🔄 Refresh data", use_container_width=True)
 
 # Parse overrides safely.
 overrides: dict = {}
@@ -111,13 +111,13 @@ except json.JSONDecodeError as e:
 st.markdown(
     f"<div style='border-top:3px solid #1B45B4;border:1px solid #dde3f5;"
     f"border-top:3px solid #1B45B4;padding:16px 22px;border-radius:8px;margin-bottom:14px;'>"
-    f"<div style='font-size:10px;letter-spacing:4px;color:#1B45B4;font-weight:700;'>BLUESTAR SYSTEM Â· FX INSTITUTIONAL DESK</div>"
+    f"<div style='font-size:10px;letter-spacing:4px;color:#1B45B4;font-weight:700;'>BLUESTAR SYSTEM · FX INSTITUTIONAL DESK</div>"
     f"<div style='font-size:22px;font-weight:700;color:#0d1f4e;'>INSTITUTIONAL MACRO BRIEFING ENGINE</div>"
-    f"<div style='font-size:11px;color:#6B89D8;'>Data Integrity Layer Â· Macro Engine Â· Validation Â· Renderer â€” v{__version__}</div>"
+    f"<div style='font-size:11px;color:#6B89D8;'>Data Integrity Layer · Macro Engine · Validation · Renderer — v{__version__}</div>"
     f"</div>", unsafe_allow_html=True)
 
 if override_error:
-    st.error(f"Overrides JSON invalide â€” ignorÃ©s : {override_error}")
+    st.error(f"Overrides JSON invalide — ignorés : {override_error}")
 
 if refresh:
     cached_calendar.clear()
@@ -133,15 +133,15 @@ market = cached_market(slot, overrides_key, allow_proxy_levels)
 
 meta = calendar.get("metadata", {})
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("ðŸ“… Events high-impact", meta.get("total_high_impact", 0))
-c2.metric("ðŸŸ¢ Ã€ venir", meta.get("upcoming_count", 0))
-c3.metric("ðŸ”´ Critiques â‰¤6h", meta.get("critical_count", 0))
+c1.metric("📅 Events high-impact", meta.get("total_high_impact", 0))
+c2.metric("🟢 À venir", meta.get("upcoming_count", 0))
+c3.metric("🔴 Critiques ≤6h", meta.get("critical_count", 0))
 vix = market.gauge("VIX")
 c4.metric("VIX", vix.display, vix.trend or None)
 
 cal_ok = meta.get("reachable", False)
-st.caption(("âœ… Forex Factory atteignable Â· " if cal_ok else "âš ï¸ Forex Factory injoignable (fallback vide) Â· ")
-           + ("âœ… MarchÃ© yfinance OK" if vix.available else "âš ï¸ MarchÃ© yfinance indisponible â€” champs [N/A]"))
+st.caption(("✅ Forex Factory atteignable · " if cal_ok else "⚠️ Forex Factory injoignable (fallback vide) · ")
+           + ("✅ Marché yfinance OK" if vix.available else "⚠️ Marché yfinance indisponible — champs [N/A]"))
 
 st.divider()
 
@@ -150,13 +150,13 @@ st.divider()
 # --------------------------------------------------------------------------
 left, right = st.columns([3, 1])
 with right:
-    generate = st.button("âš¡ Generate Macro Briefing", type="primary",
+    generate = st.button("⚡ Generate Macro Briefing", type="primary",
                          use_container_width=True)
 
 if "html" not in st.session_state:
     st.session_state.html = None
 
-if generate or refresh:  # RC1 FIX: Refresh must regenerate the report, not keep the stale one
+if generate:
     now_utc = datetime.now(TZ_UTC)
     ctx = build_context(now_utc, market, calendar, overrides, mode, allow_proxy_levels)
     issues = validate_context(ctx)
@@ -181,24 +181,17 @@ if st.session_state.html:
 
     st.subheader("Briefing HTML")
     fname = f"Macro_Briefing_BLUESTAR_{now_cet:%d-%m-%Y}.html"
-    # P0-3 FIX (Incident Review Board): le tÃ©lÃ©chargement est conditionnÃ© Ã 
-    # l'absence d'erreur de validation. Sinon la publication est BLOQUÃ‰E et les
-    # erreurs sont affichÃ©es explicitement (plus de tÃ©lÃ©chargement "advisory-only").
-    _errors = [i for i in issues if getattr(i, "severity", "") == "ERROR"]
-    if _errors:
-        st.error(f"â›” Publication BLOQUÃ‰E â€” {len(_errors)} erreur(s) de validation. "
-                 "TÃ©lÃ©chargement dÃ©sactivÃ© tant que ces erreurs ne sont pas rÃ©solues.")
-        for i in _errors:
-            st.markdown(f"ðŸ”´ **{i.rule}** â€” {i.message}")
-    else:
-        st.download_button("ðŸ“¥ TÃ©lÃ©charger HTML", data=st.session_state.html,
-                           file_name=fname, mime="text/html", use_container_width=False)
-    st.caption("Astuce PDF : ouvrir le HTML â†’ bouton Â« ðŸ“¥ TÃ©lÃ©charger PDF Â» (window.print) "
-               "â†’ Chrome â†’ activer Â« Graphiques d'arriÃ¨re-plan Â».")
+    st.download_button("📥 Télécharger HTML",
+                       data=st.session_state.html.encode("utf-8"),
+                       file_name=fname,
+                       mime="text/html; charset=utf-8",
+                       use_container_width=False)
+    st.caption("Astuce PDF : ouvrir le HTML → bouton « 📥 Télécharger PDF » (window.print) "
+               "→ Chrome → activer « Graphiques d'arrière-plan ».")
 
-    # Rendu via data-URI base64 â€” remplace st.components.v1.html() retirÃ©
-    # en Streamlit 1.59.1 (deadline 2026-06-01 dÃ©passÃ©e â†’ segfault).
-    # Avantages : iframe sandbox, scripts exÃ©cutÃ©s (window.print), no segfault.
+    # Rendu via data-URI base64 — remplace st.components.v1.html() retiré
+    # en Streamlit 1.59.1 (deadline 2026-06-01 dépassée → segfault).
+    # Avantages : iframe sandbox, scripts exécutés (window.print), no segfault.
     _b64 = base64.b64encode(
         st.session_state.html.encode("utf-8")
     ).decode("ascii")
@@ -214,45 +207,45 @@ if st.session_state.html:
         st.divider()
         d1, d2 = st.columns(2)
         with d1:
-            st.markdown("#### ðŸ”Ž Diagnostics moteur")
-            st.write({"RÃ©gime": summary.get("regime"),
+            st.markdown("#### 🔎 Diagnostics moteur")
+            st.write({"Régime": summary.get("regime"),
                       "Actifs prioritaires": summary.get("priority"),
-                      "Ã€ Ã©viter": summary.get("avoid"),
+                      "À éviter": summary.get("avoid"),
                       "No-setup": summary.get("no_setup")})
-            st.markdown("#### ðŸ“¡ Sources marchÃ©")
+            st.markdown("#### 📡 Sources marché")
             rows = []
             for k in ("VIX", "MOVE", "DXY", "US10Y", "XAU/USD", "Brent", "WTI"):
                 g = market.gauge(k)
                 rows.append({"Champ": k, "Valeur": g.display,
-                             "FiabilitÃ©": g.stamp.reliability.value,
+                             "Fiabilité": g.stamp.reliability.value,
                              "Source": g.stamp.render()})
             st.dataframe(rows, use_container_width=True, hide_index=True)
         with d2:
-            st.markdown("#### âœ… Validation qualitÃ©")
+            st.markdown("#### ✅ Validation qualité")
             if not issues:
-                st.success("Aucune anomalie dÃ©tectÃ©e.")
+                st.success("Aucune anomalie détectée.")
             for i in issues:
-                icon = "ðŸ”´" if i.severity == "ERROR" else "ðŸŸ¡" if i.severity == "WARN" else "ðŸ”µ"
-                st.markdown(f"{icon} **{i.rule}** â€” {i.message}")
+                icon = "🔴" if i.severity == "ERROR" else "🟡" if i.severity == "WARN" else "🔵"
+                st.markdown(f"{icon} **{i.rule}** — {i.message}")
 else:
     st.info("Configurez les overrides (optionnel) puis cliquez sur "
-            "**âš¡ Generate Macro Briefing**. Sans donnÃ©es macro sourcÃ©es, le moteur "
-            "produit honnÃªtement un bloc *no-setup* plutÃ´t qu'un setup forcÃ©.")
+            "**⚡ Generate Macro Briefing**. Sans données macro sourcées, le moteur "
+            "produit honnêtement un bloc *no-setup* plutôt qu'un setup forcé.")
 
 # --------------------------------------------------------------------------
 # Calendar + raw JSON panels
 # --------------------------------------------------------------------------
 st.divider()
-with st.expander("ðŸ“† Calendrier Forex Factory â€” events_engine (Data Integrity Layer)", expanded=False):
+with st.expander("📆 Calendrier Forex Factory — events_engine (Data Integrity Layer)", expanded=False):
     for e in calendar.get("events_engine", [])[:40]:
         tag = e["priority"]
-        st.markdown(f"`{e['time_display']}` **{e['currency']}** â€” {e['event_name']} "
-                    f"Â· {tag} Â· prev {e['previous']} / cons {e['forecast']}"
-                    + (f" / actual {e['actual']}" if e['actual'] != 'â€”' else ""))
+        st.markdown(f"`{e['time_display']}` **{e['currency']}** — {e['event_name']} "
+                    f"· {tag} · prev {e['previous']} / cons {e['forecast']}"
+                    + (f" / actual {e['actual']}" if e['actual'] != '—' else ""))
 
 if show_raw_json:
-    with st.expander("ðŸ” JSON calendrier brut", expanded=False):
+    with st.expander("🔍 JSON calendrier brut", expanded=False):
         st.code(json.dumps(calendar, indent=2, ensure_ascii=False), language="json")
 
-st.caption("BLUESTAR SYSTEM Â· MACRO BRIEFING ENGINE Â· "
-           "Aucune donnÃ©e inventÃ©e â€” [N/A]/[PROXY] partout oÃ¹ la source manque.")
+st.caption("BLUESTAR SYSTEM · MACRO BRIEFING ENGINE · "
+           "Aucune donnée inventée — [N/A]/[PROXY] partout où la source manque.")
