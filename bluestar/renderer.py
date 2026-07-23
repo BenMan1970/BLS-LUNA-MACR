@@ -27,6 +27,31 @@ def _e(text: object) -> str:
     return html.escape(str(text), quote=True)
 
 
+_CB_LABEL_STYLE = ("font-size:9px;font-weight:700;color:var(--muted);"
+                   "font-family:var(--mono);letter-spacing:.5px")
+
+
+def _cb_biais_block(cb) -> str:
+    """Build the cb-biais inner HTML for a central-bank card.
+
+    CORRECTIF (23/07/2026, retour utilisateur) : la ligne "FAIT ·" ne doit
+    plus jamais afficher de [N/A] en production. macro_engine.py renvoie
+    désormais ``cb.fact == ""`` quand il n'y a rien de sourcé (au lieu du
+    texte "[N/A] — ..." précédent) ; ici, on omet purement et simplement la
+    ligne "FAIT ·" (span + texte + <br>) quand c'est le cas, plutôt que de
+    rendre un champ vide ou un espace réservé. "BIAIS ·" reste toujours
+    affiché : macro_engine.py garantit qu'il retombe au pire sur
+    "[N/A] — interprétation à confirmer." (jamais une chaîne vide), donc
+    pas de risque de ligne totalement vide ici.
+    """
+    fait = ""
+    if cb.fact:
+        fait = (f'<span style="{_CB_LABEL_STYLE}">FAIT ·</span> '
+                f'{_e(cb.fact)}<br>')
+    return (f'{fait}<span style="{_CB_LABEL_STYLE}">BIAIS ·</span> '
+            f'{_e(cb.bias_interpretation)}')
+
+
 def _stars(n: int) -> str:
     n = max(1, min(5, int(n)))
     return f'<span class="stars-{n}"></span>'
@@ -281,13 +306,13 @@ def _render_fed(cb) -> str:
         <div class="cb-flag">{cb.flag}</div><div class="cb-name">{_e(cb.name)}</div><div class="cb-rate">{_e(cb.rate_display)} <span style="font-size:9px;font-weight:400;color:var(--muted)">{_e(cb.stamp.render())}</span></div>
         {proba}
         <div class="cb-next">Prochaine : {_e(cb.next_meeting)}</div>
-        <div class="cb-biais"><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">FAIT ·</span> {_e(cb.fact)}<br><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">BIAIS ·</span> {_e(cb.bias_interpretation)}</div>
+        <div class="cb-biais">{_cb_biais_block(cb)}</div>
       </div>"""
 
 
 def _render_cb_simple(cb) -> str:
     return f"""
-      <div class="cb"><div class="cb-flag">{cb.flag}</div><div class="cb-name">{_e(cb.name)}</div><div class="cb-rate">{_e(cb.rate_display)} <span style="font-size:9px;font-weight:400;color:var(--muted)">{_e(cb.stamp.render())}</span></div><div class="cb-biais"><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">FAIT ·</span> {_e(cb.fact)}<br><span style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);letter-spacing:.5px">BIAIS ·</span> {_e(cb.bias_interpretation)}</div><div class="cb-next">Prochaine : {_e(cb.next_meeting)}</div></div>"""
+      <div class="cb"><div class="cb-flag">{cb.flag}</div><div class="cb-name">{_e(cb.name)}</div><div class="cb-rate">{_e(cb.rate_display)} <span style="font-size:9px;font-weight:400;color:var(--muted)">{_e(cb.stamp.render())}</span></div><div class="cb-biais">{_cb_biais_block(cb)}</div><div class="cb-next">Prochaine : {_e(cb.next_meeting)}</div></div>"""
 
 
 def _kpi_sub(datum, flat_label: str) -> str:
