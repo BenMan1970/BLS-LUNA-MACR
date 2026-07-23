@@ -139,15 +139,33 @@ _BACKOFF = 1.5
 # Credential resolution
 # ---------------------------------------------------------------------------
 def _oanda_creds() -> tuple[Optional[str], Optional[str]]:
-    """Return (api_key, account_id) from st.secrets, then os.environ, else (None, None)."""
+    """Return (api_key, account_id) from st.secrets, then os.environ, else (None, None).
+
+    AUDIT-FIX (secret-name mismatch): this used to try only OANDA_API_KEY /
+    oanda_api_key. _strength_access_token() below already had to widen its
+    own search to OANDA_ACCESS_TOKEN / oanda_access_token because "the
+    standalone strength app uses OANDA_ACCESS_TOKEN, and that mismatch was
+    the reason the strength block never fired" -- but that same widening
+    was never mirrored here, so a deployment whose secret is named
+    OANDA_ACCESS_TOKEN got a working currency-strength block (via
+    _strength_access_token) while every single FX/index/commodity price
+    silently fell back to yfinance (api_key resolved to None here, so
+    _fetch_instrument() always took the "no API key" branch). Zero
+    regression: OANDA_API_KEY / oanda_api_key are still tried first and
+    still win outright when present -- identical behaviour for any
+    deployment already using those names. The ACCESS_TOKEN spellings are
+    only consulted as additional fallbacks before os.environ.
+    """
     key = acc = None
     if _ST_OK:
         try:
-            key = st.secrets.get("OANDA_API_KEY") or st.secrets.get("oanda_api_key")
+            key = (st.secrets.get("OANDA_API_KEY") or st.secrets.get("oanda_api_key")
+                   or st.secrets.get("OANDA_ACCESS_TOKEN") or st.secrets.get("oanda_access_token"))
             acc = st.secrets.get("OANDA_ACCOUNT_ID") or st.secrets.get("oanda_account_id")
         except Exception:  # pragma: no cover
             key = acc = None
-    key = key or os.environ.get("OANDA_API_KEY") or os.environ.get("oanda_api_key")
+    key = (key or os.environ.get("OANDA_API_KEY") or os.environ.get("oanda_api_key")
+           or os.environ.get("OANDA_ACCESS_TOKEN") or os.environ.get("oanda_access_token"))
     acc = acc or os.environ.get("OANDA_ACCOUNT_ID") or os.environ.get("oanda_account_id")
     return (str(key) if key else None, str(acc) if acc else None)
 
