@@ -152,6 +152,26 @@ MODE_SELECTION_MIN_SCORE = {
 MAX_PRIORITY_ASSETS = 3
 
 # ----------------------------------------------------------------------------
+# CB rate-derived bias fallback (audit fix, 23/07/2026 — synergy gap #1)
+# ----------------------------------------------------------------------------
+# Approximate consensus nominal-neutral-rate bands per central bank, used
+# ONLY to derive a hawkish/dovish/neutral bias tag from the live FRED/BoE
+# policy rate when no textual override (FAIT/BIAIS narrative) is supplied.
+# This is a heuristic reference point, not a forecast, model output, or
+# official central-bank communication — the rendered text is explicitly
+# tagged "[dérivé taux]" wherever it is shown so it is never mistaken for a
+# sourced FOMC/ECB/BoJ/BoE statement read. A manual override, when present,
+# always takes priority over this derivation (see
+# macro_engine._derive_bias_from_rate). Heuristic, not backtested — revisit
+# as each central bank's own neutral-rate estimate evolves.
+CB_NEUTRAL_RATE_BAND = {
+    "FED": (2.50, 3.50),
+    "BCE": (1.50, 2.50),
+    "BoJ": (0.25, 1.00),
+    "BoE": (2.50, 3.50),
+}
+
+# ----------------------------------------------------------------------------
 # Staleness & coverage thresholds (v9.0 — audit C2/C3/C5 fix)
 # ----------------------------------------------------------------------------
 MIN_LIVE_COVERAGE_RATIO = 0.30   # minimum fraction of live fields to publish
