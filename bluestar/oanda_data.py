@@ -119,6 +119,81 @@ _YF_ONLY: frozenset[str] = frozenset([
     "DAX", "US30", "NAS100", "SPX500",
 ])
 
+# ---------------------------------------------------------------------------
+# Frankfurter (ECB reference rates) — intermediate fallback tier
+# ---------------------------------------------------------------------------
+# AUDIT-ADD (23/07/2026): validated live 23/07/2026 (200 OK, no key, no
+# quota — see sources_validees.json). ECB daily reference fixing, ~16:00
+# CET, NOT intraday — this sits between Oanda (primary, intraday) and
+# yfinance (fallback) so a live Oanda outage degrades to a real ECB-sourced
+# EOD fixing before falling all the way to yfinance. Covers the 9 major FX
+# pairs only — Frankfurter has no XAU/USD, indices, or rates data (confirmed
+# 404 on those symbols in sources_validees.json), so XAU/USD and every
+# _YF_ONLY key are untouched by this tier.
+_FRANKFURTER_URL = "https://api.frankfurter.dev/v1/latest"
+
+# Each entry: how to compute the BLUESTAR pair from Frankfurter's
+# base=USD rates dict (ccy -> units of ccy per 1 USD).
+def _fx_direct(rates: dict, ccy: str) -> Optional[float]:
+    v = rates.get(ccy)
+    return float(v) if v is not None else None
+
+def _fx_inverse(rates: dict, ccy: str) -> Optional[float]:
+    v = rates.get(ccy)
+    return (1.0 / v) if v else None
+
+def _fx_cross(rates: dict, num_ccy: str, den_ccy: str) -> Optional[float]:
+    n, d = rates.get(num_ccy), rates.get(den_ccy)
+    return (n / d) if (n is not None and d not in (None, 0)) else None
+
+# key -> lambda(rates) -> value, all consistent with Oanda's own quoting
+# convention (verified against Oanda: GBP/JPY = JPY per 1 GBP, etc.).
+_FRANKFURTER_FORMULAS = {
+    "EUR/USD": lambda r: _fx_inverse(r, "EUR"),
+    "GBP/USD": lambda r: _fx_inverse(r, "GBP"),
+    "AUD/USD": lambda r: _fx_inverse(r, "AUD"),
+    "NZD/USD": lambda r: _fx_inverse(r, "NZD"),
+    "USD/JPY": lambda r: _fx_direct(r, "JPY"),
+    "USD/CHF": lambda r: _fx_direct(r, "CHF"),
+    "USD/CAD": lambda r: _fx_direct(r, "CAD"),
+    # NOTE: sources_validees.json's own master table lists EUR/GBP as
+    # 1,17179 (= rates["EUR"]/rates["GBP"]), but that is the inverse of the
+    # standard EUR-base quoting convention (GBP per 1 EUR, ≈0,853 on
+    # 22/07/2026) that Oanda's EUR_GBP instrument actually returns. Using
+    # rates["EUR"]/rates["GBP"] here would silently jump the displayed
+    # EUR/GBP price by ~37% the moment Oanda drops to this fallback tier.
+    # Kept mathematically consistent with Oanda/GBP-JPY (which DOES match
+    # the source file exactly at 217,988) instead of copying that one
+    # inconsistent entry verbatim — flagged to Ben for confirmation.
+    "EUR/GBP": lambda r: _fx_cross(r, "GBP", "EUR"),
+    "GBP/JPY": lambda r: _fx_cross(r, "JPY", "GBP"),
+}
+
+
+def _fetch_frankfurter(key: str) -> Optional[tuple[float, str]]:
+    """Fetch one FX pair from Frankfurter (ECB ref rates, base=USD).
+
+    Returns ``(value, fixing_date)`` or ``None`` on any failure — never
+    raises, so the caller's existing Oanda->yfinance chain is unaffected
+    when Frankfurter itself is unreachable.
+    """
+    formula = _FRANKFURTER_FORMULAS.get(key)
+    if formula is None:
+        return None
+    try:
+        resp = requests.get(_FRANKFURTER_URL, params={"base": "USD"}, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        rates = data.get("rates", {})
+        val = formula(rates)
+        if val is None:
+            return None
+        return float(val), str(data.get("date", ""))
+    except (requests.RequestException, ValueError, KeyError) as exc:
+        logger.warning("Frankfurter fetch failed for %s: %s", key, exc)
+        return None
+
+
 # Oanda practice REST base URL.
 _OANDA_BASE = "https://api-fxpractice.oanda.com/v3"
 
@@ -509,8 +584,29 @@ def _fetch_instrument(
     if datum.available:
         return datum, atr, closes
 
-    # Oanda failed: transparent fallback to yfinance, logged as WARN.
-    logger.warning("Oanda fetch failed for %s — falling back to yfinance", key)
+    # Oanda failed: try Frankfurter (ECB EOD ref rate) before yfinance —
+    # real source, ~16:00 CET fixing, not intraday. Only covers the 9
+    # major FX pairs (see _FRANKFURTER_FORMULAS); XAU/USD has no
+    # Frankfurter coverage and falls straight through to yfinance.
+    logger.warning("Oanda fetch failed for %s — trying Frankfurter", key)
+    fk = _fetch_frankfurter(key)
+    if fk is not None:
+        val, fixing_date = fk
+        datum = Datum(
+            val,
+            SourceStamp("Frankfurter · ECB ref rate", Reliability.FALLBACK,
+                        note=f"fixing EOD {fixing_date} — pas intraday"),
+            str(round(val, 5)).replace(".", ","), "",
+        )
+        # No ATR/closes history from a single-snapshot Frankfurter call —
+        # left empty/None rather than fabricated. Correlation overlay and
+        # ATR-based levels simply degrade to [N/A] for this instrument on
+        # a run where only this fallback tier resolved, same as any other
+        # source gap — never invented.
+        return datum, None, []
+
+    # Frankfurter unavailable too: transparent fallback to yfinance.
+    logger.warning("Frankfurter fetch failed for %s — falling back to yfinance", key)
     return _fetch_yf_fallback(key, now_utc)
 
 
@@ -528,7 +624,9 @@ def build_market_snapshot(
     overrides: Optional[dict] = None,
     allow_proxy_levels: bool = True,
 ) -> MarketSnapshot:
-    """Assemble a :class:`MarketSnapshot` — Oanda primary, yfinance fallback.
+    """Assemble a :class:`MarketSnapshot` — Oanda primary, Frankfurter (ECB
+    EOD ref rate, 9 major FX pairs only) intermediate fallback, yfinance
+    final fallback.
 
     Signature is identical to ``market_data.build_market_snapshot`` so
     ``app.py`` and ``pipeline.py`` require zero changes beyond swapping the
