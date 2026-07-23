@@ -29,10 +29,13 @@ import os
 import re
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import pytz
 import requests
+
+if TYPE_CHECKING:  # pragma: no cover -- type-checking only, no runtime import
+    import pandas as pd
 
 from .config import YF_TICKERS, MARKET_FETCH_MAX_WORKERS
 from .models import Datum, Reliability, SourceStamp, MarketSnapshot, na_stamp
@@ -394,7 +397,7 @@ _YF_BACKOFF = 1.5         # seconds, exponential base (same as Oanda path)
 _YF_JITTER_MAX = 0.4      # seconds — desynchronise the concurrent burst below
 
 
-def _yf_history(ticker: str) -> "object":
+def _yf_history(ticker: str) -> Optional["pd.DataFrame"]:
     """Single yfinance history() call with retry/backoff on rate-limit.
 
     AUDIT-FIX (17/07/2026, DXY root-cause): VIX/MOVE/DXY/US10Y/Brent/WTI/
@@ -572,16 +575,29 @@ def build_market_snapshot(
         # Manual override always wins — stamped PROXY.
         if key in overrides:
             val = overrides[key]
-            try:
-                fval = float(val)
+            fval = _parse_override_leading_number(val)
+            if fval is not None:
                 datum = Datum(
                     fval,
                     SourceStamp("manual override", Reliability.PROXY,
                                 note="saisie utilisateur"),
                     str(val).replace(".", ","), "",
                 )
-            except (TypeError, ValueError):
-                pass
+            else:
+                # AUDIT-FIX (F002): previously a bare float(val) failure was
+                # swallowed by a silent `except (TypeError, ValueError): pass`,
+                # so a rich-text override (e.g. "66,8 (CME data)") was ignored
+                # with zero trace and the auto-fetched value quietly won
+                # instead. Every value that used to parse via float() still
+                # parses identically via _parse_override_leading_number()
+                # (same leading-number regex used for GDP_NOWCAST/
+                # SURPRISE_IDX below) -- this branch only fires for inputs
+                # that were already broken before.
+                logger.warning(
+                    "Override for %r could not be parsed as a number: %r — "
+                    "ignored, falling back to the auto-fetched value.",
+                    key, val,
+                )
 
         if key in _GAUGE_KEYS:
             snap.gauges[key] = datum
