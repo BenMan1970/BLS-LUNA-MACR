@@ -139,6 +139,15 @@ class MarketSnapshot:
     prices: dict[str, Datum] = field(default_factory=dict)   # instrument -> Datum
     atr: dict[str, float] = field(default_factory=dict)      # instrument -> 14d ATR (absolute)
     closes: dict[str, list[float]] = field(default_factory=dict)  # instrument -> recent daily closes (oldest->newest); reused for [PROXY] correlation, never displayed raw
+    # AUDIT-FIX (A009): was previously only ever set dynamically via
+    # `snap.currency_strength_oanda = ...` in oanda_data.py and read back
+    # via `getattr(market, "currency_strength_oanda", None)` in
+    # macro_engine.py -- functionally correct but invisible to static
+    # typing/mypy and to anyone reading this dataclass. Declaring it here
+    # changes nothing at runtime (the existing dynamic assignment still
+    # works identically); it only makes the contract explicit. Default
+    # `None` matches the exact fallback value `getattr(...)` already used.
+    currency_strength_oanda: Optional[dict[str, float]] = None
 
     def gauge(self, key: str) -> Datum:
         return self.gauges.get(key, Datum(None, na_stamp(), "N/A"))
