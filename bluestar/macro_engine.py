@@ -172,6 +172,52 @@ def _next_ecb_meeting(now_utc: Optional[datetime]) -> Optional[str]:
     return None
 
 
+# P0 FIX (audit 23/07/2026): official FOMC calendar, verified directly
+# against https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+# on 23/07/2026 (2027 dates listed there as "tentative until confirmed at
+# the meeting immediately preceding it" -- included anyway since that's the
+# best available information and this only ever improves on [N/A]/a stale
+# override, never worsens it).
+_FOMC_MEETING_DATES: list[tuple[str, str]] = [
+    ("2026-07-28", "2026-07-29"), ("2026-09-15", "2026-09-16"),
+    ("2026-10-27", "2026-10-28"), ("2026-12-08", "2026-12-09"),
+    ("2027-01-26", "2027-01-27"), ("2027-03-16", "2027-03-17"),
+    ("2027-04-27", "2027-04-28"), ("2027-06-08", "2027-06-09"),
+    ("2027-07-27", "2027-07-28"), ("2027-09-14", "2027-09-15"),
+    ("2027-10-26", "2027-10-27"), ("2027-12-07", "2027-12-08"),
+]
+
+# P0 FIX (audit 23/07/2026): official BoJ Monetary Policy Meeting calendar,
+# verified directly against
+# https://www.boj.or.jp/en/mopo/mpmsche_minu/index.htm on 23/07/2026. Only
+# 2026 is published by the BoJ at time of writing; falls back to override/
+# [N/A] beyond that, same zero-regression pattern as the ECB/FOMC tables.
+_BOJ_MEETING_DATES: list[tuple[str, str]] = [
+    ("2026-07-30", "2026-07-31"), ("2026-09-17", "2026-09-18"),
+    ("2026-10-29", "2026-10-30"), ("2026-12-17", "2026-12-18"),
+]
+
+
+def _next_meeting_from_table(now_utc: Optional[datetime],
+                             table: list[tuple[str, str]],
+                             label: str) -> Optional[str]:
+    """Shared lookup for the official-calendar tables above. Returns the
+    next meeting as 'DD–DD/MM/YYYY (<label>, calendrier officiel)', or
+    ``None`` if ``now_utc`` is past the table's last entry (caller then
+    falls back to override / [N/A])."""
+    if now_utc is None:
+        return None
+    today = now_utc.date().isoformat()
+    for day1, day2 in table:
+        if day2 >= today:
+            d1 = datetime.strptime(day1, "%Y-%m-%d")
+            d2 = datetime.strptime(day2, "%Y-%m-%d")
+            if d1.month == d2.month:
+                return f"{d1.day:02d}\u2013{d2.day:02d}/{d2.month:02d}/{d2.year} ({label}, calendrier officiel)"
+            return f"{d1.day:02d}/{d1.month:02d}\u2013{d2.day:02d}/{d2.month:02d}/{d2.year} ({label}, calendrier officiel)"
+    return None
+
+
 _CB_DEFS = [
     ("FED", "🇺🇸", "USD"),
     ("BCE", "🇪🇺", "EUR"),
@@ -231,11 +277,20 @@ def build_central_bank_context(overrides: Optional[dict],
 
         fact = o.get("fact") or "[N/A] — taux/probabilité non sourcés sans clé API."
         bias = o.get("bias") or "[N/A] — interprétation à confirmer."
-        # P0 FIX (audit 23/07/2026): computed official ECB calendar takes
-        # precedence over a manual override for BCE specifically (same
-        # precedence rule already applied to the FRED rate above) -- avoids
-        # a stale hand-typed "fin juillet" surviving indefinitely.
-        nxt = (_next_ecb_meeting(now_utc) if name == "BCE" else None) or o.get("next", "[N/A]")
+        # P0 FIX (audit 23/07/2026): computed official calendar takes
+        # precedence over a manual override, same rule already applied to
+        # the FRED rate above -- avoids a stale hand-typed date surviving
+        # indefinitely. FED/BCE/BoJ each have a verified table; BoE has none
+        # (no published forward calendar found at time of writing) so it
+        # keeps override/[N/A] only, unchanged.
+        computed_next = None
+        if name == "FED":
+            computed_next = _next_meeting_from_table(now_utc, _FOMC_MEETING_DATES, "FED")
+        elif name == "BCE":
+            computed_next = _next_ecb_meeting(now_utc)
+        elif name == "BoJ":
+            computed_next = _next_meeting_from_table(now_utc, _BOJ_MEETING_DATES, "BoJ")
+        nxt = computed_next or o.get("next", "[N/A]")
 
         # --- Fed probabilities: override > FedWatch > None ---
         pause = o.get("pause")
