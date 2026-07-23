@@ -11,7 +11,6 @@ scenarios -> :class:`BriefingContext`.
 """
 from __future__ import annotations
 
-import concurrent.futures
 import logging
 import re
 from datetime import datetime
