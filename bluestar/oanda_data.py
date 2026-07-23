@@ -29,13 +29,10 @@ import os
 import re
 import time
 from datetime import datetime
-from typing import Optional, TYPE_CHECKING
+from typing import Optional
 
 import pytz
 import requests
-
-if TYPE_CHECKING:  # pragma: no cover -- type-checking only, no runtime import
-    import pandas as pd
 
 from .config import YF_TICKERS, MARKET_FETCH_MAX_WORKERS
 from .models import Datum, Reliability, SourceStamp, MarketSnapshot, na_stamp
@@ -139,33 +136,15 @@ _BACKOFF = 1.5
 # Credential resolution
 # ---------------------------------------------------------------------------
 def _oanda_creds() -> tuple[Optional[str], Optional[str]]:
-    """Return (api_key, account_id) from st.secrets, then os.environ, else (None, None).
-
-    AUDIT-FIX (secret-name mismatch): this used to try only OANDA_API_KEY /
-    oanda_api_key. _strength_access_token() below already had to widen its
-    own search to OANDA_ACCESS_TOKEN / oanda_access_token because "the
-    standalone strength app uses OANDA_ACCESS_TOKEN, and that mismatch was
-    the reason the strength block never fired" -- but that same widening
-    was never mirrored here, so a deployment whose secret is named
-    OANDA_ACCESS_TOKEN got a working currency-strength block (via
-    _strength_access_token) while every single FX/index/commodity price
-    silently fell back to yfinance (api_key resolved to None here, so
-    _fetch_instrument() always took the "no API key" branch). Zero
-    regression: OANDA_API_KEY / oanda_api_key are still tried first and
-    still win outright when present -- identical behaviour for any
-    deployment already using those names. The ACCESS_TOKEN spellings are
-    only consulted as additional fallbacks before os.environ.
-    """
+    """Return (api_key, account_id) from st.secrets, then os.environ, else (None, None)."""
     key = acc = None
     if _ST_OK:
         try:
-            key = (st.secrets.get("OANDA_API_KEY") or st.secrets.get("oanda_api_key")
-                   or st.secrets.get("OANDA_ACCESS_TOKEN") or st.secrets.get("oanda_access_token"))
+            key = st.secrets.get("OANDA_API_KEY") or st.secrets.get("oanda_api_key")
             acc = st.secrets.get("OANDA_ACCOUNT_ID") or st.secrets.get("oanda_account_id")
         except Exception:  # pragma: no cover
             key = acc = None
-    key = (key or os.environ.get("OANDA_API_KEY") or os.environ.get("oanda_api_key")
-           or os.environ.get("OANDA_ACCESS_TOKEN") or os.environ.get("oanda_access_token"))
+    key = key or os.environ.get("OANDA_API_KEY") or os.environ.get("oanda_api_key")
     acc = acc or os.environ.get("OANDA_ACCOUNT_ID") or os.environ.get("oanda_account_id")
     return (str(key) if key else None, str(acc) if acc else None)
 
@@ -415,7 +394,7 @@ _YF_BACKOFF = 1.5         # seconds, exponential base (same as Oanda path)
 _YF_JITTER_MAX = 0.4      # seconds — desynchronise the concurrent burst below
 
 
-def _yf_history(ticker: str) -> Optional["pd.DataFrame"]:
+def _yf_history(ticker: str) -> "object":
     """Single yfinance history() call with retry/backoff on rate-limit.
 
     AUDIT-FIX (17/07/2026, DXY root-cause): VIX/MOVE/DXY/US10Y/Brent/WTI/
@@ -553,8 +532,18 @@ def build_market_snapshot(
 
     Signature is identical to ``market_data.build_market_snapshot`` so
     ``app.py`` and ``pipeline.py`` require zero changes beyond swapping the
-    import.  ``overrides`` (manual sidebar JSON) always takes precedence and
-    is stamped ``[PROXY]``.
+    import.
+
+    PRODUCTION-FIX (23/07/2026): the per-instrument manual override (FX
+    pairs, indices, VIX/MOVE/DXY/US10Y/Brent/WTI) has been removed. Both
+    OANDA v20 (primary, FX + XAU/USD) and yfinance (fallback + the
+    instruments Oanda does not serve) are confirmed live in production, so a
+    manual override on these fields was pure redundancy — and a genuine risk:
+    a value typed once into the sidebar for a demo/test run would silently
+    shadow live Oanda data indefinitely with no visible warning, since it
+    always took precedence regardless of freshness. ``overrides`` is now
+    consumed only downstream for GDP_NOWCAST / SURPRISE_IDX, the two gauges
+    that still have no full live coverage (see below) — never for prices.
     """
     now_utc = now_utc or datetime.now(pytz.UTC)
     overrides = overrides or {}
@@ -585,37 +574,12 @@ def build_market_snapshot(
             results[key] = future.result()
 
     # Everything below is unchanged from the sequential version: same
-    # per-key branching, same override precedence, same assignment order
-    # semantics (dict keys, so iteration order is immaterial to the result).
+    # per-key branching, same assignment order semantics (dict keys, so
+    # iteration order is immaterial to the result). Manual override on these
+    # per-instrument fields was removed 23/07/2026 (see docstring) — the
+    # live Oanda/yfinance result from `results[key]` is used as-is.
     for key in keys:
         datum, atr, closes = results[key]
-
-        # Manual override always wins — stamped PROXY.
-        if key in overrides:
-            val = overrides[key]
-            fval = _parse_override_leading_number(val)
-            if fval is not None:
-                datum = Datum(
-                    fval,
-                    SourceStamp("manual override", Reliability.PROXY,
-                                note="saisie utilisateur"),
-                    str(val).replace(".", ","), "",
-                )
-            else:
-                # AUDIT-FIX (F002): previously a bare float(val) failure was
-                # swallowed by a silent `except (TypeError, ValueError): pass`,
-                # so a rich-text override (e.g. "66,8 (CME data)") was ignored
-                # with zero trace and the auto-fetched value quietly won
-                # instead. Every value that used to parse via float() still
-                # parses identically via _parse_override_leading_number()
-                # (same leading-number regex used for GDP_NOWCAST/
-                # SURPRISE_IDX below) -- this branch only fires for inputs
-                # that were already broken before.
-                logger.warning(
-                    "Override for %r could not be parsed as a number: %r — "
-                    "ignored, falling back to the auto-fetched value.",
-                    key, val,
-                )
 
         if key in _GAUGE_KEYS:
             snap.gauges[key] = datum
@@ -624,9 +588,6 @@ def build_market_snapshot(
         if atr is not None:
             snap.atr[key] = atr
         if closes:
-            # Kept even when the current point is a manual override: the
-            # historical series itself is real and still useful for the
-            # [PROXY] short-window correlation overlay.
             snap.closes[key] = closes
 
     # GDP Nowcast precedence (updated): LIVE FRED GDPNOW (official, machine-
