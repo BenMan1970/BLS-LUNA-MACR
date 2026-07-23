@@ -256,8 +256,24 @@ def _fred_series_dated(series_id: str) -> Optional[tuple[float, str]]:
 # du module. Purement additif : ne touche ni _fred_series, ni
 # _fred_series_dated, ni aucune des séries FED/BCE/BoJ existantes.
 # ===========================================================================
-_BOE_IADB_URL = "https://www.bankofengland.co.uk/boeapps/iadb/fromshowcolumns.asp"
-_BOE_BANK_RATE_CODE = "IUDBEDR"  # Bank Rate officielle (code série IADB)
+# AUDIT-FIX (23/07/2026, cause racine du BoE [N/A] permanent — validé en
+# direct ce jour, deux fois : GET live -> HTTP 206, Content-Type
+# application/csv, dernière obs. "22 Jul 2026,3.75"). L'ancienne URL
+# "/boeapps/iadb/fromshowcolumns.asp" était FAUSSE (chemin inexistant ->
+# échec silencieux -> None permanent). L'endpoint d'export CSV documenté par
+# la BoE (page /boeapps/database/help.asp, section "CSV downloads") est :
+#   /boeapps/database/_iadb-fromshowcolumns.asp   (préfixe "database/",
+#   underscore + tiret, PAS "iadb/...") avec le déclencheur d'action csv.x.
+# Le commentaire historique disant que cet endpoint était "outside the
+# sandbox's allowed network domains ... could not be exercised against a
+# live response" est désormais CADUC : réponse live vérifiée le 23/07/2026,
+# le format CSV réel est "DATE,IUDBEDR\n<JJ Mon AAAA>,<taux>" (dates séparées
+# par des espaces, ex "22 Jul 2026" -> _boe_parse_date gère "%d %b %Y" en
+# premier, OK) et le parseur de lignes best-effort ci-dessous s'y applique
+# sans changement. csv.x est passé via params (equivalent à l'avoir dans
+# l'URL, cf. doc BoE qui le montre en query-string).
+_BOE_IADB_URL = "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp"
+_BOE_BANK_RATE_CODE = "IUDBEDR"  # Bank Rate officielle (code série IADB), validé live 23/07/2026
 
 # Formats de date observés dans les exports IADB (varie selon les endpoints
 # BoE) — essayés dans l'ordre jusqu'à ce qu'un marche.
