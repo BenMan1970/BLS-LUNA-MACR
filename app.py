@@ -90,7 +90,12 @@ with st.sidebar:
         "Prix marchés : récupérés via yfinance — saisir un bloc 'market' uniquement pour forcer une valeur."
     )
     sample_path = Path(__file__).parent / "sample_overrides.json"
-    use_sample = st.toggle("Charger l'exemple fourni", value=True)
+    use_sample = st.toggle("Charger l'exemple fourni", value=False,
+                           help="Charge sample_overrides.json (données de "
+                                "démonstration : MOVE=66,8, textes FAIT/BIAIS "
+                                "figés, COT d'exemple...). À laisser DÉSACTIVÉ "
+                                "en production -- ne l'activer que pour tester "
+                                "l'app hors-ligne sans overrides réels.")
     default_text = sample_path.read_text(encoding="utf-8") if (use_sample and sample_path.exists()) else "{}"
     overrides_text = st.text_area("Overrides", value=default_text, height=240,
                                   label_visibility="collapsed")
