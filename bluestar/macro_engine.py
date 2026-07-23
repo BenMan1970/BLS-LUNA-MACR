@@ -132,6 +132,46 @@ def determine_market_regime(market: MarketSnapshot,
 # ---------------------------------------------------------------------------
 # Step 4 -- Central banks (no keyless source -> overrides or [N/A]/[PROXY])
 # ---------------------------------------------------------------------------
+# P0 FIX (audit 23/07/2026): official ECB Governing Council monetary-policy
+# meeting calendar (Day 1, Day 2 = press-conference day), verified directly
+# against https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html
+# on 23/07/2026. Used to compute the BCE "next meeting" field live instead of
+# it depending entirely on a manually-typed override that can go stale (the
+# HTML audited on 23/07/2026 still showed a manually-entered "fin juillet"
+# proxy). Covers through Oct 2028; if `now_utc` is past the last entry the
+# code below falls back to the override / [N/A], same as before this fix --
+# no behaviour change beyond this table's horizon.
+_ECB_MEETING_DATES: list[tuple[str, str]] = [
+    ("2026-07-22", "2026-07-23"), ("2026-09-09", "2026-09-10"),
+    ("2026-10-28", "2026-10-29"), ("2026-12-16", "2026-12-17"),
+    ("2027-02-03", "2027-02-04"), ("2027-03-17", "2027-03-18"),
+    ("2027-04-28", "2027-04-29"), ("2027-06-09", "2027-06-10"),
+    ("2027-07-21", "2027-07-22"), ("2027-09-08", "2027-09-09"),
+    ("2027-10-27", "2027-10-28"), ("2027-12-15", "2027-12-16"),
+    ("2028-02-02", "2028-02-03"), ("2028-03-22", "2028-03-23"),
+    ("2028-05-03", "2028-05-04"), ("2028-06-07", "2028-06-08"),
+    ("2028-07-19", "2028-07-20"), ("2028-09-06", "2028-09-07"),
+    ("2028-10-11", "2028-10-12"),
+]
+
+
+def _next_ecb_meeting(now_utc: Optional[datetime]) -> Optional[str]:
+    """Next ECB monetary-policy decision/press-conference date, or ``None``
+    if ``now_utc`` is outside the verified table (caller then falls back to
+    the override / [N/A] -- see _ECB_MEETING_DATES docstring above)."""
+    if now_utc is None:
+        return None
+    today = now_utc.date().isoformat()
+    for day1, day2 in _ECB_MEETING_DATES:
+        if day2 >= today:
+            d1 = datetime.strptime(day1, "%Y-%m-%d")
+            d2 = datetime.strptime(day2, "%Y-%m-%d")
+            if d1.month == d2.month:
+                return f"{d1.day:02d}\u2013{d2.day:02d}/{d2.month:02d}/{d2.year} (BCE, calendrier officiel)"
+            return f"{d1.day:02d}/{d1.month:02d}\u2013{d2.day:02d}/{d2.month:02d}/{d2.year} (BCE, calendrier officiel)"
+    return None
+
+
 _CB_DEFS = [
     ("FED", "🇺🇸", "USD"),
     ("BCE", "🇪🇺", "EUR"),
@@ -191,7 +231,11 @@ def build_central_bank_context(overrides: Optional[dict],
 
         fact = o.get("fact") or "[N/A] — taux/probabilité non sourcés sans clé API."
         bias = o.get("bias") or "[N/A] — interprétation à confirmer."
-        nxt = o.get("next", "[N/A]")
+        # P0 FIX (audit 23/07/2026): computed official ECB calendar takes
+        # precedence over a manual override for BCE specifically (same
+        # precedence rule already applied to the FRED rate above) -- avoids
+        # a stale hand-typed "fin juillet" surviving indefinitely.
+        nxt = (_next_ecb_meeting(now_utc) if name == "BCE" else None) or o.get("next", "[N/A]")
 
         # --- Fed probabilities: override > FedWatch > None ---
         pause = o.get("pause")
