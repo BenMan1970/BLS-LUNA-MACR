@@ -11,6 +11,7 @@ scenarios -> :class:`BriefingContext`.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import re
 from datetime import datetime
@@ -225,6 +226,44 @@ _CB_DEFS = [
 ]
 
 
+def _derive_bias_from_rate(name: str, live_rate_pct: Optional[float]) -> Optional[str]:
+    """Fallback hawkish/dovish/neutral bias tag derived from the live policy
+    rate, used only when no textual override is supplied for that bank.
+
+    AUDIT-FIX (23/07/2026, synergy gap #1): before this, ``bias`` had exactly
+    one write path — the manual override — so ``_cb_link``,
+    ``_currency_rationale`` and ``_cb_bias_word`` (the only three readers of
+    ``bias_interpretation`` in the codebase) all fell back to "neutre" by
+    default even on a day where the live FRED/BoE rate gave a perfectly
+    usable reading (reproduced 23/07/2026: Fed live at 3,75% while the
+    Banques Centrales → Taux narrative link showed "BC en attente").
+
+    Returns ``None`` (never a fabricated string) when ``live_rate_pct`` is
+    unavailable or the bank has no configured band, so the caller's existing
+    "[N/A] — interprétation à confirmer." floor is preserved as the final
+    fallback. The literal words "Hawkish"/"Dovish" are used deliberately so
+    the three existing text-matching readers pick this up with zero changes
+    on their side. The "[dérivé taux]" tag makes clear this is a
+    rate-threshold heuristic, never a sourced central-bank communiqué.
+    """
+    band = C.CB_NEUTRAL_RATE_BAND.get(name)
+    if live_rate_pct is None or band is None:
+        return None
+    low, high = band
+    r = fr_num(live_rate_pct, 2)
+    if live_rate_pct > high:
+        return (f"Hawkish — taux directeur ({r}%) au-dessus de la fourchette "
+                f"neutre estimée ({fr_num(low,2)}–{fr_num(high,2)}%) [dérivé taux, "
+                f"pas un communiqué officiel].")
+    if live_rate_pct < low:
+        return (f"Dovish — taux directeur ({r}%) en dessous de la fourchette "
+                f"neutre estimée ({fr_num(low,2)}–{fr_num(high,2)}%) [dérivé taux, "
+                f"pas un communiqué officiel].")
+    return (f"Neutre — taux directeur ({r}%) dans la fourchette neutre estimée "
+            f"({fr_num(low,2)}–{fr_num(high,2)}%) [dérivé taux, pas un communiqué "
+            f"officiel].")
+
+
 def build_central_bank_context(overrides: Optional[dict],
                                now_utc: Optional[datetime] = None) -> list[CentralBankSnapshot]:
     """Build the four central-bank blocks.
@@ -239,10 +278,13 @@ def build_central_bank_context(overrides: Optional[dict],
          are now swapped for the *rate* specifically.
       2. User override (``overrides['central_banks'][name]['rate']``) —
          fallback when FRED has no value for that bank.
-      3. ``fact`` / ``bias`` / ``next`` stay override-first (unchanged):
-         FRED only supplies a numeric rate, not the qualitative FAIT/BIAIS
-         write-up or the next-meeting date, so there is nothing live to
-         prefer there.
+      3. ``fact`` / ``next`` stay override-first: FRED only supplies a
+         numeric rate, not the qualitative FAIT write-up or a guaranteed
+         next-meeting date, so there is nothing live to prefer for those two.
+         ``bias`` is override-first too, but now falls back to a
+         rate-derived hawkish/dovish/neutral tag (``_derive_bias_from_rate``,
+         audit fix 23/07/2026 — synergy gap #1) instead of a static
+         "[N/A]" before reaching the final [N/A] floor.
       4. CME FedWatch (``fetch_fedwatch_probabilities``) — fills the Fed's
          pause/cut/hike when the override omits them (unchanged).
       5. Otherwise [N/A] — never invented.
@@ -275,7 +317,12 @@ def build_central_bank_context(overrides: Optional[dict],
             rate = "[N/A]"
 
         fact = o.get("fact") or "[N/A] — taux/probabilité non sourcés sans clé API."
-        bias = o.get("bias") or "[N/A] — interprétation à confirmer."
+        # Precedence: manual override (nuanced human read) > rate-derived
+        # fallback (live_val only — never derived from an override-supplied
+        # rate, to avoid circularity) > [N/A]. See _derive_bias_from_rate.
+        bias = (o.get("bias")
+                or _derive_bias_from_rate(name, live_val)
+                or "[N/A] — interprétation à confirmer.")
         # P0 FIX (audit 23/07/2026): computed official calendar takes
         # precedence over a manual override, same rule already applied to
         # the FRED rate above -- avoids a stale hand-typed date surviving
