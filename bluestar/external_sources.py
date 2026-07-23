@@ -299,7 +299,8 @@ def _boe_bank_rate() -> Optional[tuple[float, str]]:
         "ns": "1",
     }
     try:
-        r = requests.get(_BOE_IADB_URL, params=params, timeout=15)
+        r = requests.get(_BOE_IADB_URL, params=params, timeout=15,
+                         headers=_HEADERS)
         r.raise_for_status()
     except requests.RequestException as exc:
         logger.warning("BoE IADB fetch failed: %s", exc)
