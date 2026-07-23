@@ -197,6 +197,37 @@ _BOJ_MEETING_DATES: list[tuple[str, str]] = [
     ("2026-10-29", "2026-10-30"), ("2026-12-17", "2026-12-18"),
 ]
 
+# P0 FIX (23/07/2026, ferme le gap "BoE has none / no published forward
+# calendar found" -- ce constat était faux, la BoE publie bien un calendrier
+# officiel des annonces MPC, on ne l'avait simplement pas encore intégré.
+# Vérifié directement contre
+# https://www.bankofengland.co.uk/monetary-policy/upcoming-mpc-dates
+# le 23/07/2026 (page marquée "last updated 26 May 2026"). Contrairement à
+# FOMC/BCE/BoJ, la BoE n'annonce qu'une seule date d'annonce publique (pas
+# de plage réunion sur 2 jours communiquée) -- d'où une liste de dates
+# uniques plutôt que des tuples (day1, day2). 2026 = "confirmed dates",
+# 2027 = "provisional dates" (mêmes mots que la page BoE elle-même).
+_BOE_MPC_DATES: list[str] = [
+    "2026-02-05", "2026-03-19", "2026-04-30", "2026-06-18",
+    "2026-07-30", "2026-09-17", "2026-11-05", "2026-12-17",
+    "2027-02-04", "2027-03-18", "2027-04-29", "2027-06-17",
+    "2027-07-29", "2027-09-16", "2027-11-04", "2027-12-16",
+]
+
+
+def _next_boe_meeting(now_utc: Optional[datetime]) -> Optional[str]:
+    """Next BoE MPC announcement date, or ``None`` if ``now_utc`` is past
+    the table's last entry (caller then falls back to override / [N/A]),
+    same zero-regression pattern as the FOMC/ECB/BoJ tables above."""
+    if now_utc is None:
+        return None
+    today = now_utc.date().isoformat()
+    for day in _BOE_MPC_DATES:
+        if day >= today:
+            d = datetime.strptime(day, "%Y-%m-%d")
+            return f"{d.day:02d}/{d.month:02d}/{d.year} (BoE, calendrier officiel)"
+    return None
+
 
 def _next_meeting_from_table(now_utc: Optional[datetime],
                              table: list[tuple[str, str]],
@@ -316,19 +347,25 @@ def build_central_bank_context(overrides: Optional[dict],
         if rate is None:
             rate = "[N/A]"
 
-        fact = o.get("fact") or "[N/A] — taux/probabilité non sourcés sans clé API."
+        # CORRECTIF (23/07/2026 bis, retour utilisateur) : plus aucun texte
+        # "[N/A]" affiché pour ce champ en production -- chaîne vide
+        # plutôt qu'un [N/A] écrit en dur. Le masquage complet de la ligne
+        # "FAIT ·" dans le HTML (pas juste un champ vide) doit se faire
+        # côté renderer.py, qui n'a pas encore été audité pour ça -- voir
+        # TODO renderer : if not cb.fact: <ne pas émettre la ligne FAIT>.
+        fact = o.get("fact") or ""
         # Precedence: manual override (nuanced human read) > rate-derived
         # fallback (live_val only — never derived from an override-supplied
         # rate, to avoid circularity) > [N/A]. See _derive_bias_from_rate.
         bias = (o.get("bias")
                 or _derive_bias_from_rate(name, live_val)
                 or "[N/A] — interprétation à confirmer.")
-        # P0 FIX (audit 23/07/2026): computed official calendar takes
-        # precedence over a manual override, same rule already applied to
-        # the FRED rate above -- avoids a stale hand-typed date surviving
-        # indefinitely. FED/BCE/BoJ each have a verified table; BoE has none
-        # (no published forward calendar found at time of writing) so it
-        # keeps override/[N/A] only, unchanged.
+        # P0 FIX (audit 23/07/2026): official calendar takes precedence
+        # over a manual override, same rule already applied to the FRED
+        # rate above -- avoids a stale hand-typed date surviving
+        # indefinitely. FED/BCE/BoJ/BoE each now have a verified table
+        # (BoE added 23/07/2026 -- the earlier note that it had none was
+        # incorrect, see _BOE_MPC_DATES above).
         computed_next = None
         if name == "FED":
             computed_next = _next_meeting_from_table(now_utc, _FOMC_MEETING_DATES, "FED")
@@ -336,6 +373,8 @@ def build_central_bank_context(overrides: Optional[dict],
             computed_next = _next_ecb_meeting(now_utc)
         elif name == "BoJ":
             computed_next = _next_meeting_from_table(now_utc, _BOJ_MEETING_DATES, "BoJ")
+        elif name == "BoE":
+            computed_next = _next_boe_meeting(now_utc)
         nxt = computed_next or o.get("next", "[N/A]")
 
         # --- Fed probabilities: override > FedWatch > None ---
@@ -370,7 +409,12 @@ def build_central_bank_context(overrides: Optional[dict],
         elif o:
             stamp = proxy_stamp("manual override")
         else:
-            stamp = na_stamp("source sans clé API")
+            # CORRECTIF (23/07/2026) : "source sans clé API" était trompeur
+            # ici aussi -- FRED est déjà appelée avec une clé (dispo dans
+            # secrets), et BoE IADB n'en demande pas ; si on arrive dans
+            # cette branche c'est qu'un fetch a échoué (réseau, parsing,
+            # série gelée), pas qu'une clé manque.
+            stamp = na_stamp("aucune source live n'a répondu")
 
         out.append(CentralBankSnapshot(
             name=name, flag=flag, rate_display=str(rate),
