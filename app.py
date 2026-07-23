@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from pathlib import Path
 import streamlit as st
 import base64
 
@@ -82,22 +81,19 @@ with st.sidebar:
     show_raw_json = st.toggle("Afficher le JSON calendrier brut", value=False)
     st.divider()
 
-    st.caption("OVERRIDES MANUELS (JSON)")
+    st.caption("OVERRIDES MANUELS (JSON) — saisie de production, aucune valeur de démonstration")
     st.caption(
-        "Champs sans source sans clé : **taux CB** et **FedWatch** → stampés [PROXY]. "
-        "**COT Non-Commercials** → stampé [OBSERVÉ — CFTC | vendredi de référence calculé] "
-        "dès que les chiffres sont saisis (le vendredi CFTC en vigueur est calculé automatiquement). "
-        "Prix marchés : récupérés via yfinance — saisir un bloc 'market' uniquement pour forcer une valeur."
+        "Ces champs n'ont **aucune source keyless / live** possible et ne sont "
+        "donc jamais auto-remplis : **FAIT/BIAIS narratif des banques centrales** "
+        "(le taux directeur lui-même est live via FRED/BoE IADB — voir ci-dessous), "
+        "**Surprise Index** (aucune API gratuite connue), **COT Non-Commercials** "
+        "en secours uniquement si `institutional.fetch_positioning_stats` échoue. "
+        "Les prix marchés (FX/indices/gauges) sont exclusivement live "
+        "OANDA v20 → yfinance — plus de mécanisme d'override sur ces champs "
+        "(cf. audit 23/07/2026 : un override oublié masquait silencieusement "
+        "des données OANDA live)."
     )
-    sample_path = Path(__file__).parent / "sample_overrides.json"
-    use_sample = st.toggle("Charger l'exemple fourni", value=False,
-                           help="Charge sample_overrides.json (données de "
-                                "démonstration : MOVE=66,8, textes FAIT/BIAIS "
-                                "figés, COT d'exemple...). À laisser DÉSACTIVÉ "
-                                "en production -- ne l'activer que pour tester "
-                                "l'app hors-ligne sans overrides réels.")
-    default_text = sample_path.read_text(encoding="utf-8") if (use_sample and sample_path.exists()) else "{}"
-    overrides_text = st.text_area("Overrides", value=default_text, height=240,
+    overrides_text = st.text_area("Overrides", value="{}", height=240,
                                   label_visibility="collapsed")
     st.divider()
     refresh = st.button("🔄 Refresh data", use_container_width=True)
