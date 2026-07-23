@@ -125,8 +125,11 @@ if override_error:
     st.error(f"Overrides JSON invalide — ignorés : {override_error}")
 
 if refresh:
-    cached_calendar.clear()
-    cached_market.clear()
+    # Blanket clear (not cached_calendar.clear() / cached_market.clear()
+    # named individually) so any @st.cache_data function added later is
+    # covered automatically — no risk of a new cache silently surviving a
+    # refresh because someone forgot to list it here.
+    st.cache_data.clear()
 
 # --------------------------------------------------------------------------
 # Data Integrity Layer status
