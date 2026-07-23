@@ -171,12 +171,27 @@ def check_no_placeholders(html: str) -> list[ValidationIssue]:
     return []
 
 
-def check_fact_interpretation_separation(ctx: BriefingContext) -> list[ValidationIssue]:
+def check_bias_interpretation_present(ctx: BriefingContext) -> list[ValidationIssue]:
+    """Chaque banque centrale avec un taux sourcé doit avoir un BIAIS.
+
+    CORRECTIF (23/07/2026, retour utilisateur) : cette règle s'appelait
+    ``check_fact_interpretation_separation`` et exigeait aussi
+    ``cb.fact.strip()`` non-vide -- ce qui déclenchait un WARN systématique
+    sur les 4 banques centrales depuis que ``fact`` est intentionnellement
+    vide en production (macro_engine.py ne renvoie plus de "[N/A]" ; le
+    renderer masque carrément la ligne "FAIT ·" quand c'est le cas, voir
+    renderer.py::_cb_biais_block). ``fact`` et ``bias_interpretation`` sont
+    deux champs indépendants : le second ne doit pas être jugé incomplet
+    à cause du premier. macro_engine.py garantit déjà que
+    ``bias_interpretation`` retombe au pire sur "[N/A] — interprétation à
+    confirmer." (jamais vide) -- ce check reste donc une garde-fou
+    légitime uniquement sur ce champ-là.
+    """
     issues = []
     for cb in ctx.central_banks:
-        if cb.stamp.ok and (not cb.fact.strip() or not cb.bias_interpretation.strip()):
-            issues.append(ValidationIssue("fact_interpretation", "WARN",
-                                          f"{cb.name}: FAIT/BIAIS incomplet."))
+        if cb.stamp.ok and not cb.bias_interpretation.strip():
+            issues.append(ValidationIssue("bias_interpretation", "WARN",
+                                          f"{cb.name}: BIAIS manquant."))
     return issues
 
 
@@ -312,7 +327,7 @@ def validate_context(ctx: BriefingContext) -> list[ValidationIssue]:
     issues += check_required_fields(ctx)
     issues += check_sources_or_na(ctx)
     issues += check_cot_non_commercials_only(ctx)
-    issues += check_fact_interpretation_separation(ctx)
+    issues += check_bias_interpretation_present(ctx)
     issues += check_rr_ratio(ctx)
     issues += check_no_contradictory_directions(ctx)
     issues += check_staleness(ctx)
