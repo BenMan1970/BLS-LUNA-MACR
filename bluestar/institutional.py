@@ -46,37 +46,49 @@ except Exception:  # pragma: no cover
     _YF_OK = False
 
 # --------------------------------------------------------------------------
-# FRED key — read ONCE at module level (st.secrets is NOT thread-safe)
+# FRED key resolution.
 #
-# AUDIT-FIX (15/07/2026): this used to test only the exact-case secret name
-# "FRED_API_KEY" and swallow any st.secrets access failure with a bare
-# `except: pass` — zero log trace either way. external_sources.py resolves
-# the very same FRED key for other series (CB rates, 2s10s, SOFR/EFFR) with
-# a more defensive pattern: it also tries the lowercase "fred_api_key" name
-# and logs a warning when st.secrets access itself fails. That meant a
-# secrets.toml using lowercase (a common TOML convention) — or any transient
-# st.secrets error at import time — was silently invisible here while
-# external_sources.py's FRED-backed fields kept working fine, so the
-# FRED-driven GDP Nowcast path (fetch_gdpnow_full, called from
-# oanda_data.py) fell back to [PROXY]/[N/A] with no diagnostic anywhere.
-# Aligned to the same two-case + logged pattern here. The module-level
-# single-read design is intentionally unchanged (thread-safety — see above);
-# this only widens what counts as "found" and makes "not found" visible.
+# AUDIT-FIX (23/07/2026): this used to be read ONCE at module import time
+# and cached in a module-level global. Under Streamlit, an already-imported
+# module is NOT re-imported on every script rerun (only the main script is),
+# so that one-time read was effectively frozen for the entire lifetime of
+# the server process. Concretely: if this module was first imported before
+# FRED_API_KEY existed in st.secrets, every FRED-backed field routed through
+# this module (fetch_gdpnow_full, build_regime_dashboard) stayed on
+# [N/A]/[PROXY] forever afterwards — even once the key was correctly added
+# to secrets.toml — until the process itself was restarted (a plain rerun
+# was not enough). external_sources.py never had this problem because its
+# equivalent resolver (_fred_api_key()) re-reads st.secrets on every call.
+#
+# The original module-level design was intentional, guarding against a
+# documented SIGSEGV from calling st.secrets off the main thread inside a
+# ThreadPoolExecutor worker. That risk doesn't apply to any current caller
+# of _fred_key(): fetch_gdpnow_full() is invoked from oanda_data.py strictly
+# after its ThreadPoolExecutor block has closed (main thread only), and
+# build_regime_dashboard() is not invoked from a worker thread either. So
+# this is now resolved dynamically, per call, exactly like
+# external_sources._fred_api_key() — same two-case (FRED_API_KEY /
+# fred_api_key) + st.secrets-then-env fallback + logged "not found" path.
+# Do NOT call _fred_key() from inside a ThreadPoolExecutor worker without
+# re-checking that this is still safe.
 # --------------------------------------------------------------------------
-_FRED_API_KEY: Optional[str] = None
-try:
-    import streamlit as st  # type: ignore
-    _FRED_API_KEY = st.secrets.get("FRED_API_KEY") or st.secrets.get("fred_api_key")  # type: ignore
-except Exception as _fred_secrets_exc:
-    logger.warning("Streamlit FRED key access failed: %s", _fred_secrets_exc)
-if not _FRED_API_KEY:
-    _FRED_API_KEY = os.environ.get("FRED_API_KEY") or os.environ.get("fred_api_key")
-if not _FRED_API_KEY:
+def _resolve_fred_key() -> Optional[str]:
+    try:
+        import streamlit as st  # type: ignore
+        key = st.secrets.get("FRED_API_KEY") or st.secrets.get("fred_api_key")  # type: ignore
+        if key:
+            return str(key)
+    except Exception as exc:
+        logger.warning("Streamlit FRED key access failed: %s", exc)
+    env = os.environ.get("FRED_API_KEY") or os.environ.get("fred_api_key")
+    if env:
+        return str(env)
     logger.warning(
         "FRED_API_KEY not found (tried FRED_API_KEY/fred_api_key in st.secrets "
         "and os.environ) — fetch_gdpnow_full()/build_regime_dashboard() FRED "
         "fields will degrade to None/[PROXY]/[N/A] downstream."
     )
+    return None
 
 
 def _get(url: str, **kw) -> Optional[requests.Response]:
@@ -608,12 +620,14 @@ def fetch_gdpnow_full() -> Optional[GdpNow]:
 # 6. Market Regime Dashboard building blocks (FRED via production key)
 # ===========================================================================
 def _fred_key() -> Optional[str]:
-    """Return the FRED API key cached at module level.
+    """Return the current FRED API key, re-resolved on every call.
 
-    Previously this read st.secrets dynamically, which is NOT thread-safe
-    and caused SIGSEGV when called from ThreadPoolExecutor workers.
+    See the AUDIT-FIX comment above ``_resolve_fred_key()`` for why this is
+    no longer a module-level cache: a Streamlit rerun does not re-import
+    this module, so caching at import time meant a key added to secrets
+    after the process started was invisible until a full restart.
     """
-    return _FRED_API_KEY
+    return _resolve_fred_key()
 
 
 def _fred_latest(series: str) -> Optional[tuple[float, str]]:
