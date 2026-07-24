@@ -217,10 +217,21 @@ def _oanda_creds() -> tuple[Optional[str], Optional[str]]:
         try:
             key = st.secrets.get("OANDA_API_KEY") or st.secrets.get("oanda_api_key")
             acc = st.secrets.get("OANDA_ACCOUNT_ID") or st.secrets.get("oanda_account_id")
-        except Exception:  # pragma: no cover
+        except Exception as exc:  # pragma: no cover
+            logger.warning(
+                "st.secrets access failed while resolving OANDA credentials "
+                "(%s) — falling back to os.environ, then to yfinance-only "
+                "routing if that is empty too.", exc,
+            )
             key = acc = None
     key = key or os.environ.get("OANDA_API_KEY") or os.environ.get("oanda_api_key")
     acc = acc or os.environ.get("OANDA_ACCOUNT_ID") or os.environ.get("oanda_account_id")
+    if not key:
+        logger.warning(
+            "OANDA_API_KEY introuvable (ni st.secrets ni os.environ) — tous "
+            "les instruments Oanda-capables vont router vers Frankfurter/"
+            "yfinance pour cette exécution."
+        )
     return (str(key) if key else None, str(acc) if acc else None)
 
 
@@ -577,6 +588,12 @@ def _fetch_instrument(
 
     # Oanda capable instrument but no API key: yfinance fallback.
     if not api_key:
+        logger.warning(
+            "Oanda credentials absentes/vides (OANDA_API_KEY) — %s routé "
+            "directement vers yfinance sans tentative Oanda ni Frankfurter. "
+            "Vérifier st.secrets['OANDA_API_KEY'] / ['OANDA_ACCOUNT_ID'] sur "
+            "ce déploiement précis.", key,
+        )
         return _fetch_yf_fallback(key, now_utc)
 
     # Primary: Oanda D1 candles.
