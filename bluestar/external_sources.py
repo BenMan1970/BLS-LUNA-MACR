@@ -305,7 +305,21 @@ _BOE_HEADERS = {
 
 # Formats de date observés dans les exports IADB (varie selon les endpoints
 # BoE) — essayés dans l'ordre jusqu'à ce qu'un marche.
-_BOE_DATE_FORMATS = ("%d %b %Y", "%d/%m/%Y", "%d-%b-%y", "%Y-%m-%d")
+_BOE_DATE_FORMATS = ("%d %b %Y", "%d/%m/%Y", "%d-%b-%y", "%Y-%m-%d",
+                      "%d %b %y")
+# AJOUT (24/07/2026) — vérifié en direct (web_fetch réel, 24/07/2026) contre
+# https://www.bankofengland.co.uk/boeapps/database/Bank-Rate.asp : la page
+# répond 200, contient bien "Current official Bank Rate\n\n3.75%" (regex
+# stratégie 1 de _boe_bank_rate_scrape testée et validée contre ce texte
+# exact) et un tableau "Date Changed | Rate" dont la première ligne est
+# "18 Dec 25" — année à 2 chiffres avec espaces, qu'AUCUN des 4 formats
+# ci-dessus ne matchait (testé : les 4 lèvent ValueError sur "18 Dec 25").
+# Sans ce format, _boe_parse_date() renvoie toujours None pour cette page
+# précise et la stratégie 2 retombe sur le repli "date = aujourd'hui" déjà
+# prévu dans _boe_bank_rate_scrape() — pas un crash, mais une date de
+# dernier changement perdue alors qu'elle est disponible. Purement additif :
+# les formats existants (utilisés par _boe_bank_rate() / export CSV IADB,
+# format différent) ne sont ni modifiés ni réordonnés.
 
 
 def _boe_parse_date(raw: str) -> Optional[datetime.date]:
