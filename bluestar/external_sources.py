@@ -246,6 +246,63 @@ def _fred_series_dated(series_id: str) -> Optional[tuple[float, str]]:
         return None
 
 
+# ---------------------------------------------------------------------------
+# VIX (CBOE Volatility Index) via FRED — audit-add 24/07/2026
+# ---------------------------------------------------------------------------
+# AUDIT-ADD (24/07/2026): VIX was previously routed unconditionally to
+# yfinance (_YF_ONLY in oanda_data.py) even though a real, authoritative,
+# keyless-with-key source exists: FRED's own VIXCLS series (the CBOE
+# publishes this to FRED daily). Same "never raise, log and return None"
+# contract as every other fetcher here. Note: FRED's VIXCLS is EOD (prior
+# trading day's close), same latency profile as GDPNOW/CB rates already in
+# this module — NOT intraday. Callers should treat this as PRIMARY (same
+# tier as GDP_NOWCAST) since it's the authoritative CBOE print, just not
+# the same latency as an intraday yfinance quote.
+_VIXCLS_SERIES = "VIXCLS"
+# Sentinel bound: VIX has never printed <5 or >90 historically (Oct 2008
+# and Mar 2020 spikes topped out below 90); used only to catch a FRED
+# sentinel/parsing artifact, not as a real-world plausibility model.
+_VIX_BOUNDS = (5.0, 150.0)
+_VIX_MAX_STALENESS_DAYS = 10  # FRED VIXCLS is a daily series; generous
+                              # window to tolerate a weekend/holiday gap
+                              # without wrongly flagging it as stale.
+
+
+def fetch_vix_fred() -> Optional[tuple[float, str]]:
+    """Fetch the latest CBOE VIX close from FRED (series VIXCLS).
+
+    Returns ``(value, date_iso)`` or ``None`` on any failure (no key, no
+    data, stale, out of plausible bounds) — never raises. Mirrors the
+    staleness/bounds discipline already applied to CB rates
+    (``fetch_central_bank_rates``), just with VIX-specific parameters.
+    """
+    res = _fred_series_dated(_VIXCLS_SERIES)
+    if res is None:
+        logger.warning("VIX: aucune observation FRED (VIXCLS)")
+        return None
+    val, dt_iso = res
+    try:
+        obs_date = datetime.date.fromisoformat(dt_iso)
+        age_days = (datetime.date.today() - obs_date).days
+        if age_days > _VIX_MAX_STALENESS_DAYS:
+            logger.warning(
+                "VIX (FRED VIXCLS) — observation datée du %s (%d j) → "
+                "potentiellement gelée, valeur écartée", dt_iso, age_days,
+            )
+            return None
+    except (ValueError, TypeError):
+        logger.warning("VIX (FRED VIXCLS) — date illisible '%s', valeur écartée", dt_iso)
+        return None
+    lo, hi = _VIX_BOUNDS
+    if not (lo <= val <= hi):
+        logger.warning(
+            "VIX (FRED VIXCLS) — valeur %.4f hors bornes [%.1f, %.1f], écartée",
+            val, lo, hi,
+        )
+        return None
+    return val, dt_iso
+
+
 # ===========================================================================
 # 1bis. Bank of England — API officielle (hors FRED)
 #
