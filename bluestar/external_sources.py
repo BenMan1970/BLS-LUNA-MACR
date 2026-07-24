@@ -268,19 +268,54 @@ _VIX_MAX_STALENESS_DAYS = 10  # FRED VIXCLS is a daily series; generous
                               # without wrongly flagging it as stale.
 
 
-def fetch_vix_fred() -> Optional[tuple[float, str]]:
-    """Fetch the latest CBOE VIX close from FRED (series VIXCLS).
+def fetch_vix_fred() -> Optional[tuple[float, str, Optional[float]]]:
+    """Fetch the latest CBOE VIX close from FRED (series VIXCLS), plus the
+    prior observation for a day-over-day trend (matches the yfinance-sourced
+    gauges' own ↑/↓/→ % display instead of leaving it blank).
 
-    Returns ``(value, date_iso)`` or ``None`` on any failure (no key, no
-    data, stale, out of plausible bounds) — never raises. Mirrors the
-    staleness/bounds discipline already applied to CB rates
-    (``fetch_central_bank_rates``), just with VIX-specific parameters.
+    Returns ``(value, date_iso, prev_value_or_None)`` or ``None`` on any
+    failure (no key, no data, stale, out of plausible bounds) — never
+    raises. Mirrors the staleness/bounds discipline already applied to CB
+    rates (``fetch_central_bank_rates``), just with VIX-specific parameters.
     """
-    res = _fred_series_dated(_VIXCLS_SERIES)
-    if res is None:
+    api_key = _fred_api_key()
+    if not api_key:
+        return None
+    params = {
+        "series_id": _VIXCLS_SERIES,
+        "api_key": api_key,
+        "file_type": "json",
+        "sort_order": "desc",
+        "limit": 2,
+    }
+    r = _get(_FRED_BASE, params=params)
+    if r is None:
+        logger.warning("VIX: aucune réponse FRED (VIXCLS)")
+        return None
+    try:
+        obs = r.json().get("observations", [])
+    except (ValueError, KeyError, TypeError) as exc:
+        logger.warning("VIX (FRED VIXCLS) parse error: %s", exc)
+        return None
+    if not obs:
         logger.warning("VIX: aucune observation FRED (VIXCLS)")
         return None
-    val, dt_iso = res
+
+    def _num(o: dict) -> Optional[float]:
+        raw = o.get("value", ".")
+        if raw in (".", "", None):
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
+    val = _num(obs[0])
+    dt_iso = obs[0].get("date", "")
+    if val is None:
+        logger.warning("VIX (FRED VIXCLS) — dernière observation non numérique")
+        return None
+
     try:
         obs_date = datetime.date.fromisoformat(dt_iso)
         age_days = (datetime.date.today() - obs_date).days
@@ -293,6 +328,7 @@ def fetch_vix_fred() -> Optional[tuple[float, str]]:
     except (ValueError, TypeError):
         logger.warning("VIX (FRED VIXCLS) — date illisible '%s', valeur écartée", dt_iso)
         return None
+
     lo, hi = _VIX_BOUNDS
     if not (lo <= val <= hi):
         logger.warning(
@@ -300,7 +336,13 @@ def fetch_vix_fred() -> Optional[tuple[float, str]]:
             val, lo, hi,
         )
         return None
-    return val, dt_iso
+
+    prev_val = _num(obs[1]) if len(obs) > 1 else None
+    if prev_val is not None and not (lo <= prev_val <= hi):
+        prev_val = None  # écarte silencieusement une 2e observation aberrante,
+                          # sans faire échouer la valeur courante pour autant
+
+    return val, dt_iso, prev_val
 
 
 # ===========================================================================
