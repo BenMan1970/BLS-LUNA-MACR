@@ -36,7 +36,7 @@ import requests
 
 from .config import YF_TICKERS, MARKET_FETCH_MAX_WORKERS
 from .models import Datum, Reliability, SourceStamp, MarketSnapshot, na_stamp
-from .external_sources import fetch_gdp_nowcast
+from .external_sources import fetch_gdp_nowcast, fetch_vix_fred
 
 # Institutional Intelligence layer (best-effort; zero-regression if absent).
 try:
@@ -112,7 +112,10 @@ _OANDA_INSTRUMENTS: dict[str, str] = {
     "XAU/USD": "XAU_USD",
 }
 
-# Instruments NOT served by Oanda — always routed to yfinance fallback.
+# Instruments NOT served by Oanda — routed to yfinance fallback (VIX gets
+# a FRED VIXCLS attempt first, handled in a dedicated branch above this
+# check in _fetch_instrument — still listed here since it's genuinely true
+# that Oanda itself never serves VIX).
 _YF_ONLY: frozenset[str] = frozenset([
     "VIX", "MOVE", "DXY", "US10Y",
     "Brent", "WTI",
@@ -601,6 +604,27 @@ def _fetch_instrument(
     oanda_instrument = _OANDA_INSTRUMENTS.get(key)
 
     # Instruments Oanda cannot serve: always yfinance.
+    # Instruments Oanda cannot serve: always yfinance — EXCEPT VIX, which
+    # gets a FRED (VIXCLS) attempt first (audit-add 24/07/2026). The other
+    # _YF_ONLY gauges (MOVE, DXY, US10Y, Brent, WTI, indices) have no
+    # equivalent free/keyless live alternative found so far — untouched.
+    if key == "VIX":
+        vf = fetch_vix_fred()
+        if vf is not None:
+            val, obs_date = vf
+            return (
+                Datum(
+                    val,
+                    SourceStamp("FRED · VIXCLS", Reliability.PRIMARY,
+                                note=f"clôture {obs_date} — EOD, pas intraday",
+                                url="https://fred.stlouisfed.org/series/VIXCLS"),
+                    str(round(val, 2)).replace(".", ","), "",
+                ),
+                None, [],
+            )
+        logger.warning("VIX: FRED indisponible — repli yfinance")
+        return _fetch_yf_fallback(key, now_utc)
+
     if key in _YF_ONLY or oanda_instrument is None:
         return _fetch_yf_fallback(key, now_utc)
 
