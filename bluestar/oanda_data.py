@@ -611,14 +611,15 @@ def _fetch_instrument(
     if key == "VIX":
         vf = fetch_vix_fred()
         if vf is not None:
-            val, obs_date = vf
+            val, obs_date, prev_val = vf
+            trend = _trend_str(val, prev_val) if prev_val is not None else ""
             return (
                 Datum(
                     val,
                     SourceStamp("FRED · VIXCLS", Reliability.PRIMARY,
                                 note=f"clôture {obs_date} — EOD, pas intraday",
                                 url="https://fred.stlouisfed.org/series/VIXCLS"),
-                    str(round(val, 2)).replace(".", ","), "",
+                    fr_num(val, 2), trend,
                 ),
                 None, [],
             )
