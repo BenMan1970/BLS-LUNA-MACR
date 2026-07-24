@@ -211,11 +211,26 @@ _BACKOFF = 1.5
 # Credential resolution
 # ---------------------------------------------------------------------------
 def _oanda_creds() -> tuple[Optional[str], Optional[str]]:
-    """Return (api_key, account_id) from st.secrets, then os.environ, else (None, None)."""
+    """Return (api_key, account_id) from st.secrets, then os.environ, else (None, None).
+
+    AUDIT-FIX (24/07/2026): confirmed via production logs that the actual
+    secret in this deployment is named ``OANDA_ACCESS_TOKEN``, not
+    ``OANDA_API_KEY`` — the exact same naming mismatch already documented in
+    ``_strength_access_token()``'s own docstring ("that mismatch was the
+    reason the strength block never fired"), but never propagated to this
+    function, which is the one that actually feeds every FX/XAU price.
+    Every documented spelling is now tried here too, in the same order as
+    the strength resolver.
+    """
     key = acc = None
     if _ST_OK:
         try:
-            key = st.secrets.get("OANDA_API_KEY") or st.secrets.get("oanda_api_key")
+            for name in ("OANDA_API_KEY", "OANDA_ACCESS_TOKEN",
+                         "oanda_api_key", "oanda_access_token"):
+                val = st.secrets.get(name)
+                if val:
+                    key = val
+                    break
             acc = st.secrets.get("OANDA_ACCOUNT_ID") or st.secrets.get("oanda_account_id")
         except Exception as exc:  # pragma: no cover
             logger.warning(
@@ -224,13 +239,16 @@ def _oanda_creds() -> tuple[Optional[str], Optional[str]]:
                 "routing if that is empty too.", exc,
             )
             key = acc = None
-    key = key or os.environ.get("OANDA_API_KEY") or os.environ.get("oanda_api_key")
+    if not key:
+        key = (os.environ.get("OANDA_API_KEY") or os.environ.get("oanda_api_key")
+               or os.environ.get("OANDA_ACCESS_TOKEN") or os.environ.get("oanda_access_token"))
     acc = acc or os.environ.get("OANDA_ACCOUNT_ID") or os.environ.get("oanda_account_id")
     if not key:
         logger.warning(
-            "OANDA_API_KEY introuvable (ni st.secrets ni os.environ) — tous "
-            "les instruments Oanda-capables vont router vers Frankfurter/"
-            "yfinance pour cette exécution."
+            "OANDA credentials introuvables sous aucun nom connu "
+            "(OANDA_API_KEY / OANDA_ACCESS_TOKEN, ni st.secrets ni "
+            "os.environ) — tous les instruments Oanda-capables vont router "
+            "vers Frankfurter/yfinance pour cette exécution."
         )
     return (str(key) if key else None, str(acc) if acc else None)
 
@@ -589,10 +607,10 @@ def _fetch_instrument(
     # Oanda capable instrument but no API key: yfinance fallback.
     if not api_key:
         logger.warning(
-            "Oanda credentials absentes/vides (OANDA_API_KEY) — %s routé "
-            "directement vers yfinance sans tentative Oanda ni Frankfurter. "
-            "Vérifier st.secrets['OANDA_API_KEY'] / ['OANDA_ACCOUNT_ID'] sur "
-            "ce déploiement précis.", key,
+            "Oanda credentials absentes/vides — %s routé directement vers "
+            "yfinance sans tentative Oanda ni Frankfurter. Vérifier "
+            "st.secrets['OANDA_API_KEY'] ou ['OANDA_ACCESS_TOKEN'] sur ce "
+            "déploiement.", key,
         )
         return _fetch_yf_fallback(key, now_utc)
 
