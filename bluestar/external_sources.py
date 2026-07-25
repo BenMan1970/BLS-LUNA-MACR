@@ -345,6 +345,149 @@ def fetch_vix_fred() -> Optional[tuple[float, str, Optional[float]]]:
     return val, dt_iso, prev_val
 
 
+# ---------------------------------------------------------------------------
+# US10Y (10Y Treasury yield) via FRED — audit-add 24/07/2026
+# ---------------------------------------------------------------------------
+# AUDIT-ADD (24/07/2026): DGS10 is published in the SAME H.15 Selected
+# Interest Rates release as DFEDTARU (the Fed rate series already live in
+# production via _CB_RATE_SERIES) — same publisher (Board of Governors),
+# same daily cadence. Given DFEDTARU's freshness is already confirmed
+# working correctly in production, DGS10 is expected to behave identically
+# (not independently re-verified live here beyond that release-level
+# equivalence — worth confirming once deployed, same as every other
+# fetcher in this module). Units are already Percent (e.g. 4.66), unlike
+# yfinance's ^TNX which this codebase quotes x10 — no conversion needed.
+_DGS10_SERIES = "DGS10"
+_US10Y_BOUNDS = (0.0, 20.0)  # sentinel/plausibility guard only
+_US10Y_MAX_STALENESS_DAYS = 10
+
+
+def fetch_us10y_fred() -> Optional[tuple[float, str, Optional[float]]]:
+    """Fetch the latest 10Y Treasury yield from FRED (DGS10), plus the prior
+    observation for a trend. Returns ``(value, date_iso, prev_value_or_None)``
+    or ``None`` on any failure — never raises. Same contract as
+    ``fetch_vix_fred``.
+    """
+    api_key = _fred_api_key()
+    if not api_key:
+        return None
+    params = {
+        "series_id": _DGS10_SERIES, "api_key": api_key, "file_type": "json",
+        "sort_order": "desc", "limit": 2,
+    }
+    r = _get(_FRED_BASE, params=params)
+    if r is None:
+        logger.warning("US10Y: aucune réponse FRED (DGS10)")
+        return None
+    try:
+        obs = r.json().get("observations", [])
+    except (ValueError, KeyError, TypeError) as exc:
+        logger.warning("US10Y (FRED DGS10) parse error: %s", exc)
+        return None
+    if not obs:
+        logger.warning("US10Y: aucune observation FRED (DGS10)")
+        return None
+
+    def _num(o: dict) -> Optional[float]:
+        raw = o.get("value", ".")
+        if raw in (".", "", None):
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
+    val = _num(obs[0])
+    dt_iso = obs[0].get("date", "")
+    if val is None:
+        logger.warning("US10Y (FRED DGS10) — dernière observation non numérique")
+        return None
+    try:
+        obs_date = datetime.date.fromisoformat(dt_iso)
+        age_days = (datetime.date.today() - obs_date).days
+        if age_days > _US10Y_MAX_STALENESS_DAYS:
+            logger.warning(
+                "US10Y (FRED DGS10) — observation datée du %s (%d j) → "
+                "potentiellement gelée, valeur écartée", dt_iso, age_days,
+            )
+            return None
+    except (ValueError, TypeError):
+        logger.warning("US10Y (FRED DGS10) — date illisible '%s', valeur écartée", dt_iso)
+        return None
+    lo, hi = _US10Y_BOUNDS
+    if not (lo <= val <= hi):
+        logger.warning(
+            "US10Y (FRED DGS10) — valeur %.4f hors bornes [%.1f, %.1f], écartée",
+            val, lo, hi,
+        )
+        return None
+    prev_val = _num(obs[1]) if len(obs) > 1 else None
+    if prev_val is not None and not (lo <= prev_val <= hi):
+        prev_val = None
+    return val, dt_iso, prev_val
+
+
+# ---------------------------------------------------------------------------
+# WTI / Brent via FRED (EIA Spot Prices) — audit-add 24/07/2026
+# ---------------------------------------------------------------------------
+# AUDIT-ADD (24/07/2026): confirmed via direct FRED page fetch (24/07/2026)
+# that these two EIA-sourced series run SEVERAL DAYS behind real time —
+# DCOILWTICO's latest print was 2026-07-20 (updated 22/07) and
+# DCOILBRENTEU's was 2026-07-13 (updated 15/07), i.e. 4 and 11 days stale
+# respectively as observed that day. This is a normal characteristic of the
+# EIA Spot Prices release, NOT a bug — but it means these series must
+# NEVER be used as a first-choice/primary source ahead of yfinance's
+# near-live futures quotes (CL=F/BZ=F), only as a fallback AFTER yfinance
+# fails, exactly mirroring how Frankfurter sits after Oanda for FX. Using
+# these as primary would be a real freshness regression, not an
+# improvement — deliberately wired in as fallback-only below.
+_OIL_SERIES = {"WTI": "DCOILWTICO", "Brent": "DCOILBRENTEU"}
+_OIL_BOUNDS = (0.0, 300.0)  # sentinel/plausibility guard only
+_OIL_MAX_STALENESS_DAYS = 20  # generous: EIA release itself runs days
+                              # behind by design (confirmed above), a
+                              # tighter bound would reject valid data
+
+
+def fetch_oil_fred(key: str) -> Optional[tuple[float, str]]:
+    """Fetch the latest WTI or Brent spot price from FRED (EIA Spot Prices).
+
+    ``key`` must be "WTI" or "Brent". Returns ``(value, date_iso)`` or
+    ``None`` on any failure — never raises. Callers MUST treat this as a
+    fallback tier only, never as a live/primary quote — see module comment
+    above for the confirmed multi-day lag.
+    """
+    series_id = _OIL_SERIES.get(key)
+    if series_id is None:
+        return None
+    res = _fred_series_dated(series_id)
+    if res is None:
+        logger.warning("%s: aucune observation FRED (%s)", key, series_id)
+        return None
+    val, dt_iso = res
+    try:
+        obs_date = datetime.date.fromisoformat(dt_iso)
+        age_days = (datetime.date.today() - obs_date).days
+        if age_days > _OIL_MAX_STALENESS_DAYS:
+            logger.warning(
+                "%s (FRED %s) — observation datée du %s (%d j) → "
+                "potentiellement gelée, valeur écartée",
+                key, series_id, dt_iso, age_days,
+            )
+            return None
+    except (ValueError, TypeError):
+        logger.warning("%s (FRED %s) — date illisible '%s', valeur écartée",
+                        key, series_id, dt_iso)
+        return None
+    lo, hi = _OIL_BOUNDS
+    if not (lo <= val <= hi):
+        logger.warning(
+            "%s (FRED %s) — valeur %.4f hors bornes [%.1f, %.1f], écartée",
+            key, series_id, val, lo, hi,
+        )
+        return None
+    return val, dt_iso
+
+
 # ===========================================================================
 # 1bis. Bank of England — API officielle (hors FRED)
 #
