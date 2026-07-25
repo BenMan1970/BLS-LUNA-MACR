@@ -36,7 +36,7 @@ import requests
 
 from .config import YF_TICKERS, MARKET_FETCH_MAX_WORKERS
 from .models import Datum, Reliability, SourceStamp, MarketSnapshot, na_stamp
-from .external_sources import fetch_gdp_nowcast, fetch_vix_fred
+from .external_sources import fetch_gdp_nowcast, fetch_vix_fred, fetch_us10y_fred, fetch_oil_fred
 
 # Institutional Intelligence layer (best-effort; zero-regression if absent).
 try:
@@ -112,10 +112,13 @@ _OANDA_INSTRUMENTS: dict[str, str] = {
     "XAU/USD": "XAU_USD",
 }
 
-# Instruments NOT served by Oanda — routed to yfinance fallback (VIX gets
-# a FRED VIXCLS attempt first, handled in a dedicated branch above this
-# check in _fetch_instrument — still listed here since it's genuinely true
-# that Oanda itself never serves VIX).
+# Instruments NOT served by Oanda — routed to yfinance fallback. VIX and
+# US10Y get a FRED attempt FIRST (dedicated branches above this check);
+# WTI/Brent get a FRED attempt only AFTER yfinance fails (EIA source runs
+# days behind, see fetch_oil_fred). MOVE, DXY, and the 4 indices have no
+# equivalent free/keyless live alternative found so far — untouched, still
+# routed straight here. All 10 are still listed below since it remains
+# true that Oanda itself never serves any of them.
 _YF_ONLY: frozenset[str] = frozenset([
     "VIX", "MOVE", "DXY", "US10Y",
     "Brent", "WTI",
@@ -625,6 +628,48 @@ def _fetch_instrument(
             )
         logger.warning("VIX: FRED indisponible — repli yfinance")
         return _fetch_yf_fallback(key, now_utc)
+
+    if key == "US10Y":
+        uf = fetch_us10y_fred()
+        if uf is not None:
+            val, obs_date, prev_val = uf
+            trend = _trend_str(val, prev_val) if prev_val is not None else ""
+            return (
+                Datum(
+                    val,
+                    SourceStamp("FRED · DGS10", Reliability.PRIMARY,
+                                note=f"clôture {obs_date} — EOD, pas intraday",
+                                url="https://fred.stlouisfed.org/series/DGS10"),
+                    f"{fr_num(val, 2)}%", trend,
+                ),
+                None, [],
+            )
+        logger.warning("US10Y: FRED indisponible — repli yfinance")
+        return _fetch_yf_fallback(key, now_utc)
+
+    if key in ("WTI", "Brent"):
+        # yfinance (near-live futures) stays first choice here — FRED/EIA
+        # runs several days behind by design (see fetch_oil_fred docstring),
+        # so it's wired in strictly AFTER a yfinance failure, never before.
+        datum, atr, closes = _fetch_yf_fallback(key, now_utc)
+        if datum.available:
+            return datum, atr, closes
+        logger.warning("%s: yfinance indisponible — repli FRED (EIA, retard J+plusieurs jours)", key)
+        of = fetch_oil_fred(key)
+        if of is not None:
+            val, obs_date = of
+            return (
+                Datum(
+                    val,
+                    SourceStamp("FRED · EIA Spot", Reliability.FALLBACK,
+                                note=f"{obs_date} — retard EIA de plusieurs jours, pas une cotation live",
+                                url="https://fred.stlouisfed.org/series/DCOILWTICO" if key == "WTI"
+                                    else "https://fred.stlouisfed.org/series/DCOILBRENTEU"),
+                    f"{fr_num(val, 2)} $", "",
+                ),
+                None, [],
+            )
+        return datum, atr, closes  # both failed: honest [N/A] from yfinance's own Datum
 
     if key in _YF_ONLY or oanda_instrument is None:
         return _fetch_yf_fallback(key, now_utc)
