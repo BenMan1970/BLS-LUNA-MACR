@@ -37,6 +37,7 @@ import requests
 from .config import YF_TICKERS, MARKET_FETCH_MAX_WORKERS
 from .models import Datum, Reliability, SourceStamp, MarketSnapshot, na_stamp
 from .external_sources import fetch_gdp_nowcast, fetch_vix_fred, fetch_us10y_fred, fetch_oil_fred
+from .credentials import oanda_creds
 
 # Institutional Intelligence layer (best-effort; zero-regression if absent).
 try:
@@ -56,11 +57,9 @@ except Exception:  # pragma: no cover
     _YF_OK = False
     logger.warning("yfinance unavailable — Oanda-only mode, indices/commodities may be [N/A]")
 
-try:
-    import streamlit as st  # type: ignore
-    _ST_OK = True
-except Exception:  # pragma: no cover
-    _ST_OK = False
+# NOTE (25/07/2026, A004/A006): the `streamlit`/`_ST_OK` import that used to
+# live here was only consumed by _oanda_creds()/_strength_access_token(),
+# both now moved to bluestar.credentials — removed as dead weight.
 
 # ---------------------------------------------------------------------------
 # Currency strength engine (requests-based, no oandapyV20)
@@ -217,66 +216,8 @@ _BACKOFF = 1.5
 # Credential resolution
 # ---------------------------------------------------------------------------
 def _oanda_creds() -> tuple[Optional[str], Optional[str]]:
-    """Return (api_key, account_id) from st.secrets, then os.environ, else (None, None).
-
-    AUDIT-FIX (24/07/2026): confirmed via production logs that the actual
-    secret in this deployment is named ``OANDA_ACCESS_TOKEN``, not
-    ``OANDA_API_KEY`` — the exact same naming mismatch already documented in
-    ``_strength_access_token()``'s own docstring ("that mismatch was the
-    reason the strength block never fired"), but never propagated to this
-    function, which is the one that actually feeds every FX/XAU price.
-    Every documented spelling is now tried here too, in the same order as
-    the strength resolver.
-    """
-    key = acc = None
-    if _ST_OK:
-        try:
-            for name in ("OANDA_API_KEY", "OANDA_ACCESS_TOKEN",
-                         "oanda_api_key", "oanda_access_token"):
-                val = st.secrets.get(name)
-                if val:
-                    key = val
-                    break
-            acc = st.secrets.get("OANDA_ACCOUNT_ID") or st.secrets.get("oanda_account_id")
-        except Exception as exc:  # pragma: no cover
-            logger.warning(
-                "st.secrets access failed while resolving OANDA credentials "
-                "(%s) — falling back to os.environ, then to yfinance-only "
-                "routing if that is empty too.", exc,
-            )
-            key = acc = None
-    if not key:
-        key = (os.environ.get("OANDA_API_KEY") or os.environ.get("oanda_api_key")
-               or os.environ.get("OANDA_ACCESS_TOKEN") or os.environ.get("oanda_access_token"))
-    acc = acc or os.environ.get("OANDA_ACCOUNT_ID") or os.environ.get("oanda_account_id")
-    if not key:
-        logger.warning(
-            "OANDA credentials introuvables sous aucun nom connu "
-            "(OANDA_API_KEY / OANDA_ACCESS_TOKEN, ni st.secrets ni "
-            "os.environ) — tous les instruments Oanda-capables vont router "
-            "vers Frankfurter/yfinance pour cette exécution."
-        )
-    return (str(key) if key else None, str(acc) if acc else None)
-
-
-def _strength_access_token() -> Optional[str]:
-    """Resolve the token for the strength bridge, trying all known secret names.
-
-    _oanda_creds() only looks at OANDA_API_KEY / oanda_api_key. The standalone
-    strength app uses OANDA_ACCESS_TOKEN, and that mismatch was the reason the
-    strength block never fired. Try every documented spelling here.
-    """
-    if not _ST_OK:
-        return None
-    try:
-        for name in ("OANDA_API_KEY", "OANDA_ACCESS_TOKEN",
-                     "oanda_api_key", "oanda_access_token"):
-            val = st.secrets.get(name)
-            if val:
-                return str(val)
-    except Exception as exc:  # pragma: no cover
-        logger.warning("strength token resolution failed: %s", exc)
-    return None
+    """Thin wrapper kept for import-compatibility — see bluestar.credentials.oanda_creds()."""
+    return oanda_creds()
 
 
 # ---------------------------------------------------------------------------
@@ -864,13 +805,16 @@ def build_market_snapshot(
     # the requests-based oanda_strength engine. macro_engine reads this
     # attribute via getattr; absent/None → documented CB-bias [PROXY] fallback.
     # models.py is untouched (optional attribute set via assignment).
-    # Token resolution is broadened here because _oanda_creds() (→ api_key)
-    # only checks OANDA_API_KEY, but the strength source may be under
-    # OANDA_ACCESS_TOKEN. Every outcome is logged.
+    # AUDIT-FIX (25/07/2026, A004/A006): _strength_access_token() removed —
+    # proven redundant with `api_key` (both resolve the identical 4 secret
+    # names since the 24/07/2026 fix; api_key's resolution is a strict
+    # superset, since it also falls back to os.environ). The old
+    # `_strength_access_token() or api_key` pattern was already always
+    # equivalent to `api_key` alone.
     if not _STRENGTH_OK:
         logger.warning("Oanda strength engine unavailable at import — CB-bias [PROXY]")
     else:
-        _strength_token = _strength_access_token() or api_key
+        _strength_token = api_key
         if not _strength_token:
             logger.warning("No Oanda token for strength engine — CB-bias [PROXY]")
         else:
