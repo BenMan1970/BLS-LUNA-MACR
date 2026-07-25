@@ -620,6 +620,7 @@ def _fetch_instrument(
                 Datum(
                     val,
                     SourceStamp("FRED · VIXCLS", Reliability.PRIMARY,
+                                timestamp=now_utc,
                                 note=f"clôture {obs_date} — EOD, pas intraday",
                                 url="https://fred.stlouisfed.org/series/VIXCLS"),
                     fr_num(val, 2), trend,
@@ -638,6 +639,7 @@ def _fetch_instrument(
                 Datum(
                     val,
                     SourceStamp("FRED · DGS10", Reliability.PRIMARY,
+                                timestamp=now_utc,
                                 note=f"clôture {obs_date} — EOD, pas intraday",
                                 url="https://fred.stlouisfed.org/series/DGS10"),
                     f"{fr_num(val, 2)}%", trend,
@@ -662,6 +664,7 @@ def _fetch_instrument(
                 Datum(
                     val,
                     SourceStamp("FRED · EIA Spot", Reliability.FALLBACK,
+                                timestamp=now_utc,
                                 note=f"{obs_date} — retard EIA de plusieurs jours, pas une cotation live",
                                 url="https://fred.stlouisfed.org/series/DCOILWTICO" if key == "WTI"
                                     else "https://fred.stlouisfed.org/series/DCOILBRENTEU"),
