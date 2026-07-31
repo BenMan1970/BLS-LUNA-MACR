@@ -13,6 +13,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
+from . import config as _cfg  # PATCH-IPS-DEDUP (audit 31/07/2026, F-17 bis)
 from .config import TZ_CET
 
 
@@ -48,7 +49,12 @@ class SourceStamp:
         ts = self.timestamp
         if ts is not None:
             cet = ts.astimezone(TZ_CET)
-            return f"[{self.source_name} | {cet:%H:%M} CET | {cet:%d/%m}]"
+            # C-08 (audit 31/07/2026) : l'étiquette suit le fuseau réel (CEST en
+            # été), plus le littéral "CET" qui affirmait UTC+1 toute l'année
+            # alors que l'heure affichée était l'heure de Paris (correcte, mal
+            # étiquetée). Vérification externe du 31/07/2026 : acquisition
+            # macro 10:38 UTC affichée « 12:38 CET » — heure juste, label faux.
+            return f"[{self.source_name} | {cet:%H:%M} {cet.tzname() or 'CET'} | {cet:%d/%m}]"
         return f"[{self.source_name}]"
 
     @property
@@ -198,7 +204,13 @@ class CotPositioning:
 
     @property
     def is_extreme(self) -> bool:
-        return self.ips_score is not None and (self.ips_score >= 80 or self.ips_score <= 20)
+        # F-17 bis (audit 31/07/2026) : seuils lus depuis config (source unique
+        # avec macro_engine._ips_label_for et macro_engine._build_cot_summary),
+        # plus de 80/20 codés en dur ici. Valeurs numériques identiques
+        # (IPS_CROWDED=80, IPS_CAPITULATION=20) — zéro changement de
+        # comportement, suppression d'une duplication intra-app.
+        return (self.ips_score is not None
+                and (self.ips_score >= _cfg.IPS_CROWDED or self.ips_score <= _cfg.IPS_CAPITULATION))
 
 
 @dataclass
