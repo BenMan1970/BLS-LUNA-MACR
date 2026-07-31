@@ -30,6 +30,20 @@ from .config import (
 
 logger = logging.getLogger(__name__)
 
+# PATCH-FEEDHORIZON (round du 31/07/2026, audit F-15).
+# FF_JSON_URL pointe sur ff_calendar_thisweek.json : le flux est HEBDOMADAIRE.
+# Un vendredi, l'horizon prospectif résiduel tombe sous les ~48h alors que la
+# fenêtre WATCH du Desk Engine (v10.WATCH_MAX_H) est de 168h — un silence
+# calendaire au-delà de la fin du flux n'est donc PAS une absence de risque,
+# et le flag C7 (cohérence d'horizon) est neutralisé sans que rien ne le dise.
+# L'endpoint multi-semaines recommandé par le harnais n'existe pas chez cet
+# hébergeur (ff_calendar_nextweek.json -> HTTP 404, vérifié le 31/07/2026) :
+# le seul correctif zero-régression disponible est la VISIBILITÉ de la
+# troncature, pas un changement de flux. Doit rester synchronisé avec
+# v10.WATCH_MAX_H (même dette de duplication assumée que TIER_WINDOWS
+# ci-dessous, en attendant l'extraction en module commun).
+FF_WATCH_HORIZON_H = 168.0
+
 # P0-1 FIX (Incident Review Board, RC3): fetch_raw sent no User-Agent at all.
 # This did not cause the observed 429s (rate-limiting, not UA-blocking -- see
 # audit section3), but a bare python-requests UA is best avoided on a public
@@ -109,12 +123,12 @@ def enrich(event: Dict, event_time_ref: datetime) -> Optional[Dict]:
         t = datetime.fromisoformat(event.get("date", "").replace("Z", "+00:00"))
         if t.tzinfo is None:
             t = t.replace(tzinfo=pytz.UTC)
-            
+
         # MACRO-A2 FIX : strftime formate les composantes locales, il ne convertit pas.
         # Projection explicite en UTC AVANT tout formatage pour garantir l'exactitude
         # de l'affichage (ex: 04:45 ET devient bien 08:45 UTC et non 04:45 UTC).
         t_utc = t.astimezone(pytz.UTC)
-        
+
         h = (t - event_time_ref).total_seconds() / 3600
         ccy = event.get("country", "")
         prio = (
@@ -131,9 +145,9 @@ def enrich(event: Dict, event_time_ref: datetime) -> Optional[Dict]:
             "time_display": t_utc.strftime("%H:%M UTC"),
             "day_of_week": t_utc.strftime("%A").upper(),
             "impact": (event.get("impact") or "High").lower(),
-            "forecast": event.get("forecast", "") or "—",
-            "previous": event.get("previous", "") or "—",
-            "actual": event.get("actual", "") or "—",
+            "forecast": event.get("forecast", "") or "",
+            "previous": event.get("previous", "") or "",
+            "actual": event.get("actual", "") or "",
             "hours_until": round(h, 2),
             "hours_until_display": fmt_until(h),
             "is_upcoming": h > 0,
@@ -147,26 +161,26 @@ def enrich(event: Dict, event_time_ref: datetime) -> Optional[Dict]:
 
 
 # ---------------------------------------------------------------------------
-# PATCH-CALGATE (round du 31/07/2026) : classification tier + fenêtres
-# blackout avant/après. RÉPLIQUE EXACTE de ENGINE v10 (v10.py, SECTION 3 :
+# PATCH-CALGATE (round du 31/07/2026) : classification tier + fentres
+# blackout avant/aprs. RPLIQUE EXACTE de ENGINE v10 (v10.py, SECTION 3 :
 # _TIER_S / _TIER_A / _TIER_B / TIER_WINDOWS / classify_tier). C'est le Desk
-# Engine qui fait autorité sur cette règle (c'est lui que le comité audite
-# in fine) ; le module macro ne fait ici que la consommer à l'identique.
+# Engine qui fait autorit sur cette rgle (c'est lui que le comit audite
+# in fine) ; le module macro ne fait ici que la consommer  l'identique.
 #
-# Cause racine du bug corrigé : le module macro ne connaissait qu'un seuil
-# unique "CRITICAL si h<=6h", appliqué seulement aux événements FUTURS. Un
-# événement Tier S (ex: décision FOMC) qui vient de tomber restait donc
-# invisible pour le gating macro dès qu'il passait en h<=0 ("PAST"), alors
-# que le Desk Engine bloque la devise concernée jusqu'à 48h APRÈS l'annonce
-# (TIER_WINDOWS[S] = (4.0, 48.0)). Résultat observé le 29-30/07/2026 :
-# EUR/USD, GBP/USD, USD/CHF recommandés "CHERCHER LONG/SHORT" côté macro
-# quelques heures après la FOMC, alors que le comité les bloquait déjà en
+# Cause racine du bug corrig : le module macro ne connaissait qu'un seuil
+# unique "CRITICAL si h<=6h", appliqu seulement aux vnements FUTURS. Un
+# vnement Tier S (ex: dcision FOMC) qui vient de tomber restait donc
+# invisible pour le gating macro ds qu'il passait en h<=0 ("PAST"), alors
+# que le Desk Engine bloque la devise concerne jusqu' 48h APRS l'annonce
+# (TIER_WINDOWS[S] = (4.0, 48.0)). Rsultat observ le 29-30/07/2026 :
+# EUR/USD, GBP/USD, USD/CHF recommands "CHERCHER LONG/SHORT" ct macro
+# quelques heures aprs la FOMC, alors que le comit les bloquait dj en
 # CAL_BLACKOUT sur USD.
 #
-# IMPORTANT — dette technique assumée : ces constantes sont dupliquées
-# (macro + Desk) faute d'un package partagé entre les deux applications.
-# Toute modification de TIER_WINDOWS dans v10.py DOIT être répercutée ici à
-# l'identique, sous peine de recréer exactement le bug qu'on corrige. Ce
+# IMPORTANT  dette technique assume : ces constantes sont dupliques
+# (macro + Desk) faute d'un package partag entre les deux applications.
+# Toute modification de TIER_WINDOWS dans v10.py DOIT tre rpercute ici 
+# l'identique, sous peine de recrer exactement le bug qu'on corrige. Ce
 # commentaire fait office de garde-fou en attendant l'extraction en module
 # commun (ex: bluestar_shared.calendar_rules).
 # ---------------------------------------------------------------------------
@@ -177,7 +191,7 @@ _TIER_A = ("gdp", "pmi", "adp", "pce", "employment change", "unemployment",
            "average hourly", "retail sales", "ppi")
 _TIER_B = ("speaks", "speech", "press conference", "testifies", "testimony")
 
-# (heures_avant, heures_après) -- identique à v10.py TIER_WINDOWS.
+# (heures_avant, heures_aprs) -- identique  v10.py TIER_WINDOWS.
 TIER_WINDOWS: Dict[str, tuple] = {
     "S": (4.0, 48.0),
     "A": (2.0, 24.0),
@@ -187,9 +201,9 @@ DEFAULT_TIER_WINDOW = (2.0, 24.0)
 
 
 def classify_tier(event_name: str) -> str:
-    """Identique à v10.classify_tier -- même liste de mots-clés, même ordre
-    de priorité (S avant A avant B), pour ne jamais diverger sur un événement
-    ambigu (ex: un titre contenant à la fois 'GDP' et 'Press Conference')."""
+    """Identique  v10.classify_tier -- mme liste de mots-cls, mme ordre
+    de priorit (S avant A avant B), pour ne jamais diverger sur un vnement
+    ambigu (ex: un titre contenant  la fois 'GDP' et 'Press Conference')."""
     n = (event_name or "").lower()
     if any(k in n for k in _TIER_S):
         return "S"
@@ -201,12 +215,12 @@ def classify_tier(event_name: str) -> str:
 
 
 def is_blackout(event_name: str, hours_until: float) -> tuple:
-    """True si l'événement place sa devise en fenêtre de blackout, avant OU
-    après l'annonce -- réplique de v10.CalendarData.bucket().
+    """True si l'vnement place sa devise en fentre de blackout, avant OU
+    aprs l'annonce -- rplique de v10.CalendarData.bucket().
 
-    ``hours_until`` suit la même convention que ``enrich()`` : positif =
-    événement futur, négatif = événement déjà passé (ex: -5.0 = tombé il y a
-    5h). Retourne ``(bloqué: bool, tier: str)``.
+    ``hours_until`` suit la mme convention que ``enrich()`` : positif =
+    vnement futur, ngatif = vnement dj pass (ex: -5.0 = tomb il y a
+    5h). Retourne ``(bloqu: bool, tier: str)``.
     """
     tier = classify_tier(event_name)
     before, after = TIER_WINDOWS.get(tier, DEFAULT_TIER_WINDOW)
@@ -232,9 +246,31 @@ def build_calendar(now_utc: Optional[datetime] = None,
     if raw_data is None:
         raw_data = fetch_raw()
 
-    # MACRO-A3 FIX : .lower() rend le filtre robuste à un changement de casse
-    # du flux Forex Factory (ex: "High" vs "high"). Ne peut pas causer de régression
-    # car il élargit le périmètre de capture au lieu de le rétrécir.
+    # PATCH-FEEDHORIZON (round du 31/07/2026, audit F-15) : horizon réel
+    # du flux (TOUS impacts confondus — on mesure la couverture du flux, pas
+    # celle des seuls high-impact) publié en métadonnée + warning. Aucune
+    # décision n'est modifiée : c'est de la visibilité, pas du gating.
+    feed_end: Optional[datetime] = None
+    for _ev in raw_data:
+        try:
+            _t = datetime.fromisoformat(str(_ev.get("date", "")).replace("Z", "+00:00"))
+            if _t.tzinfo is None:
+                _t = _t.replace(tzinfo=pytz.UTC)
+            if feed_end is None or _t > feed_end:
+                feed_end = _t
+        except (ValueError, AttributeError):
+            continue
+    feed_horizon_h = ((feed_end - now_utc).total_seconds() / 3600.0) if feed_end else None
+    feed_truncated = feed_horizon_h is not None and feed_horizon_h < FF_WATCH_HORIZON_H
+    if feed_truncated:
+        logger.warning(
+            "FF feed horizon %.1fh < %.0fh — fenêtre WATCH non vérifiable au-delà "
+            "du flux hebdomadaire ; un silence calendaire n'est PAS une absence de risque",
+            feed_horizon_h, FF_WATCH_HORIZON_H)
+
+    # MACRO-A3 FIX : .lower() rend le filtre robuste  un changement de casse
+    # du flux Forex Factory (ex: "High" vs "high"). Ne peut pas causer de rgression
+    # car il largit le primtre de capture au lieu de le rtrcir.
     all_events = [
         e for ev in raw_data
         if (ev.get("impact") or "").strip().lower() == "high"
@@ -244,7 +280,7 @@ def build_calendar(now_utc: Optional[datetime] = None,
 
     daily: Dict[str, List[str]] = defaultdict(list)
     for ev in all_events:
-        daily[ev["datetime_utc"][:10]].append(f"{ev['currency']} – {ev['event_name']}")
+        daily[ev["datetime_utc"][:10]].append(f"{ev['currency']}  {ev['event_name']}")
     summary_by_day = dict(sorted(daily.items()))
 
     events_engine = [
@@ -263,6 +299,13 @@ def build_calendar(now_utc: Optional[datetime] = None,
             "critical_count": sum(1 for e in all_events if e["priority"] == "CRITICAL"),
             "engine_events_count": len(events_engine),
             "reachable": bool(raw_data),
+            # PATCH-FEEDHORIZON (audit F-15) : horizon réel du flux hebdo.
+            # Le Desk lit déjà "metadata" ; champs additifs, zéro régression
+            # (v10.CalendarData a extra="ignore" et ses propres champs
+            # feed_horizon_* alimentés par son patch §2.3-G).
+            "feed_end_utc": feed_end.astimezone(pytz.UTC).strftime("%Y-%m-%dT%H:%M:%SZ") if feed_end else None,
+            "feed_horizon_h": round(feed_horizon_h, 1) if feed_horizon_h is not None else None,
+            "feed_horizon_truncated": feed_truncated,
         },
         "events": upcoming,
         "events_engine": events_engine,
