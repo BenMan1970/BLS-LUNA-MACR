@@ -881,9 +881,27 @@ def _correlation_short(asset: str, market: MarketSnapshot) -> str:
 # Step 6 -- Asset selection
 # ---------------------------------------------------------------------------
 def _events_for_ccys(events: list[MacroEvent], ccys: tuple[str, ...],
-                     within_h: float = 72) -> list[MacroEvent]:
+                     within_h: float = 72, since_h: float = 6) -> list[MacroEvent]:
+    """``since_h`` (défaut 6, comportement historique inchangé) borne la
+    fenêtre rétrospective utilisée pour le scoring/l'affichage (catalyst_pen,
+    ev_names) -- INCHANGÉ, zero-régression sur ces deux usages.
+
+    PATCH-CALGATE-F2 (round de validation zero-régression, 31/07/2026) :
+    le SEUL appelant qui a besoin d'une fenêtre plus large est le gating de
+    blackout (``is_blackout`` couvre jusqu'à -48h pour un event Tier S,
+    cf. ``TIER_WINDOWS`` dans calendar_layer.py). Avant ce correctif,
+    ``select_priority_assets`` appelait cette fonction UNE SEULE fois avec
+    ``since_h`` implicitement fixé à 6, et réutilisait le résultat tronqué à
+    la fois pour le scoring ET pour le blackout -- un event Tier S tombé
+    entre -48h et -6h était donc invisible pour ``is_blackout`` avant même
+    d'être évalué, quelle que soit la justesse de ``is_blackout`` lui-même.
+    C'est la cause racine F2 / C-1 (contradiction Macro/Desk du 31/07/2026 :
+    NZD/USD, USD/CHF, AUD/USD recommandés côté macro alors que le Desk les
+    bloquait en CAL_BLACKOUT sur la jambe USD). Le correctif ajoute un
+    second appel, à fenêtre large, dédié exclusivement au gating -- voir
+    ``select_priority_assets`` ci-dessous."""
     return [e for e in events
-            if e.currency in ccys and -6 <= e.hours_until <= within_h]
+            if e.currency in ccys and -since_h <= e.hours_until <= within_h]
 
 
 def _strength_map(cs: list[CurrencyStrength]) -> dict[str, int]:
@@ -966,14 +984,41 @@ def _apply_correlation_guard(
             break
         ccys_set = set(C.INSTRUMENT_CCYS.get(setup.asset, ()))
         overlap = ccys_set & selected_ccys
-        if overlap and len(priority) > 0 and len(overlap) >= 2:
+        # PATCH-CORRGUARD-F3 (round de validation zero-régression, 31/07/2026) :
+        # l'ancien seuil `len(overlap) >= 2` ne peut structurellement jamais
+        # se déclencher pour deux instruments FX à 2 jambes distincts -- le
+        # chevauchement maximal entre deux paires différentes est de 1 devise
+        # (2 devises communes signifierait la même paire). Confirmé par
+        # l'audit (F3) : les 3 "actifs prioritaires" du 31/07/2026
+        # (NZD/USD, USD/CHF, AUD/USD) partageaient tous la jambe USD sans que
+        # le garde-fou ne s'en aperçoive jamais -- une seule thèse USD
+        # triplée. Seuil correct : >=1 devise commune, seul seuil qui peut
+        # matériellement se déclencher pour des paires à 2 jambes.
+        if overlap and len(priority) > 0:
             continue
         priority.append(setup)
         selected_ccys.update(ccys_set)
     # Relax guard if too aggressive
-    if len(priority) < min(2, C.MAX_PRIORITY_ASSETS):
+    #
+    # PATCH-CORRGUARD-F3 (suite) : ce repli avait un SECOND défaut, distinct
+    # du seuil ci-dessus et découvert en testant le correctif sur le
+    # scénario réel (NZD/USD, USD/CHF, AUD/USD, jambe USD commune) : la
+    # condition d'entrée teste `len(priority) < min(2, MAX_PRIORITY_ASSETS)`
+    # (le PLANCHER, 2), mais la boucle interne s'arrêtait sur
+    # `len(priority) >= C.MAX_PRIORITY_ASSETS` (le PLAFOND, 3) -- elle
+    # re-remplissait donc systématiquement jusqu'à 3, sans se soucier de
+    # l'overlap, annulant intégralement le correctif ci-dessus dès que le
+    # passage strict ne retenait qu'1 actif (exactement le cas du
+    # 31/07/2026 : la passe stricte ne retient que NZD/USD, puis ce repli
+    # rajoutait USD/CHF ET AUD/USD sans aucun contrôle). Correctif : la
+    # boucle de repli s'arrête au même plancher que la condition qui la
+    # déclenche -- au maximum 1 actif corrélé est réintroduit pour éviter un
+    # rapport vide un jour calme, jamais 2. Zero-régression sur tout jour où
+    # le passage strict atteint déjà >=2 actifs (ce bloc ne s'exécute pas).
+    floor = min(2, C.MAX_PRIORITY_ASSETS)
+    if len(priority) < floor:
         for _score, setup in scored:
-            if len(priority) >= C.MAX_PRIORITY_ASSETS:
+            if len(priority) >= floor:
                 break
             if setup not in priority:
                 priority.append(setup)
@@ -1012,8 +1057,17 @@ def select_priority_assets(
         # -- exactement la même règle que le Desk Engine (v10.TIER_WINDOWS),
         # au lieu d'un seuil macro isolé. Voir calendar_layer.is_blackout
         # pour la justification complète et le rappel de synchronisation.
+        #
+        # PATCH-CALGATE-F2 (round de validation zero-régression, 31/07/2026) :
+        # is_blackout() a besoin de voir les events jusqu'à -48h (Tier S),
+        # mais `ev` ci-dessus reste borné à -6h (inchangé, il alimente aussi
+        # le scoring/l'affichage -- zero-régression sur ces usages). D'où un
+        # second appel, à fenêtre rétrospective large (=within_h, 72h,
+        # strictement suffisante puisque le plus grand TIER_WINDOWS "après"
+        # est 48h), dédié exclusivement au gating de blackout.
+        blackout_ev = _events_for_ccys(events, ccys, since_h=72) if ccys else []
         blackout_hits = [
-            (e, *cal.is_blackout(e.event_name, e.hours_until)) for e in ev
+            (e, *cal.is_blackout(e.event_name, e.hours_until)) for e in blackout_ev
         ]
         blackout_hits = [(e, tier) for e, blocked, tier in blackout_hits if blocked]
 
@@ -1152,7 +1206,25 @@ def _compute_rr_ratio(p: float, stop, sell, direction: int, atr) -> str:
         risk, reward = stop - sell, sell - buy
     if risk <= 0:
         return "[N/A]"
-    return f"1:{fr_num(reward / risk, 1)}"
+    # PATCH-RRFLAG-F4 (round de validation zero-régression, 31/07/2026) :
+    # ce ratio est une CONSTANTE mathématique par construction --
+    # 2*LEVEL_ATR_MULT/(STOP_ATR_MULT-LEVEL_ATR_MULT) -- puisque buy, sell
+    # et stop sont tous des multiples symétriques d'ATR autour du même prix
+    # (cf. _build_setup_levels). Reward = sell-buy = 2*L*atr, Risk =
+    # (S-L)*atr quel que soit l'actif, la direction ou le jour : confirmé
+    # par reconstruction algébrique (audit F4). Ce n'est PAS une régression
+    # de calcul introduite ici -- corriger le CHIFFRE exigerait une vraie
+    # cible technique (S/R réelle), donnée absente de ce module (le Desk
+    # Engine en dispose, pas le Macro). Faute de cette donnée, fabriquer un
+    # chiffre différent inventerait une précision que le module n'a pas --
+    # contraire à la doctrine du projet ("[N/A]" plutôt qu'un placeholder,
+    # cf. positioning/IPS ci-dessus). Correctif appliqué : rendre la nature
+    # structurelle du ratio visible au lecteur du rapport plutôt que de le
+    # laisser croire à une mesure de risque différenciée par actif. Un vrai
+    # correctif numérique est listé en dette (V-7 de l'audit forensic :
+    # remplacement par de vrais niveaux techniques) et suppose un accès à
+    # une cible réelle, non disponible dans le corpus fourni.
+    return f"1:{fr_num(reward / risk, 1)} [structurel — construction ATR symétrique, non un objectif technique]"
 
 
 def _build_setup(asset: str, direction: int, score: float, market: MarketSnapshot,
