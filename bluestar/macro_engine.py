@@ -1072,13 +1072,26 @@ def select_priority_assets(
         blackout_hits = [(e, tier) for e, blocked, tier in blackout_hits if blocked]
 
         if blackout_hits:
-            e0, tier0 = blackout_hits[0]
-            ename = e0.event_name or "événement majeur"
-            if e0.hours_until >= 0:
-                reason = f"News binaire imminente ({ename}, tier {tier0}) — attendre la publication."
-            else:
-                reason = (f"Blackout post-événement en cours ({ename}, tier {tier0}, "
-                          f"tombé il y a {abs(e0.hours_until):.1f}h) — risque résiduel non purgé.")
+            # PATCH-C10 (round du 31/07/2026, audit C-10) : n'afficher que
+            # blackout_hits[0] masquait le DOUBLE blackout d'USD/CAD ce
+            # cycle — jambe USD (FOMC, tier S, −40,6h) ET jambe CAD (GDP,
+            # tier A, +1,9h). Les événements futurs triant avant les passés,
+            # le Macro n'exposait que le CAD ; le Desk, sur un snapshot plus
+            # ancien, ne voyait que l'USD. Chaque couche énonçait une vérité
+            # partielle DIFFÉRENTE sur le même actif, sans qu'aucune ne soit
+            # fausse — le pire cas d'incohérence inter-couches, parce
+            # qu'aucune réconciliation n'était possible côté lecteur.
+            # Le cas mono-hit (très majoritaire) produit une chaîne
+            # octet-pour-octet identique à avant ce patch.
+            parts = []
+            for e, tier in blackout_hits:
+                ename = e.event_name or "événement majeur"
+                if e.hours_until >= 0:
+                    parts.append(f"News binaire imminente ({ename}, tier {tier}) — attendre la publication.")
+                else:
+                    parts.append(f"Blackout post-événement en cours ({ename}, tier {tier}, "
+                                 f"tombé il y a {abs(e.hours_until):.1f}h) — risque résiduel non purgé.")
+            reason = " + ".join(parts)
             avoid.append((asset, reason))
             continue
 
