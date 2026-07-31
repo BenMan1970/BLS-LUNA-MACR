@@ -81,6 +81,8 @@ from typing import Optional
 
 import requests
 
+from .snapshot import capture as _snapshot_capture  # F-16/B-3 (audit 31/07/2026)
+
 logger = logging.getLogger(__name__)
 
 # Optional Streamlit secrets access (mirrors oanda_data.py degradation pattern).
@@ -123,6 +125,12 @@ def _get(url: str, extra_headers: dict | None = None,
     try:
         r = requests.get(url, headers=headers, timeout=_TIMEOUT, **kwargs)
         r.raise_for_status()
+        # F-16/B-3 (audit 31/07/2026) : capture passive et horodatée du corps
+        # brut -- ne modifie ni ne peut faire échouer le retour existant
+        # (snapshot.capture est fail-silent par construction, cf. son
+        # docstring). Couvre en un seul point tous les appelants de _get()
+        # (FRED, FedWatch, CFTC, GDPNow).
+        _snapshot_capture(url, r.text, url=url)
         return r
     except requests.RequestException as exc:
         logger.warning("HTTP GET failed for %s: %s", url, exc)
@@ -602,6 +610,7 @@ def _boe_bank_rate() -> Optional[tuple[float, str]]:
         r = requests.get(_BOE_IADB_URL, params=params, timeout=15,
                          headers=_BOE_HEADERS)
         r.raise_for_status()
+        _snapshot_capture("BoE_IADB", r.text, url=_BOE_IADB_URL)  # F-16/B-3
     except requests.RequestException as exc:
         logger.warning("BoE IADB fetch failed: %s", exc)
         return None
@@ -671,6 +680,7 @@ def _boe_bank_rate_scrape() -> Optional[tuple[float, str]]:
     try:
         r = requests.get(_BOE_BANK_RATE_URL, timeout=15, headers=_BOE_HEADERS)
         r.raise_for_status()
+        _snapshot_capture("BoE_BankRate", r.text, url=_BOE_BANK_RATE_URL)  # F-16/B-3
     except requests.RequestException as exc:
         logger.warning("BoE Bank-Rate.asp fetch failed: %s", exc)
         return None
