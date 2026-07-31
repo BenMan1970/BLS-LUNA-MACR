@@ -16,6 +16,7 @@ import re
 from datetime import datetime
 from typing import Optional
 
+from . import calendar_layer as cal
 from . import config as C
 from .config import TZ_UTC
 from .models import (
@@ -1006,11 +1007,25 @@ def select_priority_assets(
 
         ccys = C.INSTRUMENT_CCYS.get(asset)
         ev = _events_for_ccys(events, ccys) if ccys else []
-        critical_now = [e for e in ev if e.priority == "CRITICAL"]
+        # PATCH-CALGATE (31/07/2026) : critical_now (h<=6h, futur seulement)
+        # remplacé par is_blackout, qui couvre AUSSI la fenêtre post-événement
+        # -- exactement la même règle que le Desk Engine (v10.TIER_WINDOWS),
+        # au lieu d'un seuil macro isolé. Voir calendar_layer.is_blackout
+        # pour la justification complète et le rappel de synchronisation.
+        blackout_hits = [
+            (e, *cal.is_blackout(e.event_name, e.hours_until)) for e in ev
+        ]
+        blackout_hits = [(e, tier) for e, blocked, tier in blackout_hits if blocked]
 
-        if critical_now:
-            ename = critical_now[0].event_name or "événement majeur"
-            avoid.append((asset, f"News binaire imminente ({ename}) — attendre la publication."))
+        if blackout_hits:
+            e0, tier0 = blackout_hits[0]
+            ename = e0.event_name or "événement majeur"
+            if e0.hours_until >= 0:
+                reason = f"News binaire imminente ({ename}, tier {tier0}) — attendre la publication."
+            else:
+                reason = (f"Blackout post-événement en cours ({ename}, tier {tier0}, "
+                          f"tombé il y a {abs(e0.hours_until):.1f}h) — risque résiduel non purgé.")
+            avoid.append((asset, reason))
             continue
 
         direction, edge, strength_is_live = _compute_direction_edge(
