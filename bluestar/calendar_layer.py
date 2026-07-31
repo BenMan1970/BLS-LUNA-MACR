@@ -146,6 +146,73 @@ def enrich(event: Dict, event_time_ref: datetime) -> Optional[Dict]:
         return None
 
 
+# ---------------------------------------------------------------------------
+# PATCH-CALGATE (round du 31/07/2026) : classification tier + fenêtres
+# blackout avant/après. RÉPLIQUE EXACTE de ENGINE v10 (v10.py, SECTION 3 :
+# _TIER_S / _TIER_A / _TIER_B / TIER_WINDOWS / classify_tier). C'est le Desk
+# Engine qui fait autorité sur cette règle (c'est lui que le comité audite
+# in fine) ; le module macro ne fait ici que la consommer à l'identique.
+#
+# Cause racine du bug corrigé : le module macro ne connaissait qu'un seuil
+# unique "CRITICAL si h<=6h", appliqué seulement aux événements FUTURS. Un
+# événement Tier S (ex: décision FOMC) qui vient de tomber restait donc
+# invisible pour le gating macro dès qu'il passait en h<=0 ("PAST"), alors
+# que le Desk Engine bloque la devise concernée jusqu'à 48h APRÈS l'annonce
+# (TIER_WINDOWS[S] = (4.0, 48.0)). Résultat observé le 29-30/07/2026 :
+# EUR/USD, GBP/USD, USD/CHF recommandés "CHERCHER LONG/SHORT" côté macro
+# quelques heures après la FOMC, alors que le comité les bloquait déjà en
+# CAL_BLACKOUT sur USD.
+#
+# IMPORTANT — dette technique assumée : ces constantes sont dupliquées
+# (macro + Desk) faute d'un package partagé entre les deux applications.
+# Toute modification de TIER_WINDOWS dans v10.py DOIT être répercutée ici à
+# l'identique, sous peine de recréer exactement le bug qu'on corrige. Ce
+# commentaire fait office de garde-fou en attendant l'extraction en module
+# commun (ex: bluestar_shared.calendar_rules).
+# ---------------------------------------------------------------------------
+_TIER_S = ("non-farm", "nonfarm", "nfp", "fomc", "cpi", "cash rate",
+           "bank rate", "rate statement", "interest rate", "monetary policy",
+           "funds rate", "policy rate")
+_TIER_A = ("gdp", "pmi", "adp", "pce", "employment change", "unemployment",
+           "average hourly", "retail sales", "ppi")
+_TIER_B = ("speaks", "speech", "press conference", "testifies", "testimony")
+
+# (heures_avant, heures_après) -- identique à v10.py TIER_WINDOWS.
+TIER_WINDOWS: Dict[str, tuple] = {
+    "S": (4.0, 48.0),
+    "A": (2.0, 24.0),
+    "B": (1.0, 6.0),
+}
+DEFAULT_TIER_WINDOW = (2.0, 24.0)
+
+
+def classify_tier(event_name: str) -> str:
+    """Identique à v10.classify_tier -- même liste de mots-clés, même ordre
+    de priorité (S avant A avant B), pour ne jamais diverger sur un événement
+    ambigu (ex: un titre contenant à la fois 'GDP' et 'Press Conference')."""
+    n = (event_name or "").lower()
+    if any(k in n for k in _TIER_S):
+        return "S"
+    if any(k in n for k in _TIER_A):
+        return "A"
+    if any(k in n for k in _TIER_B):
+        return "B"
+    return "NONE"
+
+
+def is_blackout(event_name: str, hours_until: float) -> tuple:
+    """True si l'événement place sa devise en fenêtre de blackout, avant OU
+    après l'annonce -- réplique de v10.CalendarData.bucket().
+
+    ``hours_until`` suit la même convention que ``enrich()`` : positif =
+    événement futur, négatif = événement déjà passé (ex: -5.0 = tombé il y a
+    5h). Retourne ``(bloqué: bool, tier: str)``.
+    """
+    tier = classify_tier(event_name)
+    before, after = TIER_WINDOWS.get(tier, DEFAULT_TIER_WINDOW)
+    return (-after <= hours_until <= before), tier
+
+
 def build_calendar(now_utc: Optional[datetime] = None,
                    raw_data: Optional[List[Dict]] = None) -> Dict:
     """Build the canonical calendar payload.
