@@ -539,7 +539,7 @@ def _render_section5(ctx: BriefingContext) -> str:
       </div>
       <div class="risk-bear">
         <div class="risk-ttl">📉 {_e(ctx.bear.title)} — {_e(ctx.bear.proba)}</div>
-        <div class="risk-proba">Déclencheur ancré : {_e(ctx.bear.trigger)} {_e(ctx.bear.trigger_source)}</div>
+        <div class="risk-proba">Déclencheur ancré : {_e(ctx.bear.trigger)} {_e(ctx.bull.trigger_source)}</div>
         {bear_rows}
       </div>
     </div>
@@ -797,6 +797,16 @@ def _render_data_integrity_footer(ctx: BriefingContext) -> str:
     for f in report.fields:
         seen_fields.setdefault(f.field_name, f)
 
+    # PATCH-C09 (round du 31/07/2026, audit C-09) : le résumé de couverture
+    # (summary_line) compte tous les slots de suivi (ex: WTI tracked comme
+    # jauge ET prix = 2 slots), mais la table de détail dédoublonne les noms
+    # de champs pour la lisibilité. La divergence visuelle (ex: 25 slots vs
+    # 22 lignes) est explicitée pour éviter une contradiction apparente.
+    summary_txt = report.summary_line()
+    dedup_count = len(report.fields) - len(seen_fields)
+    if dedup_count > 0:
+        summary_txt += f" (dont {dedup_count} champ(s) à usage multiple, déduits de la table ci-dessous)"
+
     freshness_rows = "".join(
         f'<tr><td>{_e(f.field_name)}</td><td>{_e(f.reliability.value)}</td>'
         f'<td>{_e(f.freshness.value)}</td>'
@@ -817,7 +827,7 @@ def _render_data_integrity_footer(ctx: BriefingContext) -> str:
         '<div class="section" style="font-size:11px">'
         '<div class="sec-hdr"><div class="sec-ttl">Intégrité des données</div></div>'
         '<div class="sec-body">'
-        f'<div>{_e(report.summary_line())}</div>'
+        f'<div>{_e(summary_txt)}</div>'
         + (f'<div style="margin-top:2px">{_e(stale_txt)}</div>' if stale_txt else '')
         + f'<div style="margin-top:6px"><b>Validation</b></div>{issues_html}'
         + f'<div style="margin-top:6px"><b>Fraîcheur par champ</b></div>{freshness_table}'
@@ -853,8 +863,12 @@ def render_html(ctx: BriefingContext) -> str:
     # alors que le système est en v10 (macro_engine.py, BLUESTAR-PATCH v10.0).
     # Le header « v8.1 » vit dans templates/scaffold_header.html (à bumper
     # séparément — le template n'est pas modifié ici).
+    # PATCH-C08BIS (round du 31/07/2026, audit F-11/C-08) : le footer affichait
+    # "CET" en littéral toute l'année, alors que l'heure affichée est l'heure
+    # de Paris (CEST en été). Symétrique au patch SourceStamp dans models.py.
+    tz_label = ctx.generated_cet.tzname() or "CET"
     footer = (f'<div class="footer">CONFIDENTIEL — BLUESTAR SYSTEM · FX INSTITUTIONAL DESK · '
               f'Macro_Briefing_v10_{ctx.generated_cet:%d-%m-%Y}.pdf · '
-              f'{fr_date(ctx.generated_cet)} {ctx.generated_cet:%H:%M} CET</div>')
+              f'{fr_date(ctx.generated_cet)} {ctx.generated_cet:%H:%M} {tz_label}</div>')
 
     return head + "\n" + header + "\n" + body + "\n" + footer + "\n</div><!-- /page -->\n</body>\n</html>"
