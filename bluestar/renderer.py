@@ -338,11 +338,17 @@ def _kpi_sub(datum, flat_label: str) -> str:
 def _render_section3(ctx: BriefingContext) -> str:
     m = ctx.market
     g = m.gauge
+    
+    # PATCH-US10Y : évite le double pourcentage "4.68%%" si le display contient déjà "%"
+    us10y_val = g("US10Y").display
+    if g("US10Y").available and "%" not in us10y_val:
+        us10y_val += "%"
+
     kpis = "".join([
         _kpi("VIX", g("VIX").display, _kpi_sub(g("VIX"), "tendance stable"), "amber"),
         _kpi("MOVE Index", g("MOVE").display, _kpi_sub(g("MOVE"), "calme"), "blue"),
         _kpi("DXY", g("DXY").display, _kpi_sub(g("DXY"), "stable"), "green"),
-        _kpi("US10Y", (g("US10Y").display + "%") if g("US10Y").available else "N/A",
+        _kpi("US10Y", us10y_val if g("US10Y").available else "N/A",
              _kpi_sub(g("US10Y"), "stable"), "amber"),
         _kpi("Or XAU", g("XAU/USD").display, _kpi_sub(g("XAU/USD"), "stable"), "amber"),
         _kpi("GDP Nowcast", g("GDP_NOWCAST").display,
@@ -539,7 +545,7 @@ def _render_section5(ctx: BriefingContext) -> str:
       </div>
       <div class="risk-bear">
         <div class="risk-ttl">📉 {_e(ctx.bear.title)} — {_e(ctx.bear.proba)}</div>
-        <div class="risk-proba">Déclencheur ancré : {_e(ctx.bear.trigger)} {_e(ctx.bull.trigger_source)}</div>
+        <div class="risk-proba">Déclencheur ancré : {_e(ctx.bear.trigger)} {_e(ctx.bear.trigger_source)}</div>
         {bear_rows}
       </div>
     </div>
@@ -840,11 +846,18 @@ def render_html(ctx: BriefingContext) -> str:
     head = _load("scaffold_head.html").replace("{{DATE}}", fr_date(ctx.generated_cet))
     header = _load("scaffold_header.html")
     label, _ = session_label(ctx.generated_cet)
+    
+    # PATCH-C08-HEADER (audit F-11/C-08) : le template HTML statique contient 
+    # le littéral "CET" en dur. On le remplace dynamiquement par l'étiquette 
+    # réelle (CET/CEST) calculée à partir du timestamp, pour assurer la 
+    # cohérence avec le footer et les stamps dynamiques.
+    tz_label = ctx.generated_cet.tzname() or "CET"
     header = (header
               .replace("{{JOUR}}", fr_day_name(ctx.generated_cet))
               .replace("{{DATE}}", fr_date(ctx.generated_cet))
               .replace("{{HEURE}}", f"{ctx.generated_cet:%H:%M}")
-              .replace("{{SESSION_LABEL}}", label))
+              .replace("{{SESSION_LABEL}}", label)
+              .replace(" CET", f" {tz_label}"))
 
     body = (
         '<div class="wrap">'
@@ -866,7 +879,6 @@ def render_html(ctx: BriefingContext) -> str:
     # PATCH-C08BIS (round du 31/07/2026, audit F-11/C-08) : le footer affichait
     # "CET" en littéral toute l'année, alors que l'heure affichée est l'heure
     # de Paris (CEST en été). Symétrique au patch SourceStamp dans models.py.
-    tz_label = ctx.generated_cet.tzname() or "CET"
     footer = (f'<div class="footer">CONFIDENTIEL — BLUESTAR SYSTEM · FX INSTITUTIONAL DESK · '
               f'Macro_Briefing_v10_{ctx.generated_cet:%d-%m-%Y}.pdf · '
               f'{fr_date(ctx.generated_cet)} {ctx.generated_cet:%H:%M} {tz_label}</div>')
