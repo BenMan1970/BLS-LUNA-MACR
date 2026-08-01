@@ -278,31 +278,16 @@ def build_central_bank_context(overrides: Optional[dict],
          are now swapped for the *rate* specifically.
       2. User override (``overrides['central_banks'][name]['rate']``) —
          fallback when FRED has no value for that bank.
-      3. ``fact`` stays override-only: FRED only supplies a numeric rate,
-         not the qualitative FAIT write-up, so there is nothing live to
-         prefer for that field. Empty string when no override supplies it
-         (never a fabricated "[N/A] — ..." literal) — AUDIT-FIX
-         (01/08/2026): closes the loop on renderer._cb_biais_block's
-         23/07/2026 fix, which was already omitting the entire "FAIT ·"
-         line whenever ``cb.fact`` is falsy — that renderer-side fix was
-         written on the assumption that this function returned ``""`` in
-         that case. It never did; it still returned the literal
-         "[N/A] — taux/probabilité non sourcés sans clé API." string,
-         which is truthy, so the "FAIT ·" line kept rendering on every
-         central-bank card, every run, regardless of any other fix
-         (FRED/BoE/VIX all live) — reproduced and confirmed unchanged
-         across the 25/07, 31/07 and 01/08 briefings. No fabricated
-         placeholder text is synthesized here anymore; the renderer's
-         existing "omit if falsy" branch now finally fires as originally
-         intended. ``next`` stays override-first, separately, unchanged
-         (see below).
-      4. ``bias`` is override-first too, but now falls back to a
+      3. ``fact`` / ``next`` stay override-first: FRED only supplies a
+         numeric rate, not the qualitative FAIT write-up or a guaranteed
+         next-meeting date, so there is nothing live to prefer for those two.
+         ``bias`` is override-first too, but now falls back to a
          rate-derived hawkish/dovish/neutral tag (``_derive_bias_from_rate``,
          audit fix 23/07/2026 — synergy gap #1) instead of a static
          "[N/A]" before reaching the final [N/A] floor.
-      5. CME FedWatch (``fetch_fedwatch_probabilities``) — fills the Fed's
+      4. CME FedWatch (``fetch_fedwatch_probabilities``) — fills the Fed's
          pause/cut/hike when the override omits them (unchanged).
-      6. Otherwise [N/A] — never invented.
+      5. Otherwise [N/A] — never invented.
     """
     cb_over = (overrides or {}).get("central_banks", {})
 
@@ -331,13 +316,7 @@ def build_central_bank_context(overrides: Optional[dict],
         if rate is None:
             rate = "[N/A]"
 
-        # AUDIT-FIX (01/08/2026): no more fabricated "[N/A] — taux/
-        # probabilité non sourcés sans clé API." literal. Override-only
-        # field; empty string when absent, so renderer._cb_biais_block's
-        # existing "if cb.fact:" guard (in place since 23/07/2026) actually
-        # omits the "FAIT ·" line as it was always meant to. Never
-        # invented — see the sourcing-precedence docstring above (point 3).
-        fact = o.get("fact", "")
+        fact = o.get("fact") or "[N/A] — taux/probabilité non sourcés sans clé API."
         # Precedence: manual override (nuanced human read) > rate-derived
         # fallback (live_val only — never derived from an override-supplied
         # rate, to avoid circularity) > [N/A]. See _derive_bias_from_rate.
@@ -1681,7 +1660,7 @@ def build_context(
         liquidity_msg = "[N/A] — spread SOFR−EFFR non sourcé."
 
     overlay = build_macro_overlay(market, headline_regime_name, upcoming, liquidity_msg, pc_data, ips=ips)
-
+    
     # MACRO-B3 FIX: le suffixe [PROXY · scaling linéaire] apparaît dès qu'un chemin
     # heuristique (overrides/scrape) alimente l'IPS. "OBSERVÉ" nu est réservé
     # au chemin z-score/percentile réel (institutional/Socrata).
@@ -1708,7 +1687,7 @@ def build_context(
         market, regime_cls, central_banks, cs, ips, events, mode,
         allow_proxy_levels, cot_label=cot_date,
     )
-
+    
     # AUDIT-FIX (17/07/2026, anomalie A3 de l'audit externe du 16/07):
     # build_risk_scenarios recevait `events` (tous les événements enrichis,
     # passés inclus), donc anchor = events[0] pouvait être un catalyseur DÉJÀ
