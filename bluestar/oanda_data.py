@@ -38,7 +38,6 @@ from .config import YF_TICKERS, MARKET_FETCH_MAX_WORKERS
 from .models import Datum, Reliability, SourceStamp, MarketSnapshot, na_stamp
 from .external_sources import fetch_gdp_nowcast, fetch_vix_fred, fetch_us10y_fred, fetch_oil_fred
 from .credentials import oanda_creds
-from .snapshot import capture as _snapshot_capture  # F-16/B-3 (audit 31/07/2026)
 
 # Institutional Intelligence layer (best-effort; zero-regression if absent).
 try:
@@ -190,7 +189,6 @@ def _fetch_frankfurter(key: str) -> Optional[tuple[float, str]]:
         resp = requests.get(_FRANKFURTER_URL, params={"base": "USD"}, timeout=_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
-        _snapshot_capture("Frankfurter", data, url=_FRANKFURTER_URL)  # F-16/B-3
         rates = data.get("rates", {})
         val = formula(rates)
         if val is None:
@@ -357,7 +355,6 @@ def _oanda_candles(
                              timeout=_TIMEOUT)
             r.raise_for_status()
             data = r.json()
-            _snapshot_capture(f"Oanda_candles_{instrument}", data, url=url)  # F-16/B-3
             candles = [c for c in data.get("candles", []) if c.get("complete")]
             # Include the last incomplete candle as the current price bar.
             incomplete = [c for c in data.get("candles", [])
@@ -396,9 +393,7 @@ def _oanda_price(instrument: str, api_key: str) -> Optional[float]:
     try:
         r = requests.get(url, headers=headers, params=params, timeout=_TIMEOUT)
         r.raise_for_status()
-        _payload = r.json()
-        _snapshot_capture(f"Oanda_price_{instrument}", _payload, url=url)  # F-16/B-3
-        candles = _payload.get("candles", [])
+        candles = r.json().get("candles", [])
         if candles:
             mid = candles[-1].get("mid", {})
             return float(mid.get("c", 0)) or None
