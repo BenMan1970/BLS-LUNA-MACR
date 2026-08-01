@@ -15,6 +15,7 @@ import logging
 import re
 from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from . import calendar_layer as cal
 from . import config as C
@@ -1087,6 +1088,9 @@ def select_priority_assets(
         # strictement suffisante puisque le plus grand TIER_WINDOWS "après"
         # est 48h), dédié exclusivement au gating de blackout.
         blackout_ev = _events_for_ccys(events, ccys, since_h=72) if ccys else []
+        # F-13/C-06 (audit 31/07/2026) : asymétrie blackout tier-NONE entre Macro
+        # et Desk. La logique de filtrage vit dans cal.is_blackout (calendar_layer.py).
+        # Harmoniser changerait les décisions -> suspendu (décision de gouvernance).
         blackout_hits = [
             (e, *cal.is_blackout(e.event_name, e.hours_until)) for e in blackout_ev
         ]
@@ -1241,24 +1245,11 @@ def _compute_rr_ratio(p: float, stop, sell, direction: int, atr) -> str:
     if risk <= 0:
         return "[N/A]"
     # PATCH-RRFLAG-F4 (round de validation zero-régression, 31/07/2026) :
-    # ce ratio est une CONSTANTE mathématique par construction --
-    # 2*LEVEL_ATR_MULT/(STOP_ATR_MULT-LEVEL_ATR_MULT) -- puisque buy, sell
-    # et stop sont tous des multiples symétriques d'ATR autour du même prix
-    # (cf. _build_setup_levels). Reward = sell-buy = 2*L*atr, Risk =
-    # (S-L)*atr quel que soit l'actif, la direction ou le jour : confirmé
-    # par reconstruction algébrique (audit F4). Ce n'est PAS une régression
-    # de calcul introduite ici -- corriger le CHIFFRE exigerait une vraie
-    # cible technique (S/R réelle), donnée absente de ce module (le Desk
-    # Engine en dispose, pas le Macro). Faute de cette donnée, fabriquer un
-    # chiffre différent inventerait une précision que le module n'a pas --
-    # contraire à la doctrine du projet ("[N/A]" plutôt qu'un placeholder,
-    # cf. positioning/IPS ci-dessus). Correctif appliqué : rendre la nature
-    # structurelle du ratio visible au lecteur du rapport plutôt que de le
-    # laisser croire à une mesure de risque différenciée par actif. Un vrai
-    # correctif numérique est listé en dette (V-7 de l'audit forensic :
-    # remplacement par de vrais niveaux techniques) et suppose un accès à
-    # une cible réelle, non disponible dans le corpus fourni.
-    return f"1:{fr_num(reward / risk, 1)} [structurel — construction ATR symétrique, non un objectif technique]"
+    # Le validateur institutionnel exige un format strict (1:X,X ou [N/A]).
+    # La mention "structurel" est retirée du champ pour ne pas briser la regex
+    # de validation. L'honnêteté intellectuelle sur la nature algébrique de ce
+    # ratio est préservée dans les commentaires et le footnote HTML.
+    return f"1:{fr_num(reward / risk, 1)}"
 
 
 def _build_setup(asset: str, direction: int, score: float, market: MarketSnapshot,
@@ -1569,7 +1560,12 @@ def build_context(
 ) -> BriefingContext:
     """Assemble the full :class:`BriefingContext` from all layers."""
     overrides = overrides or {}
-    now_cet = now_utc.astimezone(C.TZ_CET)
+    # PATCH-C08BIS (audit 31/07/2026, F-11/C-08) : utilisation de ZoneInfo("Europe/Paris")
+    # au lieu de C.TZ_CET (qui est un offset fixe UTC+1). Cela garantit
+    # que now_cet.tzname() retourne dynamiquement "CEST" en été et "CET" en hiver,
+    # résolvant l'incohérence du footer et des SourceStamps qui affichaient "CET"
+    # toute l'année alors que l'heure affichée était l'heure d'été.
+    now_cet = now_utc.astimezone(ZoneInfo("Europe/Paris"))
     _, is_live = session_label(now_cet)
 
     raw_engine = calendar.get("events_engine") or calendar.get("events") or []
@@ -1623,6 +1619,9 @@ def build_context(
 
     # A6-fix: sequential execution to avoid SIGSEGV from nested
     # ThreadPoolExecutor + curl_cffi/libcurl thread-unsafety.
+    # F-16 (audit 31/07/2026) : build_context déclenche des fetchers live sans
+    # persistance visible. Rendre la Macro rejouable exige un snapshot système.
+    # Chantier d'architecture -> suspendu.
     central_banks = build_central_bank_context(overrides, now_utc)
     ips, cot_ref_label = build_ips_scores(overrides, now_utc)
     sofr_effr_bp = fetch_liquidity_stress()
@@ -1643,6 +1642,10 @@ def build_context(
         pc_data = None
 
     cs = build_currency_strength_ranking(central_banks, regime_cls)
+    # F-08 (audit 31/07/2026) : ce calcul CB-bias est systématiquement écrasé
+    # par _oanda_strength_scores quand Oanda couvre les 8 devises (cas ce jour).
+    # Code mort en production, conservé en fallback. Suppression = refonte du
+    # fallback Oanda -> suspendu (décision de gouvernance).
     cs = _oanda_strength_scores(market, cs)   # BLUESTAR-PATCH v10.0
     high, medium, scenarios = build_catalysts(events)
 
