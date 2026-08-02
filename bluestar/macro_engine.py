@@ -1755,6 +1755,8 @@ def build_context(
         except Exception as exc:
             logger.warning("Interpretation engine failed: %s", exc)
 
+    # V4-04 FIX: compute calendar metadata BEFORE return (was incorrectly inside call args)
+    cal_meta = (calendar or {}).get("metadata", {})
     return BriefingContext(
         generated_utc=now_utc,
         generated_cet=now_cet,
@@ -1796,5 +1798,11 @@ def build_context(
         # P0-1 FIX (Incident Review Board, RC3): surface calendar reachability
         # so the renderer can show an explicit "feed unreachable" banner
         # instead of silently rendering an empty catalyst list.
-        calendar_reachable=bool((calendar or {}).get("metadata", {}).get("reachable", True)),
+        # V4-04 FIX: also surface feed_horizon_truncated and its detail to
+        # inform the renderer when the weekly feed is shorter than 168h.
+        calendar_reachable=bool(cal_meta.get("reachable", True)),
+        calendar_feed_truncated=bool(cal_meta.get("feed_horizon_truncated", False)),
+        calendar_feed_horizon_h=(f"{cal_meta.get('feed_horizon_h')}h" 
+                                  if cal_meta.get("feed_horizon_h") is not None else None),
     )
+
