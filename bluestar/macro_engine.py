@@ -967,8 +967,31 @@ def _compute_direction_edge(
     data (AUDIT-FIX 15/07/2026 — see ``_strength_source_map``); regime-tilt
     edges (commodities/indices, no ``ccys``) are never Oanda-sourced and
     stay False, matching their existing "[PROXY]" label unchanged.
-    """
-    if ccys:
+
+    CORRECTIF (round de validation zero-régression, 02/08/2026, suite à un
+    crash réel en production après le correctif V4-03).
+
+    V4-03 a étendu `config.INSTRUMENT_CCYS` aux 7 instruments non-FX
+    (XAU/USD, DAX, US30, NAS100, SPX500, Brent, WTI) avec des tuples à UNE
+    seule devise (ex. `("USD",)`), pour activer le gating calendaire et
+    l'alerte de positionnement IPS sur ces instruments (jusqu'ici
+    structurellement impossibles, cf. audit V4-03). Mais cette fonction-ci
+    utilise la MÊME variable `ccys` pour un contrat différent : `if ccys:
+    base, quote = ccys` supposait implicitement exactement 2 éléments —
+    vrai tant que seules des paires FX peuplaient `INSTRUMENT_CCYS`, faux
+    dès qu'un tuple à 1 élément y entre. Conséquence observée en
+    production : `ValueError: not enough values to unpack` sur
+    `select_priority_assets`, plantage complet de l'application Streamlit.
+
+    Correction : seul un tuple à EXACTEMENT 2 éléments (une vraie paire FX)
+    emprunte la branche de différentiel de force ci-dessous ; tout le
+    reste (0 ou 1 élément) retombe sur la branche "regime tilt" déjà
+    prévue pour les commodités/indices, strictement inchangée. Zéro
+    régression : le comportement de cette fonction pour les 7 instruments
+    non-FX est exactement identique à avant V4-03 (ils n'utilisaient déjà
+    aucune donnée de force relative pour leur edge directionnel, seulement
+    le tilt de régime codé en dur par nom d'actif ci-dessous)."""
+    if ccys and len(ccys) == 2:
         base, quote = ccys
         diff = smap.get(base, 50) - smap.get(quote, 50)
         edge = abs(diff) / 50.0
@@ -1297,12 +1320,22 @@ def _build_setup(asset: str, direction: int, score: float, market: MarketSnapsho
     # leg fell back to CB-bias, and unchanged "[PROXY]" for the regime-tilt
     # case (commodities/indices have no currency-strength source at all).
     momentum_tag = "[Oanda D1]" if (ccys and strength_is_live) else "[PROXY]"
+    # CORRECTIF (02/08/2026, cohérence avec le fix ci-dessus de
+    # _compute_direction_edge) : `is_fx_pair` distingue une vraie paire FX
+    # (2 devises, branche différentiel de force) d'un instrument non-FX à
+    # 1 devise (XAU/USD, DAX, US30, NAS100, SPX500, Brent, WTI depuis
+    # V4-03 -- branche tilt de régime, INCHANGÉE). Sans cette distinction,
+    # `if ccys` seul (vrai pour les deux cas depuis V4-03) afficherait
+    # "momentum prix D1" sur un instrument dont l'edge réel provient
+    # exclusivement du tilt de régime -- une étiquette fausse, pas un
+    # crash, mais une désinformation du lecteur sur la source de l'edge.
+    is_fx_pair = bool(ccys) and len(ccys) == 2
 
     return AssetSetup(
         asset=asset, color=color, bias=bias, bias_class=bias_class,
-        reason_short=("momentum prix D1" if ccys else "tilt de régime"),
+        reason_short=("momentum prix D1" if is_fx_pair else "tilt de régime"),
         reason_macro=(f"Différentiel de momentum prix D1 {momentum_tag} favorable"
-                      if ccys else "Biais de régime (refuge / risque) [PROXY]"),
+                      if is_fx_pair else "Biais de régime (refuge / risque) [PROXY]"),
         conviction=conviction, action=action, action_class=action_class, arrow=arrow,
         zone_buy=_level(buy, asset) if buy is not None else "[N/A]",
         origin_buy="[ATR 14j · support implicite]" if buy is not None else "[N/A]",
@@ -1805,4 +1838,3 @@ def build_context(
         calendar_feed_horizon_h=(f"{cal_meta.get('feed_horizon_h')}h" 
                                   if cal_meta.get("feed_horizon_h") is not None else None),
     )
-
