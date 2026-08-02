@@ -250,6 +250,14 @@ def _render_section2(ctx: BriefingContext) -> str:
                     '<span>⚠️ Flux Forex Factory injoignable (HTTP 429/timeout) — '
                     'calendrier indisponible sur ce run, ceci n\'est pas un calendrier '
                     'vide.</span></div>')
+        elif ctx.calendar_feed_truncated:
+            # V4-04 FIX : l'absence de catalyseur dans un flux tronqué <168h
+            # n'est PAS une absence de risque — le module calendrier a émis
+            # un warning FF feed horizon Xh < Yh à son tour.
+            horizon = ctx.calendar_feed_horizon_h or "inconnu"
+            body = (f'<div class="abox wait" style="font-size:12px;border-color:#c0392b">'
+                    f'<span>⚠️ Flux Forex Factory < {horizon} — silence calendaire '
+                    f'n\'est PAS une absence de risque.</span></div>')
         else:
             body = ('<div class="abox wait" style="font-size:12px"><span>Aucun catalyseur '
                     'high-impact à venir dans la fenêtre du calendrier [Forex Factory].</span></div>')
