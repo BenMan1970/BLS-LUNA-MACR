@@ -339,3 +339,8 @@ class BriefingContext:
     # keeps today's "quiet day" rendering -- no behaviour change unless a
     # caller explicitly sets it to False.
     calendar_reachable: bool = True
+    # V4-04 FIX : calendar horizon truncation signal — when the weekly feed
+    # is shorter than 168h (e.g. Friday run), the "silence calendaire"
+    # is NOT an absence of risk. The renderer emits an honest warning.
+    calendar_feed_truncated: bool = False
+    calendar_feed_horizon_h: Optional[str] = None  # e.g. "142.5h" for display
