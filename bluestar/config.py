@@ -80,6 +80,28 @@ INSTRUMENT_CCYS = {
     "AUD/USD": ("AUD", "USD"), "NZD/USD": ("NZD", "USD"),
     "USD/CAD": ("USD", "CAD"), "EUR/GBP": ("EUR", "GBP"),
     "GBP/JPY": ("GBP", "JPY"),
+    # V4-03 FIX (round de validation zero-régression, 02/08/2026, MAJEUR) :
+    # ces 7 instruments non-FX étaient absents de ce registre, donc
+    # invisibles aux trois consommateurs de INSTRUMENT_CCYS
+    # (`select_priority_assets` : gating calendaire ET garde-fou de
+    # diversification par devise ; `build_context` : alerte de
+    # positionnement IPS). Confirmé par l'audit indépendant (rapport RUN-4,
+    # V4-03) : "XAU/USD, DAX, US30, NAS100, SPX500, Brent, WTI traversent la
+    # sélection sans aucun contrôle de blackout", asymétrie avec le Desk qui,
+    # lui, applique bien le calendrier USD à SPX500/USD.
+    # Convention retenue, cohérente avec la dénomination effective de
+    # chaque instrument (indices actions et matières premières cotés/pilotés
+    # en USD, sauf le DAX qui est un indice de la zone euro) : un
+    # tuple à une seule devise, structurellement compatible avec
+    # `_events_for_ccys` (filtre `e.currency in ccys`, longueur quelconque)
+    # sans aucune modification de cette fonction.
+    "XAU/USD": ("USD",),
+    "Brent": ("USD",),
+    "WTI": ("USD",),
+    "DAX": ("EUR",),
+    "US30": ("USD",),
+    "NAS100": ("USD",),
+    "SPX500": ("USD",),
 }
 
 # Safe-haven currencies (used by the qualitative currency-strength overlay).
