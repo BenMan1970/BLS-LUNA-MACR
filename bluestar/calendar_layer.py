@@ -1,54 +1,74 @@
 """Calendar Layer -- Forex Factory High-Impact feed (Data Integrity Layer).
 
-Version 2 -- harmonisation avec le module Desk (audit du 04/08/2026).
+Version 3 -- correction d'une régression introduite par la v2 (post-mortem
+du 05/08/2026, incident "section Catalyseurs du Jour vide").
 
-Ce module reste un refactor 100% Streamlit-free, importable et testable :
-aucune dépendance à `streamlit`, aucun effet de bord d'affichage. Le contrat
-JSON (`metadata`, `events`, `events_engine`, `summary_by_day`) est préservé
-pour ne rien casser côté modules consommateurs de l'app macro (report
-generator, Committee, etc.).
-
-CHANGEMENT DE FOND vs la v1 (round du 04/08/2026, audit calendrier
-Desk/Macro) :
 ------------------------------------------------------------------
-Le Desk (module `04_calendar.py`, dashboard Streamlit) a renommé son champ
-`priority` en `time_proximity` et banni les valeurs "HIGH"/"MEDIUM" de ce
-champ, précisément parce qu'elles entraient en collision avec le champ
-`impact` (qui, dans ce flux filtré, vaut TOUJOURS "high"). Cette v1 du
-module macro ne reprenait pas ce fix : elle exposait encore
-`priority: "MEDIUM"` à côté de `impact: "high"` -- exactement la collision
-supprimée côté Desk.
+CE QUI S'EST PASSÉ (pour que ça ne se reproduise pas) :
+------------------------------------------------------------------
+La v2 de ce fichier a renommé la sémantique du champ `priority` pour
+l'aligner sur le vocabulaire `time_proximity` du Desk (IMMINENT/SOON/LATER/
+PAST), en pensant corriger une collision d'affichage avec `impact`
+(toujours "high" dans ce flux). C'était une fausse bonne idée, pour une
+raison qui n'apparaît qu'en lisant le CONSOMMATEUR réel de ce champ,
+`macro_engine.py` :
 
-Conséquence observée : le générateur de rapport Macro Briefing devait
-compenser ça a posteriori avec un patch cosmétique en aval :
+    determine_market_regime() : imminent = any(e.priority == "CRITICAL" ...)
+    _compute_asset_score()    : catalyst_pen = 0.15 * len([e for e in ev
+                                 if e.priority == "HIGH"])
+    build_catalysts()         : high   = [... e.priority in ("CRITICAL","HIGH") ...]
+                                 medium = [... e.priority == "MEDIUM" ...]
+
+Contrairement au Desk (où `time_proximity` n'est qu'un LABEL d'affichage
+Streamlit, sans logique métier qui en dépend), `priority` est ici une
+VARIABLE DE DÉCISION : elle pilote une pénalité de régime, une pénalité de
+score de sélection d'actif, et le découpage même des catalyseurs en
+"🔴 ÉLEVÉ" / "🟡 MODÉRÉ" affichés en section 2 du Macro Briefing. En vidant
+ce champ de ses valeurs CRITICAL/HIGH/MEDIUM, la v2 a silencieusement rendu
+`build_catalysts()` incapable de sélectionner le moindre événement -- d'où
+une section "Catalyseurs du Jour" vide alors que les événements existent
+bel et bien (l'avoid-list et les textes de risque, qui passent par
+`cal.is_blackout()` et non par `priority`, continuaient eux de les voir
+correctement -- d'où la contradiction interne détectée par le validateur du
+rapport, `risk_anchor_upcoming`).
+
+Autre point important : le VRAI problème de libellé qui avait motivé la v2
+(un badge "🟡 MODÉRÉ" affiché à côté d'un événement dont l'impact Forex
+Factory est toujours "High") était déjà corrigé -- au bon endroit -- par le
+renderer lui-même :
     <!-- MACRO-A3 FIX : Le flux FF n'a pas de "Medium". Ces events sont
          "High" à >48h. Remplacement de "MODÉRÉ" par "ÉLEVÉ · >48h" -->
-Ce patch soignait le symptôme, pas la cause. Cette v2 corrige la cause à la
-source, à l'identique du Desk (mêmes seuils, mêmes libellés : IMMINENT ≤6h,
-SOON ≤48h, LATER au-delà, PAST si passé).
+C'est un correctif d'AFFICHAGE, appliqué au bon niveau (le renderer, qui
+sait ce qu'il affiche et pourquoi) sans jamais toucher à la donnée dont
+dépend la logique métier en amont. La v2 n'avait donc rien à corriger ici :
+elle a réparé un symptôme déjà traité ailleurs, en cassant au passage la
+cause d'un tout autre système.
 
-Compatibilité descendante : le champ `priority` est conservé dans le JSON
-(pour ne provoquer aucun KeyError chez un consommateur existant qui le lit
-encore) mais n'est plus qu'un ALIAS de `time_proximity` -- il ne contient
-donc plus jamais "HIGH"/"MEDIUM"/"CRITICAL", uniquement les valeurs
-harmonisées Desk. C'est un champ DEPRECATED : à supprimer une fois que le
-générateur de rapport (et le patch MACRO-A3, devenu obsolète) auront été
-migrés vers `time_proximity`. Voir TODO-REMOVE-PRIORITY-ALIAS plus bas.
+------------------------------------------------------------------
+CE QUE FAIT CETTE v3 :
+------------------------------------------------------------------
+`priority` retrouve sa sémantique ORIGINALE, strictement identique à la v1
+(valeurs CRITICAL/HIGH/MEDIUM/PAST, mêmes seuils) -- c'est à nouveau un
+champ à part entière, pas un alias de quoi que ce soit.
+
+`time_proximity` (IMMINENT/SOON/LATER/PAST) est conservé, mais reclassé
+pour ce qu'il est réellement ici : un champ ADDITIF, non consommé par
+`macro_engine.py` à ce jour, fourni uniquement au cas où un futur renderer
+côté Macro voudrait un jour du vocabulaire aligné Desk pour de l'affichage
+pur -- sans jamais se substituer à `priority`, qui reste la seule source de
+vérité pour toute décision (regime penalty, scoring, catalyst bucketing).
 
 Le calcul de couverture réelle du flux (`feed_end_utc` / `feed_horizon_h` /
-`feed_horizon_truncated`, patch F-15 du 31/07/2026) est propre à ce module
-macro et n'existe pas côté Desk -- il est conservé tel quel : c'est une
-information utile (mesurée sur TOUS les impacts, pas seulement les
-high-impact) qui alimente l'alerte de couverture calendaire lue par le
-Committee. Rien n'indique qu'elle doive être supprimée ou alignée sur le
-Desk ; seule la logique de proximité temporelle (`priority`/`time_proximity`)
-avait un vrai défaut de cohérence.
+`feed_horizon_truncated`, patch F-15 du 31/07/2026) reste inchangé et
+propre à ce module macro -- voir le commentaire dans `build_calendar()`
+pour le détail de ce qu'il alimente réellement (corrigé : le bandeau de
+troncature affiché dans le Macro Briefing lui-même ; un lien éventuel avec
+le Committee n'a pas été vérifié, à ne pas affirmer sans preuve).
 
 La logique de tiers de blackout (`TIER_WINDOWS` / `classify_tier` /
 `is_blackout`) reste une réplique exacte de `v10.py` (Desk Engine), qui fait
-autorité sur cette règle -- inchangée dans cette v2, cf. dette de duplication
-déjà documentée ci-dessous (module partagé à extraire : voir
-`bluestar_shared.calendar_rules`).
+autorité sur cette règle -- inchangée, cf. dette de duplication documentée
+ci-dessous (module partagé à extraire : voir `bluestar_shared.calendar_rules`).
 
 The engine reads ``events_engine`` in priority (future events + past events
 inside the residual-risk window) and falls back to ``events`` if needed.
@@ -166,19 +186,22 @@ def fetch_raw(url: str = FF_JSON_URL) -> List[Dict]:
 def enrich(event: Dict, event_time_ref: datetime) -> Optional[Dict]:
     """Enrich one raw event into the canonical dict.
 
-    FIX-TIMEPROX (round du 04/08/2026, harmonisation Desk/Macro) : le champ
-    de proximité temporelle est désormais nommé ``time_proximity`` et prend
-    les valeurs ``IMMINENT / SOON / LATER / PAST`` -- strictement identiques
-    au module Desk (mêmes seuils : ≤0h PAST, ≤6h IMMINENT, ≤48h SOON, au-delà
-    LATER). Ces valeurs ne se confondent plus jamais avec ``impact`` (qui
-    vaut toujours "high" dans ce flux déjà filtré).
+    ``priority`` (CRITICAL/HIGH/MEDIUM/PAST, seuils : ≤0h PAST, ≤6h CRITICAL,
+    ≤48h HIGH, au-delà MEDIUM) est le champ CANONIQUE, restauré ici à
+    l'identique de la v1 -- voir le post-mortem en tête de fichier : c'est
+    une variable de décision consommée par ``macro_engine.py``
+    (``determine_market_regime``, ``_compute_asset_score``,
+    ``build_catalysts``), pas un simple libellé d'affichage. Ne plus jamais
+    en changer les valeurs sans grep exhaustif de tous les ``.priority`` et
+    ``e["priority"]`` du reste de l'application.
 
-    ``priority`` est conservé en DEPRECATED ALIAS de ``time_proximity`` pour
-    ne pas casser un consommateur existant qui lirait encore cette clé --
-    mais il ne contient plus "CRITICAL"/"HIGH"/"MEDIUM" : uniquement les
-    valeurs harmonisées ci-dessus. TODO-REMOVE-PRIORITY-ALIAS : supprimer ce
-    doublon une fois le report generator (patch MACRO-A3, devenu obsolète
-    avec ce fix) et tout autre consommateur migrés vers ``time_proximity``.
+    ``time_proximity`` (IMMINENT/SOON/LATER/PAST, mêmes seuils, vocabulaire
+    aligné sur le module Desk) est un champ ADDITIF, non consommé à ce jour
+    côté Macro -- fourni uniquement pour un éventuel usage d'affichage futur
+    qui voudrait éviter la confusion visuelle avec ``impact`` (qui vaut
+    toujours "high" dans ce flux déjà filtré). Il ne remplace jamais
+    ``priority`` et peut être ignoré/supprimé sans risque s'il ne trouve
+    jamais de consommateur réel.
     """
     try:
         t = datetime.fromisoformat(event.get("date", "").replace("Z", "+00:00"))
@@ -193,8 +216,16 @@ def enrich(event: Dict, event_time_ref: datetime) -> Optional[Dict]:
         h = (t - event_time_ref).total_seconds() / 3600
         ccy = event.get("country", "")
 
-        # FIX-TIMEPROX : mêmes seuils qu'avant, nouveau nommage/vocabulaire
-        # (aligné Desk), pour ne plus collisionner avec "impact".
+        # Champ canonique -- IDENTIQUE à la v1, ne pas toucher sans grep
+        # exhaustif de ".priority" dans macro_engine.py (voir docstring).
+        prio = (
+            "PAST" if h <= 0
+            else "CRITICAL" if h <= 6
+            else "HIGH" if h <= 48
+            else "MEDIUM"
+        )
+        # Champ additif -- même seuils, vocabulaire Desk, aucun consommateur
+        # connu côté Macro à ce jour (voir docstring).
         time_proximity = (
             "PAST" if h <= 0
             else "IMMINENT" if h <= 6
@@ -216,9 +247,10 @@ def enrich(event: Dict, event_time_ref: datetime) -> Optional[Dict]:
             "hours_until": round(h, 2),
             "hours_until_display": fmt_until(h),
             "is_upcoming": h > 0,
+            "priority": prio,
+            # Champ additif -- voir docstring ; ne pas utiliser à la place
+            # de "priority" pour une décision, uniquement pour un affichage.
             "time_proximity": time_proximity,
-            # DEPRECATED ALIAS -- voir TODO-REMOVE-PRIORITY-ALIAS ci-dessus.
-            "priority": time_proximity,
             "session": get_session(t_utc),
             "pairs_affected": PAIRS_MAP.get(ccy, []),
         }
@@ -340,13 +372,14 @@ def build_calendar(now_utc: Optional[datetime] = None,
             "du flux hebdomadaire ; un silence calendaire n'est PAS une absence de risque",
             feed_horizon_h, FF_WATCH_HORIZON_H)
 
-    # MACRO-A3 FIX (partie conservée) : .lower() rend le filtre robuste à un
-    # changement de casse du flux Forex Factory (ex: "High" vs "high"). Ne
-    # peut pas causer de régression car il élargit le périmètre de capture
-    # au lieu de le rétrécir. -- La partie "relabeling MODÉRÉ -> ÉLEVÉ" de
-    # MACRO-A3, elle, devient obsolète avec FIX-TIMEPROX ci-dessus : le
-    # champ ne peut plus produire "MODÉRÉ" du tout, à supprimer côté report
-    # generator (cf. TODO-REMOVE-PRIORITY-ALIAS).
+    # MACRO-A3 FIX : .lower() rend le filtre robuste à un changement de
+    # casse du flux Forex Factory (ex: "High" vs "high"). Ne peut pas causer
+    # de régression car il élargit le périmètre de capture au lieu de le
+    # rétrécir. Le second volet de MACRO-A3 (relabeling d'affichage
+    # "MODÉRÉ" -> "ÉLEVÉ · >48h" côté renderer) reste pleinement valide et
+    # nécessaire : "priority" continue de produire "MEDIUM" comme avant --
+    # voir le post-mortem en tête de fichier, ce correctif n'a pas à
+    # disparaître.
     all_events = [
         e for ev in raw_data
         if (ev.get("impact") or "").strip().lower() == "high"
@@ -365,10 +398,13 @@ def build_calendar(now_utc: Optional[datetime] = None,
     ]
     upcoming = [e for e in all_events if e["is_upcoming"]]
 
-    # FIX-TIMEPROX : imminent_count devient le nom canonique (aligné Desk).
-    # critical_count reste exposé en DEPRECATED ALIAS, même valeur -- pour
-    # ne pas casser un consommateur qui lirait encore cette clé de metadata.
-    # TODO-REMOVE-PRIORITY-ALIAS : supprimer critical_count à terme.
+    # critical_count : métrique canonique, restaurée à l'identique de la v1
+    # (compte sur "priority", le champ de décision -- voir post-mortem en
+    # tête de fichier). imminent_count est son pendant additif (même seuil,
+    # calculé sur "time_proximity"), fourni pour cohérence si ce dernier
+    # trouve un jour un consommateur ; les deux comptent structurellement la
+    # même population puisque CRITICAL et IMMINENT partagent le seuil ≤6h.
+    critical_count = sum(1 for e in all_events if e["priority"] == "CRITICAL")
     imminent_count = sum(1 for e in all_events if e["time_proximity"] == "IMMINENT")
 
     return {
@@ -378,9 +414,9 @@ def build_calendar(now_utc: Optional[datetime] = None,
             "timezone": "UTC",
             "total_high_impact": len(all_events),
             "upcoming_count": len(upcoming),
+            "critical_count": critical_count,
+            # Champ additif -- voir docstring en tête de fichier.
             "imminent_count": imminent_count,
-            # DEPRECATED ALIAS -- voir TODO-REMOVE-PRIORITY-ALIAS.
-            "critical_count": imminent_count,
             "engine_events_count": len(events_engine),
             "reachable": bool(raw_data),
             # PATCH-FEEDHORIZON (audit F-15) : horizon réel du flux hebdo.
