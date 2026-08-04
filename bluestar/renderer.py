@@ -262,10 +262,31 @@ def _render_section2(ctx: BriefingContext) -> str:
             body = ('<div class="abox wait" style="font-size:12px"><span>Aucun catalyseur '
                     'high-impact à venir dans la fenêtre du calendrier [Forex Factory].</span></div>')
     else:
+        # AUDIT FIX (Rapport Synergie 04/08/2026, §2a « Macro — la troncature
+        # du flux n'est jamais affichée ») : jusqu'ici, ctx.calendar_feed_truncated
+        # n'était lu que dans la branche « aucun catalyseur » ci-dessus. Quand
+        # des catalyseurs existent (cas du run du 03/08 : GBP/JPY et EUR/GBP
+        # en priorité, toutes devises impliquées — GBP/JPY/EUR — hors de la
+        # fenêtre de couverture du flux hebdomadaire Forex Factory), le
+        # briefing ne disait NULLE PART que le flux est tronqué : silence
+        # calendaire au-delà de l'horizon != absence de risque (cf.
+        # PATCH-FEEDHORIZON, calendar_layer.py). Correctif additif uniquement :
+        # bandeau d'avertissement prepend aux événements déjà rendus, réutilisant
+        # le même texte/gabarit que la branche "aucun catalyseur" ci-dessus.
+        # Zéro régression : si calendar_feed_truncated est False (cas normal,
+        # flux couvrant les 168h), warning="" et body est strictement identique
+        # à l'ancien comportement.
+        warning = ""
+        if ctx.calendar_feed_truncated:
+            horizon = ctx.calendar_feed_horizon_h or "inconnu"
+            warning = (f'<div class="abox wait" style="font-size:12px;border-color:#c0392b;margin-bottom:10px">'
+                       f'<span>⚠️ Flux Forex Factory tronqué à {horizon} — les événements '
+                       f'au-delà de cette fenêtre ne sont pas mesurés. Silence calendaire '
+                       f'au-delà du flux n\'est PAS une absence de risque.</span></div>')
         highs = "".join(_render_event_high(e, ctx.catalyst_scenarios.get(e.datetime_utc + e.event_name, {}))
                         for e in ctx.catalysts_high)
         meds = "".join(_render_event_medium(e) for e in ctx.catalysts_medium)
-        body = highs + meds
+        body = warning + highs + meds
     return f"""
 <div class="section">
   <div class="sec-hdr"><div class="sec-num">2</div><div class="sec-ttl">{_e(sec_title)}</div><div class="sec-sub">{_e(sec_sub)}</div></div>
