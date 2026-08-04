@@ -397,7 +397,35 @@ def assess_regime(
         raw_candidate = regime_name
         floor_applied = True
         regime_name, category = "Mixed / Selective", "transitional"
-        opposing_signal = None  # no clean antonym for the collapsed label
+        # AUDIT FIX (Rapport Synergie 04/08/2026, §2a « Macro — 7 indicateurs
+        # de soutien, 0 contradiction, 8% de confiance ») : cette ligne
+        # effaçait auparavant opposing_signal ("no clean antonym for the
+        # collapsed label"). Mais opposing_signal ne décrit pas un antonyme
+        # du NOUVEAU libellé ("Mixed / Selective" — qui, lui, n'en a
+        # effectivement pas) : il décrit l'indicateur qui s'opposait au
+        # candidat D'ORIGINE (ex: "risk_off" pour "Reflation") et qui est
+        # précisément la cause du vote serré ayant fait passer la confiance
+        # sous le seuil. L'effacer masquait donc un indicateur réellement
+        # contradictoire (ex: COT Positioning en risk_off) et affichait à
+        # tort "0 indicateur de contradiction" alors même que le seul
+        # candidat un tant soit peu autre bucket était la cause du repli —
+        # d'où le paradoxe apparent "7 indicateurs de soutien, 0
+        # contradiction, 8% de confiance" relevé par l'audit. Repro exacte
+        # sur le run du 04/08/2026 (VIX 16.0, MOVE 70.9, US10Y 4.75%, DXY
+        # 100.0, Rate Diff 2.9pt, COT 6 extremes, GDPNow 6.2%) :
+        # _classify() calcule bien opposing_signal="risk_off" (COT
+        # Positioning) et confidence=8.3%, mais cette ligne l'écrasait à
+        # None avant que la boucle de marquage (ci-dessous, inchangée) ne
+        # s'exécute. Ne plus l'effacer restaure l'information déjà
+        # calculée par _classify() ; la formule de confiance elle-même
+        # (top1-top2)/total_weight n'est pas modifiée — seule la
+        # visibilité de la contradiction déjà connue est corrigée.
+        # Aucun autre lecteur de opposing_signal dans ce fichier (seul
+        # usage : la boucle de marquage supports/contradicting
+        # ci-dessous) ; le cas "tie_at_zero" (régime nativement Mixed/
+        # Selective) n'est pas concerné par cette branche puisque
+        # regime_name == "Mixed / Selective" dès la sortie de _classify()
+        # dans ce cas — la condition du `if` ci-dessus est alors fausse.
 
     # AUDIT-FIX (validation audit, finding P2 — 15/07/2026): when _classify()
     # *natively* returns "Mixed / Selective" with confidence below floor
