@@ -1,10 +1,54 @@
 """Calendar Layer -- Forex Factory High-Impact feed (Data Integrity Layer).
 
-This is a faithful refactor of the *validated* standalone calendar module. The
-enrichment logic, field names, priority buckets, ``events_engine`` 72h residual
-window and JSON contract are preserved **exactly** so the trusted module is not
-broken -- only the Streamlit side effects were removed so the logic is
-importable and unit-testable.
+Version 2 -- harmonisation avec le module Desk (audit du 04/08/2026).
+
+Ce module reste un refactor 100% Streamlit-free, importable et testable :
+aucune dépendance à `streamlit`, aucun effet de bord d'affichage. Le contrat
+JSON (`metadata`, `events`, `events_engine`, `summary_by_day`) est préservé
+pour ne rien casser côté modules consommateurs de l'app macro (report
+generator, Committee, etc.).
+
+CHANGEMENT DE FOND vs la v1 (round du 04/08/2026, audit calendrier
+Desk/Macro) :
+------------------------------------------------------------------
+Le Desk (module `04_calendar.py`, dashboard Streamlit) a renommé son champ
+`priority` en `time_proximity` et banni les valeurs "HIGH"/"MEDIUM" de ce
+champ, précisément parce qu'elles entraient en collision avec le champ
+`impact` (qui, dans ce flux filtré, vaut TOUJOURS "high"). Cette v1 du
+module macro ne reprenait pas ce fix : elle exposait encore
+`priority: "MEDIUM"` à côté de `impact: "high"` -- exactement la collision
+supprimée côté Desk.
+
+Conséquence observée : le générateur de rapport Macro Briefing devait
+compenser ça a posteriori avec un patch cosmétique en aval :
+    <!-- MACRO-A3 FIX : Le flux FF n'a pas de "Medium". Ces events sont
+         "High" à >48h. Remplacement de "MODÉRÉ" par "ÉLEVÉ · >48h" -->
+Ce patch soignait le symptôme, pas la cause. Cette v2 corrige la cause à la
+source, à l'identique du Desk (mêmes seuils, mêmes libellés : IMMINENT ≤6h,
+SOON ≤48h, LATER au-delà, PAST si passé).
+
+Compatibilité descendante : le champ `priority` est conservé dans le JSON
+(pour ne provoquer aucun KeyError chez un consommateur existant qui le lit
+encore) mais n'est plus qu'un ALIAS de `time_proximity` -- il ne contient
+donc plus jamais "HIGH"/"MEDIUM"/"CRITICAL", uniquement les valeurs
+harmonisées Desk. C'est un champ DEPRECATED : à supprimer une fois que le
+générateur de rapport (et le patch MACRO-A3, devenu obsolète) auront été
+migrés vers `time_proximity`. Voir TODO-REMOVE-PRIORITY-ALIAS plus bas.
+
+Le calcul de couverture réelle du flux (`feed_end_utc` / `feed_horizon_h` /
+`feed_horizon_truncated`, patch F-15 du 31/07/2026) est propre à ce module
+macro et n'existe pas côté Desk -- il est conservé tel quel : c'est une
+information utile (mesurée sur TOUS les impacts, pas seulement les
+high-impact) qui alimente l'alerte de couverture calendaire lue par le
+Committee. Rien n'indique qu'elle doive être supprimée ou alignée sur le
+Desk ; seule la logique de proximité temporelle (`priority`/`time_proximity`)
+avait un vrai défaut de cohérence.
+
+La logique de tiers de blackout (`TIER_WINDOWS` / `classify_tier` /
+`is_blackout`) reste une réplique exacte de `v10.py` (Desk Engine), qui fait
+autorité sur cette règle -- inchangée dans cette v2, cf. dette de duplication
+déjà documentée ci-dessous (module partagé à extraire : voir
+`bluestar_shared.calendar_rules`).
 
 The engine reads ``events_engine`` in priority (future events + past events
 inside the residual-risk window) and falls back to ``events`` if needed.
@@ -55,7 +99,9 @@ _FF_HEADERS = {
     )
 }
 
-# Currency -> affected pairs (verbatim from the validated module).
+# Currency -> affected pairs (identique au module Desk -- même matrice,
+# même 8 devises Forex Factory + CNY hérité ; aucun indice/métal ajouté
+# faute de donnée source qui documente cette corrélation).
 PAIRS_MAP: Dict[str, List[str]] = {
     "USD": ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CAD", "AUD/USD", "NZD/USD", "USD/CHF"],
     "EUR": ["EUR/USD", "EUR/GBP", "EUR/JPY", "EUR/CHF", "EUR/CAD", "EUR/AUD", "EUR/NZD"],
@@ -70,7 +116,7 @@ PAIRS_MAP: Dict[str, List[str]] = {
 
 
 def get_session(t: datetime) -> str:
-    """Map a UTC datetime to its FX session label (verbatim logic)."""
+    """Map a UTC datetime to its FX session label (identique Desk & Macro)."""
     h = t.hour
     london, ny = 7 <= h < 16, 13 <= h < 22
     if london and ny:
@@ -85,7 +131,7 @@ def get_session(t: datetime) -> str:
 
 
 def fmt_until(h: float) -> str:
-    """Human-readable countdown; ``h <= 0`` => ``PASSED`` (verbatim logic)."""
+    """Human-readable countdown; ``h <= 0`` => ``PASSED`` (identique Desk & Macro)."""
     if h <= 0:
         return "PASSED"
     total_min = int(h * 60)
@@ -118,7 +164,22 @@ def fetch_raw(url: str = FF_JSON_URL) -> List[Dict]:
 
 
 def enrich(event: Dict, event_time_ref: datetime) -> Optional[Dict]:
-    """Enrich one raw event into the canonical dict (verbatim field set)."""
+    """Enrich one raw event into the canonical dict.
+
+    FIX-TIMEPROX (round du 04/08/2026, harmonisation Desk/Macro) : le champ
+    de proximité temporelle est désormais nommé ``time_proximity`` et prend
+    les valeurs ``IMMINENT / SOON / LATER / PAST`` -- strictement identiques
+    au module Desk (mêmes seuils : ≤0h PAST, ≤6h IMMINENT, ≤48h SOON, au-delà
+    LATER). Ces valeurs ne se confondent plus jamais avec ``impact`` (qui
+    vaut toujours "high" dans ce flux déjà filtré).
+
+    ``priority`` est conservé en DEPRECATED ALIAS de ``time_proximity`` pour
+    ne pas casser un consommateur existant qui lirait encore cette clé --
+    mais il ne contient plus "CRITICAL"/"HIGH"/"MEDIUM" : uniquement les
+    valeurs harmonisées ci-dessus. TODO-REMOVE-PRIORITY-ALIAS : supprimer ce
+    doublon une fois le report generator (patch MACRO-A3, devenu obsolète
+    avec ce fix) et tout autre consommateur migrés vers ``time_proximity``.
+    """
     try:
         t = datetime.fromisoformat(event.get("date", "").replace("Z", "+00:00"))
         if t.tzinfo is None:
@@ -131,12 +192,16 @@ def enrich(event: Dict, event_time_ref: datetime) -> Optional[Dict]:
 
         h = (t - event_time_ref).total_seconds() / 3600
         ccy = event.get("country", "")
-        prio = (
+
+        # FIX-TIMEPROX : mêmes seuils qu'avant, nouveau nommage/vocabulaire
+        # (aligné Desk), pour ne plus collisionner avec "impact".
+        time_proximity = (
             "PAST" if h <= 0
-            else "CRITICAL" if h <= 6
-            else "HIGH" if h <= 48
-            else "MEDIUM"
+            else "IMMINENT" if h <= 6
+            else "SOON" if h <= 48
+            else "LATER"
         )
+
         return {
             "currency": ccy,
             "event_name": event.get("title", "").strip(),
@@ -151,7 +216,9 @@ def enrich(event: Dict, event_time_ref: datetime) -> Optional[Dict]:
             "hours_until": round(h, 2),
             "hours_until_display": fmt_until(h),
             "is_upcoming": h > 0,
-            "priority": prio,
+            "time_proximity": time_proximity,
+            # DEPRECATED ALIAS -- voir TODO-REMOVE-PRIORITY-ALIAS ci-dessus.
+            "priority": time_proximity,
             "session": get_session(t_utc),
             "pairs_affected": PAIRS_MAP.get(ccy, []),
         }
@@ -161,28 +228,31 @@ def enrich(event: Dict, event_time_ref: datetime) -> Optional[Dict]:
 
 
 # ---------------------------------------------------------------------------
-# PATCH-CALGATE (round du 31/07/2026) : classification tier + fentres
-# blackout avant/aprs. RPLIQUE EXACTE de ENGINE v10 (v10.py, SECTION 3 :
+# PATCH-CALGATE (round du 31/07/2026) : classification tier + fenêtres
+# blackout avant/après. RÉPLIQUE EXACTE de ENGINE v10 (v10.py, SECTION 3 :
 # _TIER_S / _TIER_A / _TIER_B / TIER_WINDOWS / classify_tier). C'est le Desk
-# Engine qui fait autorit sur cette rgle (c'est lui que le comit audite
-# in fine) ; le module macro ne fait ici que la consommer  l'identique.
+# Engine qui fait autorité sur cette règle (c'est lui que le comité audite
+# in fine) ; le module macro ne fait ici que la consommer à l'identique.
 #
-# Cause racine du bug corrig : le module macro ne connaissait qu'un seuil
-# unique "CRITICAL si h<=6h", appliqu seulement aux vnements FUTURS. Un
-# vnement Tier S (ex: dcision FOMC) qui vient de tomber restait donc
-# invisible pour le gating macro ds qu'il passait en h<=0 ("PAST"), alors
-# que le Desk Engine bloque la devise concerne jusqu' 48h APRS l'annonce
-# (TIER_WINDOWS[S] = (4.0, 48.0)). Rsultat observ le 29-30/07/2026 :
-# EUR/USD, GBP/USD, USD/CHF recommands "CHERCHER LONG/SHORT" ct macro
-# quelques heures aprs la FOMC, alors que le comit les bloquait dj en
+# Cause racine du bug corrigé : le module macro ne connaissait qu'un seuil
+# unique "CRITICAL si h<=6h", appliqué seulement aux événements FUTURS. Un
+# événement Tier S (ex: décision FOMC) qui vient de tomber restait donc
+# invisible pour le gating macro dès qu'il passait en h<=0 ("PAST"), alors
+# que le Desk Engine bloque la devise concernée jusqu'à 48h APRÈS l'annonce
+# (TIER_WINDOWS[S] = (4.0, 48.0)). Résultat observé le 29-30/07/2026 :
+# EUR/USD, GBP/USD, USD/CHF recommandés "CHERCHER LONG/SHORT" côté macro
+# quelques heures après la FOMC, alors que le comité les bloquait déjà en
 # CAL_BLACKOUT sur USD.
 #
-# IMPORTANT  dette technique assume : ces constantes sont dupliques
-# (macro + Desk) faute d'un package partag entre les deux applications.
-# Toute modification de TIER_WINDOWS dans v10.py DOIT tre rpercute ici 
-# l'identique, sous peine de recrer exactement le bug qu'on corrige. Ce
+# IMPORTANT — dette technique assumée : ces constantes sont dupliquées
+# (macro + Desk) faute d'un package partagé entre les deux applications.
+# Toute modification de TIER_WINDOWS dans v10.py DOIT être répercutée ici à
+# l'identique, sous peine de recréer exactement le bug qu'on corrige. Ce
 # commentaire fait office de garde-fou en attendant l'extraction en module
-# commun (ex: bluestar_shared.calendar_rules).
+# commun (ex: bluestar_shared.calendar_rules) -- extraction qui devrait
+# aussi embarquer désormais `time_proximity`, `PAIRS_MAP`, `get_session` et
+# `fmt_until`, redevenus strictement identiques entre Desk et Macro avec ce
+# fix.
 # ---------------------------------------------------------------------------
 _TIER_S = ("non-farm", "nonfarm", "nfp", "fomc", "cpi", "cash rate",
            "bank rate", "rate statement", "interest rate", "monetary policy",
@@ -191,7 +261,7 @@ _TIER_A = ("gdp", "pmi", "adp", "pce", "employment change", "unemployment",
            "average hourly", "retail sales", "ppi")
 _TIER_B = ("speaks", "speech", "press conference", "testifies", "testimony")
 
-# (heures_avant, heures_aprs) -- identique  v10.py TIER_WINDOWS.
+# (heures_avant, heures_après) -- identique à v10.py TIER_WINDOWS.
 TIER_WINDOWS: Dict[str, tuple] = {
     "S": (4.0, 48.0),
     "A": (2.0, 24.0),
@@ -201,9 +271,9 @@ DEFAULT_TIER_WINDOW = (2.0, 24.0)
 
 
 def classify_tier(event_name: str) -> str:
-    """Identique  v10.classify_tier -- mme liste de mots-cls, mme ordre
-    de priorit (S avant A avant B), pour ne jamais diverger sur un vnement
-    ambigu (ex: un titre contenant  la fois 'GDP' et 'Press Conference')."""
+    """Identique à v10.classify_tier -- même liste de mots-clés, même ordre
+    de priorité (S avant A avant B), pour ne jamais diverger sur un événement
+    ambigu (ex: un titre contenant à la fois 'GDP' et 'Press Conference')."""
     n = (event_name or "").lower()
     if any(k in n for k in _TIER_S):
         return "S"
@@ -215,12 +285,12 @@ def classify_tier(event_name: str) -> str:
 
 
 def is_blackout(event_name: str, hours_until: float) -> tuple:
-    """True si l'vnement place sa devise en fentre de blackout, avant OU
-    aprs l'annonce -- rplique de v10.CalendarData.bucket().
+    """True si l'événement place sa devise en fenêtre de blackout, avant OU
+    après l'annonce -- réplique de v10.CalendarData.bucket().
 
-    ``hours_until`` suit la mme convention que ``enrich()`` : positif =
-    vnement futur, ngatif = vnement dj pass (ex: -5.0 = tomb il y a
-    5h). Retourne ``(bloqu: bool, tier: str)``.
+    ``hours_until`` suit la même convention que ``enrich()`` : positif =
+    événement futur, négatif = événement déjà passé (ex: -5.0 = tombé il y a
+    5h). Retourne ``(bloqué: bool, tier: str)``.
     """
     tier = classify_tier(event_name)
     before, after = TIER_WINDOWS.get(tier, DEFAULT_TIER_WINDOW)
@@ -239,8 +309,8 @@ def build_calendar(now_utc: Optional[datetime] = None,
         Pre-fetched raw events (used by tests). If ``None`` the feed is fetched.
 
     Returns a dict with ``metadata``, ``events`` (all upcoming high-impact),
-    ``events_engine`` (future + past within 72h) and ``summary_by_day`` -- the
-    same contract the engine consumes.
+    ``events_engine`` (future + past within the residual-risk window) and
+    ``summary_by_day`` -- the same contract the engine consumes.
     """
     now_utc = now_utc or datetime.now(pytz.UTC)
     if raw_data is None:
@@ -250,6 +320,8 @@ def build_calendar(now_utc: Optional[datetime] = None,
     # du flux (TOUS impacts confondus — on mesure la couverture du flux, pas
     # celle des seuls high-impact) publié en métadonnée + warning. Aucune
     # décision n'est modifiée : c'est de la visibilité, pas du gating.
+    # Propre à ce module macro (n'existe pas côté Desk) -- conservé tel
+    # quel, cf. docstring de tête pour la justification.
     feed_end: Optional[datetime] = None
     for _ev in raw_data:
         try:
@@ -268,9 +340,13 @@ def build_calendar(now_utc: Optional[datetime] = None,
             "du flux hebdomadaire ; un silence calendaire n'est PAS une absence de risque",
             feed_horizon_h, FF_WATCH_HORIZON_H)
 
-    # MACRO-A3 FIX : .lower() rend le filtre robuste  un changement de casse
-    # du flux Forex Factory (ex: "High" vs "high"). Ne peut pas causer de rgression
-    # car il largit le primtre de capture au lieu de le rtrcir.
+    # MACRO-A3 FIX (partie conservée) : .lower() rend le filtre robuste à un
+    # changement de casse du flux Forex Factory (ex: "High" vs "high"). Ne
+    # peut pas causer de régression car il élargit le périmètre de capture
+    # au lieu de le rétrécir. -- La partie "relabeling MODÉRÉ -> ÉLEVÉ" de
+    # MACRO-A3, elle, devient obsolète avec FIX-TIMEPROX ci-dessus : le
+    # champ ne peut plus produire "MODÉRÉ" du tout, à supprimer côté report
+    # generator (cf. TODO-REMOVE-PRIORITY-ALIAS).
     all_events = [
         e for ev in raw_data
         if (ev.get("impact") or "").strip().lower() == "high"
@@ -289,6 +365,12 @@ def build_calendar(now_utc: Optional[datetime] = None,
     ]
     upcoming = [e for e in all_events if e["is_upcoming"]]
 
+    # FIX-TIMEPROX : imminent_count devient le nom canonique (aligné Desk).
+    # critical_count reste exposé en DEPRECATED ALIAS, même valeur -- pour
+    # ne pas casser un consommateur qui lirait encore cette clé de metadata.
+    # TODO-REMOVE-PRIORITY-ALIAS : supprimer critical_count à terme.
+    imminent_count = sum(1 for e in all_events if e["time_proximity"] == "IMMINENT")
+
     return {
         "metadata": {
             "generated_at_utc": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -296,7 +378,9 @@ def build_calendar(now_utc: Optional[datetime] = None,
             "timezone": "UTC",
             "total_high_impact": len(all_events),
             "upcoming_count": len(upcoming),
-            "critical_count": sum(1 for e in all_events if e["priority"] == "CRITICAL"),
+            "imminent_count": imminent_count,
+            # DEPRECATED ALIAS -- voir TODO-REMOVE-PRIORITY-ALIAS.
+            "critical_count": imminent_count,
             "engine_events_count": len(events_engine),
             "reachable": bool(raw_data),
             # PATCH-FEEDHORIZON (audit F-15) : horizon réel du flux hebdo.
