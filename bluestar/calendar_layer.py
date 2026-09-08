@@ -1,67 +1,122 @@
 """Calendar Layer -- Forex Factory High-Impact feed (Data Integrity Layer).
 
-Version 4 -- consolidation mono-fichier pour compatibilité avec l'app
-d'analyse technique (BLUESTAR), qui utilise ``calendar_core.py`` +
-``calendar_ingestor.py`` + ``app.py`` (Streamlit) en environnement séparé
-(pas de disque partagé, donc pas d'artefact JSON commun possible).
+Version 5 -- réparation + consolidation mono-fichier, câblée sur
+``config.py`` / ``macro_engine.py`` / ``models.py`` / ``app.py``.
 
-------------------------------------------------------------------
-POURQUOI CE FICHIER EXISTE :
-------------------------------------------------------------------
-Les deux apps (macro et TA) ne partagent ni process ni disque. Pour qu'elles
-"voient" le même calendrier de la même façon, il ne suffit pas de partager un
-fichier de sortie : il faut que les DEUX embarquent EXACTEMENT la même
-logique de normalisation. Ce fichier reprend donc intégralement la logique
-de ``calendar_core.py`` (Pydantic, sessions FX DST-aware via zoneinfo,
-scoring de qualité, parsing numérique explicite, regroupement des
-publications liées) -- c'est la même version que consomme l'app TA via
-``to_legacy_payload()``.
+=============================================================================
+CE QUE LA v5 CORRIGE PAR RAPPORT À LA v4 (chaque point vérifié sur le
+briefing HTML du 08/09/2026)
+=============================================================================
 
-------------------------------------------------------------------
-BUG ÉVITÉ (lu avant d'écrire une seule ligne de ce fichier) :
-------------------------------------------------------------------
-``to_legacy_payload()`` de calendar_core.py NE PRODUIT PAS le champ
-``priority`` (CRITICAL/HIGH/MEDIUM/PAST) -- seulement ``time_proximity``
-(IMMINENT/SOON/LATER/PAST). Or ``priority`` est le champ de DÉCISION dont
-dépendent ``macro_engine.py`` :
+[F1] FLUX TRONQUÉ EN PERMANENCE (cause du bandeau rouge « tronqué à 93.4h »)
+     ``FF_JSON_URL`` = ``ff_calendar_thisweek.json`` est un flux HEBDOMADAIRE
+     (dimanche → samedi). Comparer sa fin à ``FF_WATCH_HORIZON_H = 168h``
+     produisait ``feed_horizon_truncated = True`` TOUS LES JOURS sauf le
+     dimanche (mardi 93h, mercredi 70h, jeudi 46h...). L'avertissement
+     « un silence calendaire n'est PAS une absence de risque » était donc
+     structurellement toujours affiché : bruit permanent, zéro information.
+     → v5 : fusion ``thisweek`` + ``nextweek`` (deux GET séquentiels sur la
+       même session, dédoublonnage par (country, title, date_utc)). Horizon
+       roulant de 7 à 14 jours, donc >= 168h en permanence. Le drapeau ne se
+       lève plus que si le second flux est réellement indisponible -- et il
+       redevient alors un vrai signal.
 
-    determine_market_regime() : imminent = any(e.priority == "CRITICAL" ...)
-    _compute_asset_score()    : catalyst_pen = 0.15 * len([e for e in ev
-                                 if e.priority == "HIGH"])
-    build_catalysts()         : high   = [... e.priority in ("CRITICAL","HIGH") ...]
-                                 medium = [... e.priority == "MEDIUM" ...]
+[F2] INCOHÉRENCE DE FUSEAU DANS LE HTML (1 heure d'écart)
+     ``DEFAULT_DISPLAY_TZ = "Africa/Casablanca"`` (UTC+1) alors que toute
+     l'app macro affiche ``config.TZ_CET`` = Europe/Paris (UTC+2 en été).
+     Le HTML mélangeait donc « 12:48 CEST » (sous-barre, macro_engine) et
+     « 13:15 (UTC+1) » (section 2, calendar_layer) : la BCE était en réalité
+     à 14:15 CEST. Un lecteur qui cale une session sur l'heure affichée se
+     trompait d'une heure.
+     → v5 : ``DISPLAY_TIMEZONE`` est LU depuis ``config.TZ_CET.key``
+       (override par ``BLUESTAR_DISPLAY_TZ``). Plus aucun fuseau codé en
+       dur. Les décisions (priority / is_blackout / hours_until) restent en
+       UTC pur : inchangées.
 
-Brancher calendar_core tel quel aurait reproduit -- par omission cette
-fois, plus par renommage -- l'incident du 05/08/2026 ("Catalyseurs du Jour"
-vide). ``build_calendar()`` ci-dessous restaure donc ``priority`` de façon
-EXPLICITE et ADDITIVE dans la sortie legacy, sur les mêmes seuils que
-``time_proximity`` (≤0h PAST, ≤6h CRITICAL, ≤48h HIGH, sinon MEDIUM) --
-``macro_engine.py`` n'a besoin d'AUCUNE modification.
+[F3] ``actual`` À CHAÎNE VIDE AU LIEU DE "—"
+     Le ``or ""`` de la v4 cassait DEUX consommateurs :
+       * ``app.py`` : ``if e['actual'] != '—'`` → affichait « / actual »
+         (vide) sur chaque ligne de l'expander calendrier ;
+       * ``models.MacroEvent.from_enriched`` : ``d.get("actual","—")`` ne
+         retombe sur le tiret QUE si la clé est absente, jamais si elle vaut
+         "" -- le contrat "—" de models.py n'était donc jamais honoré.
+     → v5 : placeholder unique ``ABSENT_DISPLAY = "—"`` pour
+       forecast/previous/actual, aligné sur models.py. ``*_value`` reste
+       ``None`` pour l'exploitation numérique.
 
-------------------------------------------------------------------
-CE QUI RESTE INCHANGÉ (hors périmètre de calendar_core) :
-------------------------------------------------------------------
-La logique de tiers de blackout (``TIER_WINDOWS`` / ``classify_tier`` /
-``is_blackout``) reste une réplique exacte de ``v10.py`` (Desk Engine), qui
-fait autorité sur cette règle. C'est un sujet ORTHOGONAL à la normalisation
-d'événements de calendar_core (l'app TA n'a pas cette notion) -- ne jamais
-fusionner les deux logiques. Dette de duplication documentée et assumée en
-attendant l'extraction en module commun (``bluestar_shared.calendar_rules``).
+[F4] FRAÎCHEUR DE SOURCE NON MESURABLE
+     ``SourceInfo.fetched_at_utc = now_utc`` → ``source_age_seconds`` = 0 et
+     ``is_stale`` = False par construction. Le seuil
+     ``max_source_age_seconds`` ne pouvait rien détecter, et le score de
+     qualité était structurellement plafonné à 1.0.
+     → v5 : horodatage RÉEL du fetch, propagé via la méta.
 
-------------------------------------------------------------------
-CE QUE CE FICHIER N'EST PAS :
-------------------------------------------------------------------
-Ce n'est PAS l'ingestor de production (pas de circuit breaker, pas de
-last-known-good sur disque, pas de health.json) -- choix explicite pour
-rester simple, puisque l'app macro n'a pas de disque partagé avec l'app TA
-de toute façon. Le fetch reste résilient (retries + backoff urllib3,
-identiques à calendar_ingestor.py) mais sans aucun état persistant entre
-deux appels : en cas d'échec réseau, ``build_calendar()`` reçoit une liste
-vide et se dégrade proprement (comme la v3), il ne lève pas d'exception.
+[F5] ``content_hash`` INSTABLE (l'objectif même du fichier)
+     Le hash v4 incluait ``scheduled_at_display``, ``date_display``,
+     ``day_of_week``, ``display_timezone`` et ``source_index`` : changer le
+     fuseau d'affichage OU l'ordre de fusion des flux changeait le hash pour
+     un contenu économique identique. « Les deux apps voient le même
+     calendrier » était donc invérifiable.
+     → v5 : hash calculé sur une PROJECTION ÉCONOMIQUE explicite
+       (occurrence_id, event_type_id, UTC, devise, nom, impact,
+       forecast/previous/actual bruts, release_group_id).
+       ``CONTENT_HASH_METHOD`` documente la méthode. Divergence assumée et
+       tracée vs calendar_core.py -- à y répercuter (voir DETTE ci-dessous).
 
-Si un jour les deux apps partagent un disque, il vaudra mieux lire
-directement ``calendar.legacy.json`` produit par le vrai
-``calendar_ingestor.py`` plutôt que de dupliquer le fetch ici.
+[F6] PARSEUR NUMÉRIQUE : SÉPARATEUR DE MILLIERS
+     ``"1,234"`` (mille deux cent trente-quatre) était lu ``1.234``, et
+     ``"1.234"`` symétriquement. Sur un NFP ou des ventes au détail publiés
+     sans suffixe K/M, l'erreur est d'un facteur 1000.
+     → v5 : ``_to_float`` distingue milliers et décimales (dernier
+       séparateur = décimal si les deux sont présents ; groupes de 3 exacts
+       = milliers). Nouveau statut ``APPROXIMATE`` pour ``<``/``>``/``~``.
+
+[F7] ROBUSTESSE / DIVERS
+     * ``_LEGACY_SESSION[e.session]`` en accès direct → KeyError si un
+       membre est ajouté à ``Session``. Passé en ``.get(...)``.
+     * ``day_of_week`` via ``strftime("%A")`` → dépend de la locale du
+       conteneur (« JEUDI » vs « THURSDAY »). Table fixe désormais.
+     * ``payload_sha256`` calculé sur ``body.decode(errors="replace")`` →
+       hash d'un texte dégradé, pas de la charge réelle. Hash sur octets.
+     * ``Retry(backoff_jitter=...)`` lève ``TypeError`` sur urllib3 < 2.0
+       (donc fetch mort et calendrier vide). Repli automatique.
+     * ``build_payload`` levait ``ValueError`` sur un flux hors-norme
+       (racine non-liste, > max_events) → exception non rattrapée dans
+       ``build_calendar`` → app Streamlit morte. Désormais rattrapé et
+       dégradé proprement (contrat v3 : jamais d'exception).
+     * ``FetchError`` : code mort, conservé en alias de compatibilité.
+     * ``window_past_hours`` était dupliqué (72.0 codé en dur) : dérivé de
+       ``config.RESIDUAL_RISK_WINDOW_H`` (source unique, cohérent avec le
+       ``since_h=72`` de ``macro_engine._events_for_ccys``).
+     * ``window_future_hours`` passé de 192h à ``FF_WATCH_HORIZON_H`` (168h)
+       pour que la fenêtre annoncée et la fenêtre servie soient la MÊME.
+
+=============================================================================
+CE QUI RESTE VOLONTAIREMENT INCHANGÉ (zéro régression décisionnelle)
+=============================================================================
+Les seuils ``imminent_hours = 6`` / ``soon_hours = 48`` et donc la
+projection ``priority`` (PAST / CRITICAL / HIGH / MEDIUM) sont IDENTIQUES à
+la v4. Tentation écartée : élargir HIGH à 168h pour peupler
+``catalysts_high`` aurait alimenté ``macro_engine._compute_asset_score``
+(``catalyst_pen = 0.15 * len(HIGH)``, plafonné à 0.30) et pouvait faire
+tomber les setups sous ``MODE_SELECTION_MIN_SCORE`` -- soit un rapport vide.
+Le tag « 🟡 ÉLEVÉ · >48h » du renderer est la bonne réponse à ce point ; il
+n'appartient pas à cette couche.
+
+``TIER_WINDOWS`` / ``classify_tier`` / ``is_blackout`` restent une réplique
+EXACTE de ``v10.py`` (Desk Engine), qui fait autorité. Sujet ORTHOGONAL à la
+normalisation. Toute modification dans v10.py DOIT être répercutée ici.
+
+=============================================================================
+DETTE DOCUMENTÉE
+=============================================================================
+[F2] et [F5] sont des divergences DÉLIBÉRÉES vs ``calendar_core.py`` (app
+TA). Elles ne changent aucun instant UTC, aucun ``occurrence_id``, aucune
+valeur économique -- seulement l'affichage et la méthode de hachage. Les
+deux apps restent réconciliables événement par événement sur
+``occurrence_id`` (fonction de ``event_type_id`` + UTC uniquement, donc
+inchangé). À porter dans calendar_core.py lors de l'extraction du module
+commun ``bluestar_shared.calendar_rules``.
 """
 from __future__ import annotations
 
@@ -74,18 +129,10 @@ import time
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, Sequence, Tuple
-from zoneinfo import ZoneInfo
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
-
-# COMPAT-FIX (audit de câblage, câblage v4 -> reste de l'app) : ce module
-# n'importait plus rien de config.py (contrairement à la v3), ce qui a fait
-# dériver silencieusement MACRO_RESIDUAL_RISK_WINDOW_H (48.0 codé en dur, voir
-# commentaire "ASSOMPTION À VÉRIFIER" plus bas) de la vraie valeur de
-# référence, config.RESIDUAL_RISK_WINDOW_H = 72. Réimport minimal pour
-# retrouver la source unique de vérité -- ne change rien d'autre au fichier.
-from . import config as _C
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -97,31 +144,51 @@ from pydantic import (
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+# Source unique de vérité pour les constantes partagées avec le reste de
+# l'app (URL du flux, TTL, fenêtre de risque résiduel, fuseau d'affichage).
+from . import config as _C
+
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# SECTION 1 -- NORMALISATION (identique à calendar_core.py, source unique de
-# vérité partagée avec l'app TA). Ne PAS diverger de calendar_core.py sans
-# répercuter le changement ici, sous peine de désynchroniser les deux apps.
+# SECTION 1 -- NORMALISATION
 # =============================================================================
 
-SCHEMA_VERSION = "2.0.0"
+SCHEMA_VERSION = "2.1.0"
 PAIR_MAPPING_METHOD = "static_currency_membership_v1"
 SESSION_POLICY_VERSION = "exchange_local_dst_aware_v1"
-NUMERIC_PARSER_VERSION = "ff_numeric_v1"
+NUMERIC_PARSER_VERSION = "ff_numeric_v2"
+CONTENT_HASH_METHOD = "economic_projection_v2"
 
 UTC = timezone.utc
 
 TZ_LONDON = ZoneInfo("Europe/London")
 TZ_NEW_YORK = ZoneInfo("America/New_York")
 TZ_TOKYO = ZoneInfo("Asia/Tokyo")
-DEFAULT_DISPLAY_TZ = "Africa/Casablanca"
+
+# [F2] Fuseau d'AFFICHAGE lu depuis config.TZ_CET (Europe/Paris) : le HTML
+# macro ne peut plus mélanger deux fuseaux. Override possible pour les tests
+# ou un desk situé ailleurs.
+_FALLBACK_DISPLAY_TZ = "Europe/Paris"
+DISPLAY_TIMEZONE = (
+    os.getenv("BLUESTAR_DISPLAY_TZ")
+    or getattr(_C.TZ_CET, "key", _FALLBACK_DISPLAY_TZ)
+)
+DEFAULT_DISPLAY_TZ = DISPLAY_TIMEZONE  # alias de compatibilité v4
+
+# Placeholder d'affichage unique, aligné sur models.MacroEvent.from_enriched
+# et sur le test ``e['actual'] != '—'`` de app.py. [F3]
+ABSENT_DISPLAY = "—"
 
 SESSION_HOURS = {
     "LONDON": (TZ_LONDON, 8 * 60, 16 * 60 + 30),
     "NEW_YORK": (TZ_NEW_YORK, 8 * 60, 17 * 60),
     "TOKYO": (TZ_TOKYO, 8 * 60, 17 * 60),
 }
+
+# [F7] Table fixe : ``strftime("%A")`` dépend de la locale du conteneur.
+_DAY_NAMES = ("MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY",
+              "FRIDAY", "SATURDAY", "SUNDAY")
 
 G10_PAIRS: Tuple[str, ...] = (
     "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "USD/CAD", "AUD/USD", "NZD/USD",
@@ -140,8 +207,8 @@ GLOBAL_COUNTRY_TOKENS = {"ALL", "GLOBAL", "WORLD", ""}
 
 
 def pairs_for_currency(ccy: str) -> List[str]:
-    """Appartenance mécanique de la devise à la paire. Aucune notion de causalité."""
-    ccy = ccy.upper()
+    """Appartenance mécanique de la devise à la paire. Aucune causalité."""
+    ccy = (ccy or "").upper()
     out = [p for p in G10_PAIRS if ccy in p.split("/")]
     out.extend(p for p in EXTRA_PAIRS.get(ccy, ()) if p not in out)
     return out
@@ -206,9 +273,17 @@ IMPACT_ALIASES = {
     "HIGH": Impact.HIGH, "RED": Impact.HIGH,
     "MEDIUM": Impact.MEDIUM, "ORANGE": Impact.MEDIUM, "MED": Impact.MEDIUM,
     "LOW": Impact.LOW, "YELLOW": Impact.LOW,
-    "HOLIDAY": Impact.HOLIDAY, "NON-ECONOMIC": Impact.HOLIDAY, "GRAY": Impact.HOLIDAY,
-    "GREY": Impact.HOLIDAY,
+    "HOLIDAY": Impact.HOLIDAY, "NON-ECONOMIC": Impact.HOLIDAY,
+    "GRAY": Impact.HOLIDAY, "GREY": Impact.HOLIDAY,
 }
+
+# Projection ``priority`` consommée comme variable de DÉCISION par
+# macro_engine (determine_market_regime / _compute_asset_score /
+# build_catalysts). Seuils identiques à ``time_proximity``. [inchangé v4]
+PRIORITY_PAST = "PAST"
+PRIORITY_CRITICAL = "CRITICAL"
+PRIORITY_HIGH = "HIGH"
+PRIORITY_MEDIUM = "MEDIUM"
 
 
 def iso_z(dt: datetime) -> str:
@@ -217,6 +292,11 @@ def iso_z(dt: datetime) -> str:
 
 def sha256_hex(payload: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def sha256_bytes(payload: bytes) -> str:
+    """[F7] Hash des octets réels, pas d'un décodage ``errors='replace'``."""
+    return hashlib.sha256(payload).hexdigest()
 
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -229,7 +309,7 @@ def slugify(text: str) -> str:
 
 
 def parse_source_datetime(raw: Any) -> datetime:
-    """Accepte 'Z', '+00:00', '-04:00', naïf (traité UTC). Retourne un aware UTC."""
+    """Accepte 'Z', '+00:00', '-04:00', naïf (traité UTC). Retourne aware UTC."""
     if isinstance(raw, datetime):
         dt = raw
     else:
@@ -242,8 +322,45 @@ def parse_source_datetime(raw: Any) -> datetime:
     return dt.astimezone(UTC)
 
 
-_NUM_RE = re.compile(r"^([<>~]?)\s*(-?\d+(?:[.,]\d+)?)\s*([KMBT]?)\s*(%?)$", re.IGNORECASE)
+# --- Parseur numérique -------------------------------------------------------
+_NUM_RE = re.compile(
+    r"^([<>~≈]?)\s*(-?[\d]+(?:[.,][\d]+)*)\s*([KMBT]?)\s*(%?)$", re.IGNORECASE
+)
 _SCALES = {"": 1.0, "K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12}
+_THOUSANDS_COMMA = re.compile(r"^-?\d{1,3}(?:,\d{3})+$")
+_THOUSANDS_DOT = re.compile(r"^-?\d{1,3}(?:\.\d{3})+$")
+
+
+def _to_float(text: str) -> Optional[float]:
+    """[F6] Distingue séparateur de milliers et séparateur décimal.
+
+    Règles, dans l'ordre :
+      1. Les deux séparateurs présents → le DERNIER rencontré est le
+         décimal, l'autre est un séparateur de milliers ("1.234,5" → 1234.5,
+         "1,234.5" → 1234.5).
+      2. Un seul séparateur, en groupes de 3 exacts ("1,234", "12.345.678")
+         → séparateur de milliers.
+      3. Sinon → séparateur décimal ("1,5" → 1.5, "0.25" → 0.25).
+    Retourne ``None`` si non convertible (le caller émet UNPARSEABLE).
+    """
+    t = text.strip()
+    has_comma, has_dot = "," in t, "." in t
+    try:
+        if has_comma and has_dot:
+            if t.rfind(",") > t.rfind("."):
+                return float(t.replace(".", "").replace(",", "."))
+            return float(t.replace(",", ""))
+        if has_comma:
+            if _THOUSANDS_COMMA.match(t):
+                return float(t.replace(",", ""))
+            return float(t.replace(",", "."))
+        if has_dot:
+            if _THOUSANDS_DOT.match(t):
+                return float(t.replace(".", ""))
+            return float(t)
+        return float(t)
+    except ValueError:
+        return None
 
 
 class NumericValue(BaseModel):
@@ -259,7 +376,7 @@ class NumericValue(BaseModel):
 
 
 ABSENT_NUMERIC = NumericValue()
-_PLACEHOLDERS = {"", "-", "—", "–", "n/a", "na", "null", "none"}
+_PLACEHOLDERS = {"", "-", "—", "–", "n/a", "n.a.", "na", "null", "none", "tentative"}
 
 
 def normalize_numeric(raw: Any) -> NumericValue:
@@ -279,7 +396,7 @@ def normalize_numeric(raw: Any) -> NumericValue:
 
     status = "PARSED"
     candidate = text
-    if "|" in candidate:
+    if "|" in candidate:                      # ex. "0.3% | 1.2% y/y"
         candidate = candidate.split("|", 1)[0].strip()
         status = "COMPOSITE"
 
@@ -287,11 +404,13 @@ def normalize_numeric(raw: Any) -> NumericValue:
     if not m:
         return NumericValue(raw=text, parse_status="UNPARSEABLE")
 
-    _prefix, number, suffix, pct = m.groups()
-    try:
-        base = float(number.replace(",", "."))
-    except ValueError:
+    prefix, number, suffix, pct = m.groups()
+    base = _to_float(number)
+    if base is None:
         return NumericValue(raw=text, parse_status="UNPARSEABLE")
+
+    if prefix and status == "PARSED":
+        status = "APPROXIMATE"                # "<0.1%", "~2.5"
 
     suffix = suffix.upper()
     if pct:
@@ -312,7 +431,8 @@ def classify_session(dt_utc: datetime) -> Tuple[Session, List[str]]:
         if start_min <= minutes < end_min:
             active.append(name)
 
-    has_ldn, has_ny, has_tky = ("LONDON" in active, "NEW_YORK" in active, "TOKYO" in active)
+    has_ldn, has_ny, has_tky = ("LONDON" in active, "NEW_YORK" in active,
+                                "TOKYO" in active)
     if has_ldn and has_ny:
         session = Session.OVERLAP_LONDON_NY
     elif has_ldn and has_tky:
@@ -341,25 +461,50 @@ def fmt_until(hours: float) -> str:
     return body if hours > 0 else f"{body} ago"
 
 
+# --- Politique de sélection --------------------------------------------------
+# [F1] Horizon de veille. Doit rester synchronisé avec v10.WATCH_MAX_H (même
+# dette de duplication assumée que TIER_WINDOWS).
+FF_WATCH_HORIZON_H = 168.0
+
+# [F7] Dérivé de config au lieu d'être dupliqué : cohérent avec le
+# ``since_h=72`` de macro_engine._events_for_ccys (gating de blackout) et
+# avec le split events / events_engine plus bas.
+MACRO_RESIDUAL_RISK_WINDOW_H = float(_C.RESIDUAL_RISK_WINDOW_H)
+
+
 class SelectionPolicy(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    policy_version: str = "1.0.0"
+    policy_version: str = "1.1.0"
     impact_levels: Tuple[Impact, ...] = (Impact.HIGH,)
     currencies: Optional[Tuple[str, ...]] = None
     include_global_events: bool = True
-    window_past_hours: float = 72.0
-    window_future_hours: float = 192.0
-    imminent_hours: float = 6.0
-    soon_hours: float = 48.0
-    display_timezone: str = DEFAULT_DISPLAY_TZ
-    max_source_age_seconds: int = 900
-    max_events: int = 2000
+    # Fenêtre passée = fenêtre de risque résiduel du moteur macro.
+    window_past_hours: float = MACRO_RESIDUAL_RISK_WINDOW_H
+    # [F7] Fenêtre servie == fenêtre annoncée (168h), plus 192h vs 168h.
+    window_future_hours: float = FF_WATCH_HORIZON_H
+    imminent_hours: float = 6.0          # INCHANGÉ (décisionnel)
+    soon_hours: float = 48.0             # INCHANGÉ (décisionnel)
+    display_timezone: str = DISPLAY_TIMEZONE
+    max_source_age_seconds: int = int(_C.CALENDAR_CACHE_TTL) * 3
+    max_events: int = 6000               # 2 semaines de flux, tous impacts
+    include_holidays_in_metadata: bool = True
 
     @field_validator("currencies")
     @classmethod
     def _upper(cls, v):
         return None if v is None else tuple(sorted({c.upper() for c in v}))
+
+    @field_validator("display_timezone")
+    @classmethod
+    def _valid_tz(cls, v: str) -> str:
+        try:
+            ZoneInfo(v)
+            return v
+        except (ZoneInfoNotFoundError, ValueError, TypeError):
+            logger.error("display_timezone '%s' inconnu — repli sur %s",
+                         v, _FALLBACK_DISPLAY_TZ)
+            return _FALLBACK_DISPLAY_TZ
 
     @model_validator(mode="after")
     def _coherent(self):
@@ -426,6 +571,7 @@ class CalendarEvent(BaseModel):
     pair_mapping_method: str = PAIR_MAPPING_METHOD
 
     source_index: int
+    source_feed: str = ""            # v5 : quel flux a fourni la ligne
     time_context: Optional[TimeContext] = None
 
     @field_validator("scheduled_at_utc")
@@ -459,7 +605,10 @@ class SourceInfo(BaseModel):
 
     provider: str
     url: str
-    fetched_at_utc: datetime
+    urls: Tuple[str, ...] = ()            # v5 : fusion multi-flux [F1]
+    feeds_ok: int = 0
+    feeds_total: int = 0
+    fetched_at_utc: datetime              # [F4] horodatage RÉEL du fetch
     fetch_duration_ms: int = 0
     http_status: Optional[int] = None
     content_type: Optional[str] = None
@@ -497,8 +646,9 @@ class CalendarPayload(BaseModel):
 
     schema_version: str = SCHEMA_VERSION
     generated_at_utc: datetime
-    generator: str = "bluestar-calendar-macro-unified"
+    generator: str = "bluestar-calendar-macro-unified-v5"
     content_hash: Optional[str] = None
+    content_hash_method: str = CONTENT_HASH_METHOD
     source: SourceInfo
     quality: QualityInfo
     selection_policy: SelectionPolicy
@@ -523,10 +673,11 @@ class CalendarPayload(BaseModel):
         return self
 
 
+# --- Regroupement des publications liées ------------------------------------
 _RATE_KEYWORDS = (
     "official cash rate", "overnight rate", "rate statement", "cash rate",
-    "monetary policy statement", "interest rate", "policy rate", "main refinancing",
-    "federal funds", "bank rate", "fomc statement",
+    "monetary policy statement", "interest rate", "policy rate",
+    "main refinancing", "federal funds", "bank rate", "fomc statement",
 )
 _PRESSER_KEYWORDS = ("press conference", "monetary policy press")
 _LABOR_KEYWORDS = (
@@ -536,12 +687,12 @@ _LABOR_KEYWORDS = (
 
 
 def _match(title: str, keywords: Sequence[str]) -> bool:
-    low = title.lower()
+    low = (title or "").lower()
     return any(k in low for k in keywords)
 
 
 def assign_release_groups(rows: List[Dict[str, Any]]) -> None:
-    """Groupe (mutation in place de la clé 'release_group_*') :
+    """Groupe (mutation in place de 'release_group_*') :
       1. publications strictement simultanées d'un même pays,
       2. conférence de presse rattachée à la décision de taux du même pays
          survenue dans les 120 minutes précédentes."""
@@ -613,8 +764,26 @@ def compute_time_context(
     )
 
 
+def compute_priority(hours_until: float,
+                     policy: SelectionPolicy = DEFAULT_POLICY) -> str:
+    """Projection ``priority`` attendue par macro_engine.
+
+    Champ de DÉCISION : determine_market_regime (CRITICAL),
+    _compute_asset_score (HIGH → catalyst_pen), build_catalysts
+    (CRITICAL/HIGH vs MEDIUM). Seuils IDENTIQUES à ``time_proximity``.
+    """
+    if hours_until <= 0:
+        return PRIORITY_PAST
+    if hours_until <= policy.imminent_hours:
+        return PRIORITY_CRITICAL
+    if hours_until <= policy.soon_hours:
+        return PRIORITY_HIGH
+    return PRIORITY_MEDIUM
+
+
 def _normalize_row(
-    raw: Any, index: int, policy: SelectionPolicy, display_tz: ZoneInfo
+    raw: Any, index: int, policy: SelectionPolicy, display_tz: ZoneInfo,
+    feed: str = "",
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     if not isinstance(raw, dict):
         return None, f"idx={index}: root element is {type(raw).__name__}, expected object"
@@ -624,7 +793,8 @@ def _normalize_row(
         return None, f"idx={index}: missing title"
 
     country = str(raw.get("country", "") or "").strip().upper()
-    impact = IMPACT_ALIASES.get(str(raw.get("impact", "") or "").strip().upper(), Impact.UNKNOWN)
+    impact = IMPACT_ALIASES.get(
+        str(raw.get("impact", "") or "").strip().upper(), Impact.UNKNOWN)
 
     try:
         when = parse_source_datetime(raw.get("date"))
@@ -654,6 +824,8 @@ def _normalize_row(
     type_id = f"ff:{currency.lower()}:{slugify(title)}"
 
     return {
+        # occurrence_id : fonction de (event_type_id, UTC) UNIQUEMENT — donc
+        # identique entre les deux apps quel que soit le fuseau d'affichage.
         "occurrence_id": sha256_hex(f"{type_id}|{iso_z(when)}")[:32],
         "event_type_id": type_id,
         "release_group_id": None,
@@ -666,7 +838,7 @@ def _normalize_row(
         "display_timezone": policy.display_timezone,
         "date_utc": when.strftime("%Y-%m-%d"),
         "date_display": local.strftime("%Y-%m-%d"),
-        "day_of_week": local.strftime("%A").upper(),
+        "day_of_week": _DAY_NAMES[local.weekday()],       # [F7] locale-safe
         "impact": impact,
         "session": None,
         "active_market_centers": None,
@@ -678,6 +850,7 @@ def _normalize_row(
         "pair_mapping_status": mapping,
         "pair_mapping_method": PAIR_MAPPING_METHOD,
         "source_index": index,
+        "source_feed": feed,
     }, None
 
 
@@ -687,27 +860,33 @@ def build_payload(
     source: SourceInfo,
     now_utc: datetime,
     policy: SelectionPolicy = DEFAULT_POLICY,
+    extra_warnings: Sequence[str] = (),
 ) -> CalendarPayload:
-    """Transforme le payload brut en artefact canonique validé."""
+    """Transforme le payload brut en artefact canonique validé.
+
+    Lève ``ValueError`` uniquement sur une erreur de PROGRAMMATION (racine
+    non-liste, volume absurde) — ``build_calendar()`` la rattrape et dégrade.
+    """
     if not isinstance(raw_list, list):
         raise ValueError(f"source root must be a JSON array, got {type(raw_list).__name__}")
     if len(raw_list) > policy.max_events:
         raise ValueError(f"payload too large: {len(raw_list)} > {policy.max_events}")
 
     display_tz = policy.display_tz()
-    warnings: List[str] = []
+    warnings: List[str] = list(extra_warnings)
     rejections: List[str] = []
     rows: List[Dict[str, Any]] = []
 
     for index, raw in enumerate(raw_list):
-        row, err = _normalize_row(raw, index, policy, display_tz)
+        feed = raw.get("_feed", "") if isinstance(raw, dict) else ""
+        payload_row = {k: v for k, v in raw.items() if k != "_feed"} if isinstance(raw, dict) else raw
+        row, err = _normalize_row(payload_row, index, policy, display_tz, feed)
         if err:
             rejections.append(err)
             continue
         rows.append(row)
 
-    unknown = {r["impact"] for r in rows if r["impact"] is Impact.UNKNOWN}
-    if unknown:
+    if any(r["impact"] is Impact.UNKNOWN for r in rows):
         warnings.append("SOURCE_IMPACT_VOCABULARY_CHANGED")
 
     lo = now_utc - timedelta(hours=policy.window_past_hours)
@@ -746,8 +925,10 @@ def build_payload(
         row["session"] = session
         row["active_market_centers"] = tuple(centers)
         event = CalendarEvent(**row)
-        events.append(event.with_time_context(compute_time_context(event, now_utc, policy)))
+        events.append(event.with_time_context(
+            compute_time_context(event, now_utc, policy)))
 
+    # [F4] Âge réel de la source (fetched_at_utc n'est plus == now_utc).
     age = max(0, int((now_utc - source.fetched_at_utc).total_seconds()))
     is_stale = age > policy.max_source_age_seconds
     if is_stale:
@@ -756,6 +937,8 @@ def build_payload(
         warnings.append("SERVING_LAST_KNOWN_GOOD")
     if not source.supports_actual:
         warnings.append("SOURCE_DOES_NOT_PROVIDE_ACTUAL")
+    if source.feeds_total and source.feeds_ok < source.feeds_total:
+        warnings.append(f"PARTIAL_FEED_COVERAGE:{source.feeds_ok}/{source.feeds_total}")
 
     all_times = [r["scheduled_at_utc"] for r in rows]
     coverage_start = min(all_times) if all_times else None
@@ -766,6 +949,11 @@ def build_payload(
         warnings.append("SOURCE_COVERAGE_STARTS_TOO_FAR_IN_FUTURE")
     if not rows:
         warnings.append("EMPTY_NORMALIZED_PAYLOAD")
+    if rows and not selected:
+        # Cas piégeux : flux joignable, lignes normalisées, mais AUCUNE ne
+        # passe le filtre d'impact. Sans ce warning, l'app affiche 0 event
+        # avec reachable=True — silence indiscernable d'un jour calme.
+        warnings.append("NO_EVENT_MATCHED_SELECTION_POLICY")
 
     score = 1.0
     if is_stale:
@@ -774,6 +962,8 @@ def build_payload(
         score -= 0.25
     if rejections:
         score -= min(0.25, 0.05 * len(rejections))
+    if source.feeds_total and source.feeds_ok < source.feeds_total:
+        score -= 0.15
     if "ALL_SOURCE_EVENTS_IN_THE_PAST_WEEK_ROLLOVER_PENDING" in warnings:
         score -= 0.30
     if not rows:
@@ -798,7 +988,7 @@ def build_payload(
         coverage_start_utc=iso_z(coverage_start) if coverage_start else None,
         coverage_end_utc=iso_z(coverage_end) if coverage_end else None,
         data_quality_score=score,
-        warnings=tuple(warnings),
+        warnings=tuple(dict.fromkeys(warnings)),   # dédoublonne, ordre stable
         rejections=tuple(rejections[:50]),
     )
 
@@ -812,19 +1002,34 @@ def build_payload(
     return payload.model_copy(update={"content_hash": canonical_content_hash(payload)})
 
 
-_VOLATILE_EVENT_FIELDS = ("time_context",)
-_VOLATILE_ROOT_FIELDS = ("generated_at_utc", "content_hash", "source", "quality")
-
-
 def canonical_content_hash(payload: CalendarPayload) -> str:
-    """SHA-256 du contenu économique seul, insensible aux champs volatils."""
-    dumped = payload.model_dump(mode="json")
-    for field in _VOLATILE_ROOT_FIELDS:
-        dumped.pop(field, None)
-    for event in dumped.get("events", []):
-        for f in _VOLATILE_EVENT_FIELDS:
-            event.pop(f, None)
-    canonical = json.dumps(dumped, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    """[F5] SHA-256 d'une PROJECTION ÉCONOMIQUE explicite.
+
+    Insensible à : fuseau d'affichage, ordre/origine de fusion des flux,
+    horodatages volatils, métadonnées de qualité. Deux instances de l'app
+    (macro / TA) configurées avec des fuseaux d'affichage différents
+    produisent donc le MÊME hash pour le même calendrier — ce que la v4
+    ne pouvait structurellement pas garantir.
+    """
+    projection = [
+        {
+            "occurrence_id": e.occurrence_id,
+            "event_type_id": e.event_type_id,
+            "scheduled_at_utc": iso_z(e.scheduled_at_utc),
+            "currency": e.currency,
+            "name": e.name,
+            "impact": e.impact.value,
+            "forecast": e.forecast.raw,
+            "previous": e.previous.raw,
+            "actual": e.actual.raw,
+            "release_group_id": e.release_group_id,
+        }
+        for e in payload.events
+    ]
+    canonical = json.dumps(
+        {"method": CONTENT_HASH_METHOD, "events": projection},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    )
     return "sha256:" + sha256_hex(canonical)
 
 
@@ -848,18 +1053,12 @@ _LEGACY_SESSION = {
 
 
 def _utc_offset_label(dt: datetime) -> str:
-    """Libellé "UTC+H" (ou "UTC-H") lisible, calculé à partir de l'offset RÉEL
-    du datetime localisé -- jamais codé en dur.
+    """Libellé « UTC+H » calculé sur l'offset RÉEL du datetime localisé.
 
-    DEMANDE UTILISATEUR (câblage du 08/09/2026) : le renderer affichait le nom
-    de zone IANA brut ("Africa/Casablanca") entre parenthèses à côté de chaque
-    heure d'événement -- correct mais peu lisible pour un desk FX habitué à un
-    offset. Un "+1" codé en dur aurait été FAUX pendant le Ramadan, période où
-    le Maroc repasse à UTC+0 (pratique documentée depuis 2018) : is_blackout /
-    priority ne sont pas affectés (ils travaillent en UTC pur via hours_until),
-    mais l'AFFICHAGE doit rester exact toute l'année. D'où un calcul dynamique
-    sur ``dt.utcoffset()`` plutôt qu'une chaîne fixe -- correct pour n'importe
-    quel ``display_timezone`` de policy, pas seulement Casablanca.
+    Jamais codé en dur : un « +1 » fixe serait faux en Europe/Paris l'hiver
+    comme en Africa/Casablanca pendant le Ramadan. is_blackout / priority ne
+    sont pas concernés (UTC pur via hours_until) mais l'AFFICHAGE doit rester
+    exact toute l'année et pour n'importe quel display_timezone.
     """
     offset = dt.utcoffset()
     if offset is None:
@@ -870,69 +1069,89 @@ def _utc_offset_label(dt: datetime) -> str:
     return f"UTC{sign}{hh}" + (f":{mm:02d}" if mm else "")
 
 
+def _disp(nv: NumericValue) -> str:
+    """[F3] Contrat d'affichage : toujours une chaîne, jamais None, jamais ""
+    — ``ABSENT_DISPLAY`` ("—") quand le flux ne fournit pas la valeur.
+    Aligné sur models.MacroEvent.from_enriched et sur le test
+    ``e['actual'] != '—'`` de app.py."""
+    return nv.raw if nv.raw else ABSENT_DISPLAY
+
+
 def to_legacy_payload(payload: CalendarPayload, now_utc: datetime) -> Dict[str, Any]:
-    """Identique à celle de calendar_core.py -- utilisée ici uniquement comme
-    étape intermédiaire ; build_calendar() y ajoute ensuite 'priority'."""
+    """Vue « legacy » consommée par macro_engine / renderer / app.py.
+    ``build_calendar()`` y ajoute ensuite priority / tier / blackout et les
+    champs de couverture de flux."""
     events = refresh_time_contexts(payload, now_utc)
+    policy = payload.selection_policy
     rows: List[Dict[str, Any]] = []
     summary: Dict[str, List[str]] = {}
 
     for e in events:
         ctx = e.time_context
+        offset_lbl = _utc_offset_label(e.scheduled_at_display)
         rows.append({
             "occurrence_id": e.occurrence_id,
             "event_type_id": e.event_type_id,
             "release_group_id": e.release_group_id,
+            "release_group_type": (e.release_group_type.value
+                                   if e.release_group_type else None),
             "currency": e.currency,
             "event_name": e.name,
             "datetime_utc": iso_z(e.scheduled_at_utc),
             "date_display": e.date_display,
-            # COMPAT-FIX (demande utilisateur 08/09/2026) : "UTC+1" au lieu du
-            # nom de zone IANA brut "Africa/Casablanca" -- voir
-            # _utc_offset_label ci-dessus pour pourquoi ce n'est pas une
-            # chaîne "+1" codée en dur.
-            "time_display": f"{e.scheduled_at_display.strftime('%H:%M')} ({_utc_offset_label(e.scheduled_at_display)})",
+            "time_display": f"{e.scheduled_at_display.strftime('%H:%M')} ({offset_lbl})",
+            "datetime_display": (f"{e.date_display} · "
+                                 f"{e.scheduled_at_display.strftime('%H:%M')} ({offset_lbl})"),
+            "display_timezone": e.display_timezone,
             "day_of_week": e.day_of_week,
             "impact": e.impact.value.lower(),
-            # COMPAT-FIX : .raw est None (pas "") quand le flux ne fournit pas
-            # la valeur -- MacroEvent.from_enriched() fait d.get("forecast","—")
-            # qui ne retombe sur "—" QUE si la clé est absente, jamais si elle
-            # vaut None. Sans ce "or ''", un consensus/previous non publié
-            # devenait littéralement la chaîne "None" partout où ces champs
-            # sont affichés (contrat v3 : toujours une chaîne, jamais None).
-            "forecast": e.forecast.raw or "",
+            "forecast": _disp(e.forecast),
             "forecast_value": e.forecast.value,
-            "previous": e.previous.raw or "",
+            "previous": _disp(e.previous),
             "previous_value": e.previous.value,
-            "actual": e.actual.raw or "",
+            "actual": _disp(e.actual),
+            "actual_value": e.actual.value,
             "actual_status": e.actual_status.value,
             "hours_until": ctx.hours_until,
             "hours_until_display": ctx.hours_until_display,
             "is_upcoming": ctx.is_upcoming,
             "time_proximity": ctx.time_proximity.value,
             "status": ctx.status.value,
-            "session": _LEGACY_SESSION[e.session],
+            "session": _LEGACY_SESSION.get(e.session, e.session.value),  # [F7]
             "session_v2": e.session.value,
             "pairs_affected": list(e.pairs_with_currency_exposure),
             "pair_mapping_status": e.pair_mapping_status.value,
+            "source_feed": e.source_feed,
         })
         summary.setdefault(e.date_display, []).append(f"{e.currency} – {e.name}")
 
     return {
         "metadata": {
-            "schema_version": f"legacy-1.1.0+core-{payload.schema_version}",
+            "schema_version": f"legacy-1.2.0+core-{payload.schema_version}",
             "generated_at_utc": iso_z(payload.generated_at_utc),
             "content_hash": payload.content_hash,
+            "content_hash_method": payload.content_hash_method,
             "source": payload.source.provider,
             "source_url": payload.source.url,
+            "source_urls": list(payload.source.urls),
+            "feeds_ok": payload.source.feeds_ok,
+            "feeds_total": payload.source.feeds_total,
             "fetched_at_utc": iso_z(payload.source.fetched_at_utc),
             "supports_actual": payload.source.supports_actual,
-            "timezone": f"UTC (backend) / {payload.selection_policy.display_timezone} (display)",
+            "timezone": f"UTC (backend) / {policy.display_timezone} (display)",
+            "display_timezone": policy.display_timezone,
+            "window_past_hours": policy.window_past_hours,
+            "window_future_hours": policy.window_future_hours,
+            "imminent_hours": policy.imminent_hours,
+            "soon_hours": policy.soon_hours,
             "quality_status": payload.quality.status.value,
             "data_quality_score": payload.quality.data_quality_score,
             "is_stale": payload.quality.is_stale,
             "source_age_seconds": payload.quality.source_age_seconds,
+            "raw_event_count": payload.quality.raw_event_count,
+            "rejected_event_count": payload.quality.rejected_event_count,
             "warnings": list(payload.quality.warnings),
+            "rejections": list(payload.quality.rejections),
             "total_high_impact": len(rows),
             "upcoming_count": sum(1 for r in rows if r["is_upcoming"]),
             "imminent_count": sum(1 for r in rows if r["time_proximity"] == "IMMINENT"),
@@ -947,11 +1166,11 @@ def to_legacy_payload(payload: CalendarPayload, now_utc: datetime) -> Dict[str, 
 
 
 # =============================================================================
-# SECTION 2 -- BLACKOUT (inchangé, réplique exacte de v10.py / Desk Engine).
-# Sujet ORTHOGONAL à la normalisation ci-dessus : ne jamais fusionner cette
-# logique avec calendar_core, elle n'a pas d'équivalent côté app TA.
-# IMPORTANT -- dette technique assumée : toute modification de TIER_WINDOWS
-# dans v10.py DOIT être répercutée ici à l'identique.
+# SECTION 2 -- BLACKOUT (réplique EXACTE de v10.py / Desk Engine).
+# Sujet ORTHOGONAL à la normalisation ci-dessus : ne JAMAIS fusionner cette
+# logique avec calendar_core (l'app TA n'a pas cette notion).
+# IMPORTANT : toute modification de TIER_WINDOWS dans v10.py DOIT être
+# répercutée ici à l'identique. Dette de duplication assumée.
 # =============================================================================
 
 _TIER_S = ("non-farm", "nonfarm", "nfp", "fomc", "cpi", "cash rate",
@@ -970,8 +1189,7 @@ DEFAULT_TIER_WINDOW = (2.0, 24.0)
 
 
 def classify_tier(event_name: str) -> str:
-    """Identique à v10.classify_tier -- même liste de mots-clés, même ordre
-    de priorité (S avant A avant B)."""
+    """Identique à v10.classify_tier — mêmes mots-clés, même ordre (S>A>B)."""
     n = (event_name or "").lower()
     if any(k in n for k in _TIER_S):
         return "S"
@@ -984,11 +1202,14 @@ def classify_tier(event_name: str) -> str:
 
 def is_blackout(event_name: str, hours_until: float) -> tuple:
     """True si l'événement place sa devise en fenêtre de blackout, avant OU
-    après l'annonce -- réplique de v10.CalendarData.bucket().
+    après l'annonce — réplique de v10.CalendarData.bucket().
 
-    ``hours_until`` suit la même convention que ``build_calendar()`` :
-    positif = événement futur, négatif = événement déjà passé.
-    Retourne ``(bloqué: bool, tier: str)``.
+    ``hours_until`` suit la convention de ``build_calendar()`` : positif =
+    futur, négatif = déjà passé. Retourne ``(bloqué: bool, tier: str)``.
+
+    NB : la fenêtre passée la plus large est 48h (tier S) — d'où le
+    ``since_h=72`` de macro_engine._events_for_ccys, strictement suffisant,
+    et d'où ``window_past_hours = RESIDUAL_RISK_WINDOW_H = 72``.
     """
     tier = classify_tier(event_name)
     before, after = TIER_WINDOWS.get(tier, DEFAULT_TIER_WINDOW)
@@ -996,18 +1217,36 @@ def is_blackout(event_name: str, hours_until: float) -> tuple:
 
 
 # =============================================================================
-# SECTION 3 -- FETCH (résilient mais SANS état persistant, à la demande de
-# l'utilisateur : pas de circuit breaker, pas de last-known-good sur disque,
-# pas de health.json -- juste retries/backoff urllib3 par appel, comme
-# calendar_ingestor.py mais stateless).
+# SECTION 3 -- FETCH (résilient, SANS état persistant : pas de circuit
+# breaker, pas de last-known-good disque, pas de health.json).
+# Deux GET SÉQUENTIELS sur la même session — surtout PAS de ThreadPoolExecutor
+# ici : macro_engine documente un SIGSEGV (curl_cffi/libcurl non thread-safe)
+# sur les exécuteurs imbriqués.
 # =============================================================================
 
-# COMPAT-FIX : dupliquait l'URL en dur (par coïncidence identique à
-# config.FF_JSON_URL) au lieu de la référencer -- source unique de vérité
-# restaurée, override via variable d'env toujours possible pour les tests.
-SOURCE_URL = os.getenv("BLUESTAR_SOURCE_URL", _C.FF_JSON_URL)
 SOURCE_PROVIDER = "Forex Factory / Fair Economy weekly public feed"
-USER_AGENT = os.getenv("BLUESTAR_USER_AGENT", "BluestarCalendarMacroUnified/4.0 (+ops@bluestar)")
+USER_AGENT = os.getenv("BLUESTAR_USER_AGENT",
+                       "BluestarCalendarMacroUnified/5.0 (+ops@bluestar)")
+
+_THISWEEK_URL = os.getenv("BLUESTAR_SOURCE_URL", _C.FF_JSON_URL)
+
+
+def _derive_nextweek_url(thisweek_url: str) -> Optional[str]:
+    """[F1] Dérive l'URL du flux de la semaine suivante depuis celle de la
+    semaine courante (``ff_calendar_thisweek.json`` →
+    ``ff_calendar_nextweek.json``). Aucune URL codée en dur : si le nom du
+    flux change côté config, la dérivation suit ou se désactive proprement."""
+    override = os.getenv("BLUESTAR_SOURCE_URL_NEXT")
+    if override:
+        return override
+    if "thisweek" in thisweek_url:
+        return thisweek_url.replace("thisweek", "nextweek")
+    return None
+
+
+SOURCE_URL = _THISWEEK_URL                      # compat v3/v4
+_NEXTWEEK_URL = _derive_nextweek_url(_THISWEEK_URL)
+SOURCE_URLS: Tuple[str, ...] = tuple(u for u in (_THISWEEK_URL, _NEXTWEEK_URL) if u)
 
 CONNECT_TIMEOUT = 5.0
 READ_TIMEOUT = 15.0
@@ -1016,18 +1255,21 @@ MAX_PAYLOAD_BYTES = 8 * 1024 * 1024
 
 def _build_session() -> requests.Session:
     session = requests.Session()
-    retry = Retry(
-        total=4,
-        connect=3,
-        read=3,
-        status=3,
+    retry_kwargs: Dict[str, Any] = dict(
+        total=4, connect=3, read=3, status=3,
         backoff_factor=1.5,
-        backoff_jitter=0.4,
         status_forcelist=(408, 429, 500, 502, 503, 504),
         allowed_methods=frozenset(["GET"]),
         raise_on_status=False,
         respect_retry_after_header=True,
     )
+    try:
+        # [F7] backoff_jitter n'existe qu'à partir d'urllib3 2.0 : sur 1.x le
+        # constructeur levait TypeError → fetch mort → calendrier vide.
+        retry = Retry(backoff_jitter=0.4, **retry_kwargs)
+    except TypeError:
+        logger.debug("urllib3 < 2.0 : backoff_jitter indisponible")
+        retry = Retry(**retry_kwargs)
     adapter = HTTPAdapter(max_retries=retry, pool_maxsize=4)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
@@ -1040,132 +1282,268 @@ def _build_session() -> requests.Session:
 
 
 class FetchError(RuntimeError):
+    """Conservé pour compatibilité d'import. Le fetch ne lève jamais :
+    ``fetch_raw`` retourne toujours ``(liste, méta)``."""
+
     def __init__(self, code: str, message: str):
         super().__init__(f"{code}: {message}")
         self.code = code
 
 
-def fetch_raw(url: str = SOURCE_URL) -> Tuple[List[Dict], Dict[str, Any]]:
-    """Fetch résilient (retries + backoff), SANS état persistant.
-
-    Retourne ``([], meta_vide)`` sur tout échec -- l'app se dégrade
-    proprement plutôt que de lever une exception (même contrat que la v3).
-    """
-    session = _build_session()
+def _fetch_one(session: requests.Session, url: str) -> Tuple[List[Dict], Dict[str, Any]]:
+    """Un seul flux. Ne lève JAMAIS : retourne ``([], {"ok": False, ...})``."""
     started = time.monotonic()
+    label = "nextweek" if "nextweek" in url else "thisweek"
+    fail = {"ok": False, "url": url, "feed": label}
     try:
         response = session.get(url, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), stream=True)
     except requests.RequestException as exc:
-        logger.error("Calendar fetch failed: %s", exc)
-        return [], {}
+        logger.error("Calendar fetch failed (%s): %s", label, exc)
+        return [], fail
 
     try:
         with response:
             if response.status_code >= 400:
-                logger.error("Calendar fetch failed: HTTP %s", response.status_code)
-                return [], {}
+                logger.error("Calendar fetch failed (%s): HTTP %s",
+                             label, response.status_code)
+                return [], {**fail, "http_status": response.status_code}
 
             chunks, size = [], 0
             for chunk in response.iter_content(chunk_size=65536):
                 size += len(chunk)
                 if size > MAX_PAYLOAD_BYTES:
-                    logger.error("Calendar fetch failed: payload too large (%d bytes)", size)
-                    return [], {}
+                    logger.error("Calendar fetch failed (%s): payload too large (%d B)",
+                                 label, size)
+                    return [], fail
                 chunks.append(chunk)
             body = b"".join(chunks)
 
             meta = {
+                "ok": True,
+                "url": url,
+                "feed": label,
                 "http_status": response.status_code,
-                "content_type": (response.headers.get("Content-Type") or "").split(";")[0].strip() or None,
+                "content_type": (response.headers.get("Content-Type") or "")
+                                .split(";")[0].strip() or None,
                 "payload_bytes": size,
-                "payload_sha256": "sha256:" + sha256_hex(body.decode("utf-8", errors="replace")),
+                # [F7] hash des octets réels
+                "payload_sha256": "sha256:" + sha256_bytes(body),
                 "etag": response.headers.get("ETag"),
                 "last_modified": response.headers.get("Last-Modified"),
                 "fetch_duration_ms": int((time.monotonic() - started) * 1000),
             }
         parsed = json.loads(body.decode("utf-8"))
         if not isinstance(parsed, list):
-            logger.error("Calendar fetch failed: root is %s, expected array", type(parsed).__name__)
-            return [], {}
+            logger.error("Calendar fetch failed (%s): root is %s, expected array",
+                         label, type(parsed).__name__)
+            return [], fail
+        for row in parsed:
+            if isinstance(row, dict):
+                row["_feed"] = label
         return parsed, meta
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        logger.error("Calendar fetch failed: invalid JSON (%s)", exc)
-        return [], {}
+        logger.error("Calendar fetch failed (%s): invalid JSON (%s)", label, exc)
+        return [], fail
+    except Exception as exc:                      # ceinture + bretelles
+        logger.error("Calendar fetch failed (%s): %s", label, exc)
+        return [], fail
+
+
+def _raw_dedupe_key(row: Dict[str, Any]) -> Tuple[str, str, str]:
+    """Clé de dédoublonnage inter-flux, robuste aux formats de date."""
+    try:
+        stamp = iso_z(parse_source_datetime(row.get("date")))
+    except (ValueError, TypeError):
+        stamp = str(row.get("date"))
+    return (str(row.get("country", "") or "").upper(),
+            str(row.get("title", "") or "").strip().lower(),
+            stamp)
+
+
+def fetch_raw(urls: Optional[Iterable[str]] = None) -> Tuple[List[Dict], Dict[str, Any]]:
+    """[F1] Fetch résilient MULTI-FLUX (thisweek + nextweek), sans état.
+
+    Séquentiel et volontairement non parallélisé (voir en-tête de section).
+    Retourne ``([], meta)`` sur échec total — ``build_calendar()`` dégrade
+    proprement plutôt que de lever (même contrat que la v3).
+    """
+    url_list = list(urls) if urls is not None else list(SOURCE_URLS)
+    session = _build_session()
+    fetched_at = datetime.now(UTC)
+
+    merged: List[Dict] = []
+    metas: List[Dict[str, Any]] = []
+    for url in url_list:
+        rows, meta = _fetch_one(session, url)
+        metas.append(meta)
+        merged.extend(rows)
+
+    seen: set = set()
+    deduped: List[Dict] = []
+    raw_dupes = 0
+    for row in merged:
+        if not isinstance(row, dict):
+            deduped.append(row)
+            continue
+        key = _raw_dedupe_key(row)
+        if key in seen:
+            raw_dupes += 1
+            continue
+        seen.add(key)
+        deduped.append(row)
+
+    ok_metas = [m for m in metas if m.get("ok")]
+    agg: Dict[str, Any] = {
+        "fetched_at_utc": fetched_at,
+        "urls": tuple(url_list),
+        "feeds_total": len(url_list),
+        "feeds_ok": len(ok_metas),
+        "feeds": metas,
+        "raw_duplicates_dropped": raw_dupes,
+        "fetch_duration_ms": sum(int(m.get("fetch_duration_ms") or 0) for m in metas),
+        "payload_bytes": sum(int(m.get("payload_bytes") or 0) for m in metas),
+    }
+    if ok_metas:
+        first = ok_metas[0]
+        agg.update({
+            "http_status": first.get("http_status"),
+            "content_type": first.get("content_type"),
+            "etag": first.get("etag"),
+            "last_modified": first.get("last_modified"),
+            "payload_sha256": "sha256:" + sha256_hex(
+                "|".join(str(m.get("payload_sha256")) for m in ok_metas)),
+        })
+    if not ok_metas:
+        logger.error("Calendar fetch: aucun flux disponible sur %d tentés",
+                     len(url_list))
+    elif len(ok_metas) < len(url_list):
+        logger.warning("Calendar fetch: couverture partielle (%d/%d flux) — "
+                       "l'horizon de veille peut être tronqué",
+                       len(ok_metas), len(url_list))
+    return deduped, agg
 
 
 # =============================================================================
-# SECTION 4 -- POINT D'ENTRÉE PUBLIC, compatible macro_engine.py sans aucune
-# modification côté consommateur.
+# SECTION 4 -- POINT D'ENTRÉE PUBLIC, compatible macro_engine.py / app.py /
+# renderer.py sans AUCUNE modification côté consommateur.
 # =============================================================================
 
-# PATCH-FEEDHORIZON (identique à v3, round du 31/07/2026, audit F-15).
-# FF_JSON_URL pointe sur un flux HEBDOMADAIRE. Un silence calendaire au-delà
-# de la fin du flux n'est PAS une absence de risque. Doit rester synchronisé
-# avec v10.WATCH_MAX_H (même dette de duplication assumée que TIER_WINDOWS).
-FF_WATCH_HORIZON_H = 168.0
+def _empty_source(now_utc: datetime, meta: Dict[str, Any]) -> SourceInfo:
+    fetched = meta.get("fetched_at_utc") or now_utc
+    urls = tuple(meta.get("urls") or SOURCE_URLS)
+    return SourceInfo(
+        provider=SOURCE_PROVIDER,
+        url=urls[0] if urls else SOURCE_URL,
+        urls=urls,
+        feeds_ok=int(meta.get("feeds_ok") or 0),
+        feeds_total=int(meta.get("feeds_total") or len(urls)),
+        fetched_at_utc=fetched,
+        payload_sha256=str(meta.get("payload_sha256") or "sha256:unknown"),
+        supports_actual=False,
+        from_last_known_good=False,
+    )
 
-# COMPAT-FIX : config.py (fourni au round de câblage) donne
-# RESIDUAL_RISK_WINDOW_H = 72, pas 48. L'assomption de la docstring
-# ci-dessus était fausse -- confirmé en lisant le vrai config.py. Lue
-# directement depuis la source unique de vérité, plus de duplication/dérive
-# possible si RESIDUAL_RISK_WINDOW_H change côté config.py.
-MACRO_RESIDUAL_RISK_WINDOW_H = _C.RESIDUAL_RISK_WINDOW_H
+
+def _feed_bounds(raw_data: Sequence[Any]) -> Tuple[Optional[datetime], Optional[datetime],
+                                                   Dict[str, int], List[Dict[str, str]]]:
+    """Bornes de couverture du flux, TOUS impacts confondus (mesure la
+    couverture réelle, pas celle des seuls high-impact retenus), + comptage
+    par impact + jours fériés à venir. Aucune décision n'est prise ici : de
+    la VISIBILITÉ, pas du gating."""
+    start = end = None
+    counts: Dict[str, int] = {}
+    holidays: List[Dict[str, str]] = []
+    for ev in raw_data:
+        if not isinstance(ev, dict):
+            continue
+        try:
+            t = parse_source_datetime(ev.get("date"))
+        except (ValueError, TypeError):
+            continue
+        if start is None or t < start:
+            start = t
+        if end is None or t > end:
+            end = t
+        imp = IMPACT_ALIASES.get(
+            str(ev.get("impact", "") or "").strip().upper(), Impact.UNKNOWN)
+        counts[imp.value] = counts.get(imp.value, 0) + 1
+        if imp is Impact.HOLIDAY:
+            holidays.append({
+                "date_utc": t.strftime("%Y-%m-%d"),
+                "currency": str(ev.get("country", "") or "").upper(),
+                "name": str(ev.get("title", "") or "").strip(),
+            })
+    return start, end, counts, holidays
 
 
 def build_calendar(
     now_utc: Optional[datetime] = None,
     raw_data: Optional[List[Dict]] = None,
     policy: SelectionPolicy = DEFAULT_POLICY,
+    urls: Optional[Iterable[str]] = None,
 ) -> Dict:
-    """Construit le payload canonique, avec le MÊME contrat de sortie que
-    calendar_layer.py v3 (metadata / events / events_engine / summary_by_day),
-    mais en s'appuyant en interne sur la normalisation de calendar_core --
-    donc garanti identique, événement par événement, à ce que voit l'app TA.
+    """Construit le payload canonique avec le MÊME contrat de sortie que la
+    v3/v4 (``metadata`` / ``events`` / ``events_engine`` / ``summary_by_day``),
+    en s'appuyant en interne sur la normalisation canonique — donc garanti
+    identique, événement par événement (au sens ``occurrence_id``), à ce que
+    voit l'app TA.
 
-    Trois corrections explicites par rapport à un branchement naïf de
-    to_legacy_payload() (voir docstring de tête -- section "BUG ÉVITÉ") :
-      1. ``priority`` (CRITICAL/HIGH/MEDIUM/PAST) restauré, absent de
-         calendar_core mais consommé comme variable de décision par
-         macro_engine.py.
-      2. ``metadata.reachable`` / ``feed_horizon_h`` / ``feed_horizon_truncated``
-         restaurés -- absents de calendar_core (patch F-15, spécifique à ce
-         module macro) ; sans eux, ``calendar_reachable`` et
-         ``calendar_feed_truncated`` de BriefingContext restent figés à des
-         valeurs par défaut trompeuses (P0-1 FIX silencieusement perdu).
-      3. ``events`` (à venir uniquement) redevient distinct de
-         ``events_engine`` (à venir + passés dans
-         MACRO_RESIDUAL_RISK_WINDOW_H), comme en v3 -- calendar_core renvoie
-         par défaut la même liste pour les deux clés.
+    Quatre restaurations/corrections explicites par rapport à un branchement
+    naïf de ``to_legacy_payload()`` :
+
+      1. ``priority`` (CRITICAL/HIGH/MEDIUM/PAST) — absent du cœur canonique
+         mais consommé comme variable de DÉCISION par macro_engine
+         (determine_market_regime / _compute_asset_score / build_catalysts).
+         Sans lui : incident du 05/08/2026, « Catalyseurs du Jour » vide.
+      2. ``metadata.reachable`` / ``feed_horizon_h`` /
+         ``feed_horizon_truncated`` — alimentent ``calendar_reachable``,
+         ``calendar_feed_truncated`` et ``calendar_feed_horizon_h`` de
+         BriefingContext (patch F-15 / P0-1 / V4-04), plus la caption et le
+         KPI de app.py.
+      3. ``events`` (à venir uniquement) distinct de ``events_engine``
+         (à venir + passés dans MACRO_RESIDUAL_RISK_WINDOW_H).
+      4. v5 — ``tier`` / ``is_blackout`` par ligne : le Desk et la Macro
+         énoncent désormais la MÊME vérité de blackout sur la même donnée,
+         et la diagnostic view de app.py peut l'afficher sans recalculer.
+
+    Ne lève jamais : tout échec (réseau, JSON, flux hors-norme) dégrade vers
+    un calendrier vide avec ``reachable = False``.
     """
     now_utc = now_utc or datetime.now(UTC)
     meta: Dict[str, Any] = {}
+    fetched = False
     if raw_data is None:
-        raw_data, meta = fetch_raw()
+        raw_data, meta = fetch_raw(urls)
+        fetched = True
+    raw_data = list(raw_data or [])
 
-    # --- Horizon réel du flux (TOUS impacts confondus), avant tout filtrage
-    # par impact/fenêtre -- mesure la couverture du flux, pas celle des seuls
-    # high-impact retenus plus bas. Aucune décision n'est modifiée ici : de
-    # la visibilité, pas du gating (identique v3).
-    feed_end: Optional[datetime] = None
-    for _ev in raw_data:
-        try:
-            _t = parse_source_datetime(_ev.get("date")) if isinstance(_ev, dict) else None
-        except (ValueError, TypeError):
-            _t = None
-        if _t is not None and (feed_end is None or _t > feed_end):
-            feed_end = _t
+    # --- Couverture réelle du flux, avant tout filtrage --------------------
+    feed_start, feed_end, impact_counts, holidays = _feed_bounds(raw_data)
     feed_horizon_h = ((feed_end - now_utc).total_seconds() / 3600.0) if feed_end else None
     feed_truncated = feed_horizon_h is not None and feed_horizon_h < FF_WATCH_HORIZON_H
-    if feed_truncated:
+    if not raw_data:
+        # Flux injoignable : l'horizon n'est pas « tronqué », il est INEXISTANT.
+        # Ne pas confondre les deux dans le HTML — reachable=False le dit déjà.
+        feed_truncated = False
+    elif feed_truncated:
         logger.warning(
             "FF feed horizon %.1fh < %.0fh — fenêtre WATCH non vérifiable au-delà "
-            "du flux hebdomadaire ; un silence calendaire n'est PAS une absence de risque",
-            feed_horizon_h, FF_WATCH_HORIZON_H)
+            "du flux (couverture %d/%d) ; un silence calendaire n'est PAS une "
+            "absence de risque",
+            feed_horizon_h, FF_WATCH_HORIZON_H,
+            int(meta.get("feeds_ok") or 0), int(meta.get("feeds_total") or 0))
 
+    # --- Source + payload canonique ---------------------------------------
+    urls_used = tuple(meta.get("urls") or (SOURCE_URLS if fetched else ()))
     source = SourceInfo(
         provider=SOURCE_PROVIDER,
-        url=SOURCE_URL,
-        fetched_at_utc=now_utc,
+        url=(urls_used[0] if urls_used else SOURCE_URL),
+        urls=urls_used,
+        feeds_ok=int(meta.get("feeds_ok") or (0 if fetched else 0)),
+        feeds_total=int(meta.get("feeds_total") or len(urls_used)),
+        # [F4] horodatage RÉEL du fetch (== now_utc seulement si raw_data
+        # est injecté par un appelant, cas des tests).
+        fetched_at_utc=(meta.get("fetched_at_utc") or now_utc),
         fetch_duration_ms=int(meta.get("fetch_duration_ms") or 0),
         http_status=meta.get("http_status"),
         content_type=meta.get("content_type"),
@@ -1177,54 +1555,108 @@ def build_calendar(
         from_last_known_good=False,
     )
 
-    payload = build_payload(raw_data, source=source, now_utc=now_utc, policy=policy)
-    legacy = to_legacy_payload(payload, now_utc)
-    all_rows = legacy["events"]  # population complète (fenêtre policy), avant split v3
+    extra_warnings: List[str] = []
+    if int(meta.get("raw_duplicates_dropped") or 0):
+        extra_warnings.append(
+            f"RAW_CROSS_FEED_DUPLICATES_DROPPED:{meta['raw_duplicates_dropped']}")
 
-    # --- 1. Restauration explicite de 'priority' ---
+    # [F7] Volume hors-norme : tronquer + avertir, plutôt que lever et tuer
+    # l'app Streamlit.
+    if len(raw_data) > policy.max_events:
+        logger.error("Calendar payload trop volumineux (%d > %d) — troncature",
+                     len(raw_data), policy.max_events)
+        extra_warnings.append(f"RAW_PAYLOAD_TRUNCATED_TO_{policy.max_events}")
+        raw_data = raw_data[:policy.max_events]
+
+    try:
+        payload = build_payload(raw_data, source=source, now_utc=now_utc,
+                                policy=policy, extra_warnings=extra_warnings)
+    except Exception as exc:
+        logger.error("build_payload a échoué (%s) — dégradation vers calendrier vide", exc)
+        payload = build_payload([], source=_empty_source(now_utc, meta),
+                                now_utc=now_utc, policy=policy,
+                                extra_warnings=[*extra_warnings,
+                                                f"BUILD_PAYLOAD_FAILED:{type(exc).__name__}"])
+        raw_data = []
+
+    legacy = to_legacy_payload(payload, now_utc)
+    all_rows = legacy["events"]   # population complète (fenêtre policy)
+
+    # --- 1. priority + 4. tier / blackout (par ligne) ----------------------
     for row in all_rows:
         h = row["hours_until"]
-        row["priority"] = (
-            "PAST" if h <= 0
-            else "CRITICAL" if h <= policy.imminent_hours
-            else "HIGH" if h <= policy.soon_hours
-            else "MEDIUM"
-        )
+        row["priority"] = compute_priority(h, policy)
+        blocked, tier = is_blackout(row["event_name"], h)
+        row["tier"] = tier
+        row["is_blackout"] = blocked
 
-    # --- 3. Split events (à venir) / events_engine (à venir + résiduel) ---
+    # --- 3. Split events (à venir) / events_engine (à venir + résiduel) ----
     upcoming_rows = [r for r in all_rows if r["is_upcoming"]]
     engine_rows = [r for r in all_rows
                    if r["is_upcoming"] or r["hours_until"] >= -MACRO_RESIDUAL_RISK_WINDOW_H]
     legacy["events"] = upcoming_rows
     legacy["events_engine"] = engine_rows
 
-    critical_count = sum(1 for r in all_rows if r["priority"] == "CRITICAL")
+    critical_count = sum(1 for r in all_rows if r["priority"] == PRIORITY_CRITICAL)
+    high_count = sum(1 for r in all_rows if r["priority"] == PRIORITY_HIGH)
+    medium_count = sum(1 for r in all_rows if r["priority"] == PRIORITY_MEDIUM)
     imminent_count = sum(1 for r in all_rows if r["time_proximity"] == "IMMINENT")
+    blackout_rows = [r for r in engine_rows if r["is_blackout"]]
 
-    # --- 2. Restauration des champs de couverture du flux + reachable ---
+    next_event = None
+    if upcoming_rows:
+        nxt = upcoming_rows[0]
+        next_event = {
+            "currency": nxt["currency"],
+            "event_name": nxt["event_name"],
+            "hours_until": nxt["hours_until"],
+            "priority": nxt["priority"],
+            "datetime_display": nxt["datetime_display"],
+        }
+
+    # --- 2. Couverture du flux + reachable + diagnostics -------------------
     legacy["metadata"].update({
         "total_high_impact": len(all_rows),
         "upcoming_count": len(upcoming_rows),
         "critical_count": critical_count,
+        "high_count": high_count,
+        "medium_count": medium_count,
         "imminent_count": imminent_count,
         "engine_events_count": len(engine_rows),
-        "reachable": bool(raw_data),
+        "blackout_count": len(blackout_rows),
+        "blackout_currencies": sorted({r["currency"] for r in blackout_rows}),
+        "next_event": next_event,
+        # reachable : au moins un flux réellement servi (et non « la liste
+        # n'est pas vide », qui confondait jour calme et panne réseau).
+        "reachable": (int(meta.get("feeds_ok") or 0) > 0) if fetched else bool(raw_data),
+        "feed_start_utc": iso_z(feed_start) if feed_start else None,
         "feed_end_utc": iso_z(feed_end) if feed_end else None,
         "feed_horizon_h": round(feed_horizon_h, 1) if feed_horizon_h is not None else None,
         "feed_horizon_truncated": feed_truncated,
+        "feed_watch_horizon_h": FF_WATCH_HORIZON_H,
+        "feed_impact_counts": impact_counts,
+        "raw_duplicates_dropped": int(meta.get("raw_duplicates_dropped") or 0),
+        "holidays_upcoming": ([h for h in holidays
+                               if h["date_utc"] >= now_utc.strftime("%Y-%m-%d")][:10]
+                              if policy.include_holidays_in_metadata else []),
+        "priority_thresholds": {"critical_max_h": policy.imminent_hours,
+                                "high_max_h": policy.soon_hours},
+        "residual_risk_window_h": MACRO_RESIDUAL_RISK_WINDOW_H,
     })
 
     return legacy
 
 
-PAIRS_MAP: Dict[str, List[str]] = {ccy: pairs_for_currency(ccy) for ccy in KNOWN_CURRENCIES}
+# --- Compatibilité d'import (appelants directs existants) --------------------
+PAIRS_MAP: Dict[str, List[str]] = {ccy: pairs_for_currency(ccy)
+                                   for ccy in KNOWN_CURRENCIES}
 
 
 def get_session(t: datetime) -> str:
     """Conservé pour compatibilité avec tout appelant direct existant.
-    build_calendar() utilise en interne classify_session() (DST-aware),
-    plus précis -- cette fonction simple UTC-only n'est plus dans le chemin
-    de données réel, uniquement gardée en cas d'import direct ailleurs."""
+    ``build_calendar()`` utilise en interne ``classify_session()`` (DST-aware),
+    plus précis — cette fonction UTC-only n'est PAS dans le chemin de données
+    réel."""
     h = t.hour
     london, ny = 7 <= h < 16, 13 <= h < 22
     if london and ny:
