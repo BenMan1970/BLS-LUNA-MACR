@@ -847,6 +847,29 @@ _LEGACY_SESSION = {
 }
 
 
+def _utc_offset_label(dt: datetime) -> str:
+    """Libellé "UTC+H" (ou "UTC-H") lisible, calculé à partir de l'offset RÉEL
+    du datetime localisé -- jamais codé en dur.
+
+    DEMANDE UTILISATEUR (câblage du 08/09/2026) : le renderer affichait le nom
+    de zone IANA brut ("Africa/Casablanca") entre parenthèses à côté de chaque
+    heure d'événement -- correct mais peu lisible pour un desk FX habitué à un
+    offset. Un "+1" codé en dur aurait été FAUX pendant le Ramadan, période où
+    le Maroc repasse à UTC+0 (pratique documentée depuis 2018) : is_blackout /
+    priority ne sont pas affectés (ils travaillent en UTC pur via hours_until),
+    mais l'AFFICHAGE doit rester exact toute l'année. D'où un calcul dynamique
+    sur ``dt.utcoffset()`` plutôt qu'une chaîne fixe -- correct pour n'importe
+    quel ``display_timezone`` de policy, pas seulement Casablanca.
+    """
+    offset = dt.utcoffset()
+    if offset is None:
+        return "UTC"
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    hh, mm = divmod(abs(total_minutes), 60)
+    return f"UTC{sign}{hh}" + (f":{mm:02d}" if mm else "")
+
+
 def to_legacy_payload(payload: CalendarPayload, now_utc: datetime) -> Dict[str, Any]:
     """Identique à celle de calendar_core.py -- utilisée ici uniquement comme
     étape intermédiaire ; build_calendar() y ajoute ensuite 'priority'."""
@@ -864,7 +887,11 @@ def to_legacy_payload(payload: CalendarPayload, now_utc: datetime) -> Dict[str, 
             "event_name": e.name,
             "datetime_utc": iso_z(e.scheduled_at_utc),
             "date_display": e.date_display,
-            "time_display": f"{e.scheduled_at_display.strftime('%H:%M')} ({e.display_timezone})",
+            # COMPAT-FIX (demande utilisateur 08/09/2026) : "UTC+1" au lieu du
+            # nom de zone IANA brut "Africa/Casablanca" -- voir
+            # _utc_offset_label ci-dessus pour pourquoi ce n'est pas une
+            # chaîne "+1" codée en dur.
+            "time_display": f"{e.scheduled_at_display.strftime('%H:%M')} ({_utc_offset_label(e.scheduled_at_display)})",
             "day_of_week": e.day_of_week,
             "impact": e.impact.value.lower(),
             # COMPAT-FIX : .raw est None (pas "") quand le flux ne fournit pas
