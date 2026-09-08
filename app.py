@@ -19,7 +19,7 @@ import streamlit as st
 import base64
 
 from bluestar import __version__
-from bluestar.calendar_layer import build_calendar, fetch_raw
+from bluestar.calendar_layer import build_calendar
 from bluestar.config import (
     CALENDAR_CACHE_TTL, MARKET_CACHE_TTL, MODES, TZ_CET, TZ_UTC,
 )
@@ -39,9 +39,15 @@ st.set_page_config(page_title="BLUESTAR · Macro Briefing Engine",
 # --------------------------------------------------------------------------
 @st.cache_data(ttl=CALENDAR_CACHE_TTL, show_spinner=False)
 def cached_calendar(_now_iso: str):
-    raw = fetch_raw()
+    # COMPAT-FIX (câblage calendar_layer v4) : fetch_raw() retourne désormais
+    # (events, meta) au lieu d'une simple liste (v3) -- il fournit en interne
+    # à build_calendar() la métadonnée HTTP (status, sha256, durée...) qui
+    # alimente le score de qualité. On laisse donc build_calendar() faire son
+    # propre fetch (raw_data=None, comportement par défaut) plutôt que de
+    # pré-fetcher ici et perdre cette métadonnée -- ne change rien au TTL du
+    # cache Streamlit, qui continue de porter sur cette fonction entière.
     now = datetime.now(TZ_UTC)
-    return build_calendar(now_utc=now, raw_data=raw)
+    return build_calendar(now_utc=now)
 
 
 @st.cache_data(ttl=MARKET_CACHE_TTL, show_spinner=False)
@@ -258,6 +264,3 @@ with st.expander("📆 Calendrier Forex Factory — events_engine (Data Integrit
 if show_raw_json:
     with st.expander("🔍 JSON calendrier brut", expanded=False):
         st.code(json.dumps(calendar, indent=2, ensure_ascii=False), language="json")
-
-st.caption("BLUESTAR SYSTEM · MACRO BRIEFING ENGINE · "
-           "Aucune donnée inventée — [N/A]/[PROXY] partout où la source manque.")
