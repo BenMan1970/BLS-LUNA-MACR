@@ -4,3 +4,5 @@ pytz>=2024.1
 yfinance>=0.2.40
 pandas>=2.0
 oandapyV20>=0.6.6
+pydantic>=2.0
+urllib3>=1.26.9
