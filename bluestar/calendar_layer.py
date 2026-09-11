@@ -108,6 +108,67 @@ EXACTE de ``v10.py`` (Desk Engine), qui fait autorité. Sujet ORTHOGONAL à la
 normalisation. Toute modification dans v10.py DOIT être répercutée ici.
 
 =============================================================================
+CE QUE LA v6 EMPRUNTE À calendar_core.py / calendar_ingestor.py (app TA) --
+SYNTHÈSE LÉGÈRE, ZÉRO RUPTURE DE CONTRAT
+=============================================================================
+Objectif : que le module macro expose les MÊMES informations de diagnostic
+que l'app TA sur ce que les deux apps ont déjà en commun (même
+``occurrence_id``, même flux Fair Economy), sans importer l'architecture de
+producteur autonome de ``calendar_ingestor.py`` (cron/systemd, écriture
+atomique, verrou inter-processus, historique) : ``calendar_layer`` reste
+SANS état persistant, appelé en synchrone par l'app macro -- ce choix n'est
+pas remis en cause (cf. en-tête SECTION 3).
+
+[S1] STATUT PAR FLUX (``ok`` / ``absent_404`` / ``error:CODE``)
+     Avant la v6, un ``nextweek`` non encore publié par Fair Economy (cas
+     NORMAL en milieu de semaine, cf. [F1]) était compté comme un flux en
+     échec au même titre qu'une vraie panne réseau : ``feeds_ok < feeds_total``
+     déclenchait ``PARTIAL_FEED_COVERAGE`` et une pénalité de score de 0.15,
+     pour une situation qui ne signifie STRICTEMENT RIEN sur la qualité des
+     données retenues. ``calendar_ingestor.py`` distingue déjà les deux cas
+     (404 = normal, log info ; erreur = anormal, log warning ; aucun des
+     deux n'affecte le flux primaire).
+     → v6 : ``SourceInfo.feed_status`` (``{"thisweek": "ok", "nextweek":
+       "absent_404"}``) porte ce diagnostic. Seul un échec du flux PRIMAIRE
+       (``thisweek``) déclenche avertissement + pénalité ; un flux
+       secondaire absent ou en erreur est journalisé (``SECONDARY_FEED_
+       ERROR``) mais n'entame plus le score -- exactement le traitement que
+       l'app TA applique déjà à son flux bonus. Repli explicite sur l'ancien
+       calcul (``feeds_ok``/``feeds_total``) si ``feed_status`` est vide
+       (compat totale avec tout appelant direct de ``build_payload`` qui
+       construirait encore son propre ``SourceInfo``).
+
+[S2] COUVERTURE PAR DEVISE : POLICY vs SOURCE RÉELLE (``CoverageInfo``)
+     ``calendar_layer`` ne distinguait pas « AUD absent parce que la policy
+     ne retient que HIGH et la source n'a que du MEDIUM pour l'AUD cette
+     semaine » de « AUD absent parce que la source n'a RIEN sur l'AUD ». Le
+     premier cas est un artefact de configuration ; le second est une
+     information de marché neutre. Confondre les deux, c'est exactement le
+     type de bruit que [F1] corrige déjà pour l'horizon global -- même
+     défaut, à la maille devise.
+     → v6 : ``CoverageInfo`` (``currencies_scope`` / ``currencies_covered``
+       / ``currencies_excluded_by_policy`` / ``currencies_no_data_in_
+       source``), calculée en comparant les lignes normalisées AVANT et
+       APRÈS filtre de policy sur la fenêtre ``[lo, hi]``. Purement
+       diagnostique : ne change NI la sélection, NI ``priority``, NI
+       ``is_blackout``. Exposée dans ``metadata`` sous les mêmes noms de
+       clé que ``calendar_core.to_legacy_payload`` pour rester lisible par
+       quiconque connaît déjà l'app TA.
+
+CE QUI N'EST PAS PORTÉ (et pourquoi)
+     Circuit breaker, last-known-good sur disque avec plafond d'âge dur,
+     ``health.json``, verrou inter-processus, rotation/historique : tout
+     cela appartient au PRODUCTEUR autonome (``calendar_ingestor.py``), pas
+     à la couche de normalisation appelée en direct par l'app macro. Le
+     porter ici transformerait un module sans effet de bord en composant
+     avec état disque et sémantique de concurrence -- un changement
+     d'architecture, pas une synthèse légère, et un risque de régression
+     (FS en lecture seule, exécutions concurrentes) pour un bénéfice qui ne
+     s'exprime que si l'app macro tourne, elle aussi, en producteur détaché.
+     Si ce besoin se confirme, il mérite sa propre revue, pas un ajout
+     silencieux ici.
+
+=============================================================================
 DETTE DOCUMENTÉE
 =============================================================================
 [F2] et [F5] sont des divergences DÉLIBÉRÉES vs ``calendar_core.py`` (app
@@ -154,7 +215,7 @@ logger = logging.getLogger(__name__)
 # SECTION 1 -- NORMALISATION
 # =============================================================================
 
-SCHEMA_VERSION = "2.1.0"
+SCHEMA_VERSION = "2.2.0"  # 2.2.0 : additif SourceInfo.feed_status + CoverageInfo (synthèse v6, cf. en-tête)
 PAIR_MAPPING_METHOD = "static_currency_membership_v1"
 SESSION_POLICY_VERSION = "exchange_local_dst_aware_v1"
 NUMERIC_PARSER_VERSION = "ff_numeric_v2"
@@ -618,6 +679,12 @@ class SourceInfo(BaseModel):
     last_modified: Optional[str] = None
     supports_actual: bool = False
     from_last_known_good: bool = False
+    # [S1] Statut par flux ("ok" / "absent_404" / "error:CODE"), emprunté à
+    # calendar_ingestor.SourceInfo.feed_status. Exclu du content_hash (root
+    # "source" déjà exclu) : la disponibilité variable du flux bonus ne doit
+    # jamais faire dériver le hash économique. Vide ({}) si l'appelant a
+    # construit ce SourceInfo directement (compat totale, cf. build_payload).
+    feed_status: Dict[str, str] = Field(default_factory=dict)
 
     @field_serializer("fetched_at_utc")
     def _ser(self, v: datetime, _info) -> str:
@@ -641,17 +708,47 @@ class QualityInfo(BaseModel):
     rejections: Tuple[str, ...] = ()
 
 
+class CoverageInfo(BaseModel):
+    """[S2] Emprunté à calendar_core.CoverageInfo. Sépare deux causes bien
+    distinctes d'absence de devise dans l'artefact final :
+
+      - currencies_excluded_by_policy : la source avait des événements pour
+        cette devise sur la fenêtre, mais à un niveau d'impact (ou hors
+        filtre devise) non retenu par la policy active. Artefact de
+        configuration, PAS une information de marché.
+      - currencies_no_data_in_source : la source n'avait AUCUN événement
+        pour cette devise sur la fenêtre, quel que soit l'impact. Calendrier
+        réellement creux -- statut neutre, sans dramatisation.
+
+    Purement diagnostique : n'influence ni la sélection, ni ``priority``,
+    ni ``is_blackout``, ni le content_hash.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    window_start_utc: str
+    window_end_utc: str
+    currencies_scope: Tuple[str, ...]
+    currencies_covered: Tuple[str, ...]
+    currencies_excluded_by_policy: Tuple[str, ...]
+    currencies_no_data_in_source: Tuple[str, ...]
+
+
 class CalendarPayload(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     schema_version: str = SCHEMA_VERSION
     generated_at_utc: datetime
-    generator: str = "bluestar-calendar-macro-unified-v5"
+    generator: str = "bluestar-calendar-macro-unified-v6"
     content_hash: Optional[str] = None
     content_hash_method: str = CONTENT_HASH_METHOD
     source: SourceInfo
     quality: QualityInfo
     selection_policy: SelectionPolicy
+    # [S2] Optionnel (None) pour rester constructible par tout code qui
+    # bâtirait encore un CalendarPayload sans ce champ -- build_payload() le
+    # renseigne systématiquement.
+    coverage: Optional[CoverageInfo] = None
     session_policy_version: str = SESSION_POLICY_VERSION
     numeric_parser_version: str = NUMERIC_PARSER_VERSION
     events: Tuple[CalendarEvent, ...]
@@ -730,6 +827,69 @@ def assign_release_groups(rows: List[Dict[str, Any]]) -> None:
         for m in members:
             m["release_group_id"] = gid
             m["release_group_type"] = gtype
+
+
+def _coverage_diagnostics(
+    rows: List[Dict[str, Any]],
+    selected: List[Dict[str, Any]],
+    policy: SelectionPolicy,
+    lo: datetime,
+    hi: datetime,
+) -> CoverageInfo:
+    """[S2] Emprunté à calendar_core._coverage_diagnostics. Compare les
+    lignes normalisées AVANT filtre de policy (``rows``, restreintes à la
+    fenêtre ``[lo, hi]``) et APRÈS (``selected``) pour séparer exclusion-
+    policy et silence-source réels, devise par devise."""
+    in_window = [r for r in rows if not r["is_global"] and lo <= r["scheduled_at_utc"] <= hi]
+
+    scope: Tuple[str, ...] = policy.currencies if policy.currencies is not None else KNOWN_CURRENCIES
+    raw_currencies_in_window = {r["currency"] for r in in_window}
+    covered = {r["currency"] for r in selected if not r["is_global"]}
+
+    excluded_by_policy: List[str] = []
+    no_data_in_source: List[str] = []
+    for ccy in scope:
+        if ccy in covered:
+            continue
+        if ccy in raw_currencies_in_window:
+            excluded_by_policy.append(ccy)
+        else:
+            no_data_in_source.append(ccy)
+
+    return CoverageInfo(
+        window_start_utc=iso_z(lo),
+        window_end_utc=iso_z(hi),
+        currencies_scope=tuple(sorted(scope)),
+        currencies_covered=tuple(sorted(covered)),
+        currencies_excluded_by_policy=tuple(sorted(excluded_by_policy)),
+        currencies_no_data_in_source=tuple(sorted(no_data_in_source)),
+    )
+
+
+def render_coverage_note(coverage: Optional[CoverageInfo],
+                         impact_levels: Sequence[Impact]) -> Optional[str]:
+    """[S2] Formulation neutre pour un rendu desk. Jamais de vocabulaire de
+    risque ("fail-closed", "non écarté") pour un simple constat de
+    périmètre de données ; la distinction policy vs source réelle reste
+    explicite mais factuelle. Retourne ``None`` si ``coverage`` est absent
+    (compat)."""
+    if coverage is None:
+        return None
+    levels = "+".join(lvl.value for lvl in impact_levels)
+
+    if not coverage.currencies_excluded_by_policy and not coverage.currencies_no_data_in_source:
+        return f"Couverture calendrier complète ({levels}) sur la fenêtre analysée."
+
+    parts = [f"Couverture calendrier ({levels}) : {', '.join(coverage.currencies_covered) or '—'}."]
+    if coverage.currencies_excluded_by_policy:
+        parts.append(
+            "Hors périmètre de sélection actif (données disponibles, non retenues) : "
+            f"{', '.join(coverage.currencies_excluded_by_policy)}.")
+    if coverage.currencies_no_data_in_source:
+        parts.append(
+            "Aucune publication programmée sur la fenêtre pour : "
+            f"{', '.join(coverage.currencies_no_data_in_source)}.")
+    return " ".join(parts)
 
 
 def compute_time_context(
@@ -905,6 +1065,10 @@ def build_payload(
             continue
         selected.append(row)
 
+    # [S2] Diagnostic de couverture par devise -- AVANT dédoublonnage (qui ne
+    # change aucune devise) et sur la même fenêtre [lo, hi] que la sélection.
+    coverage = _coverage_diagnostics(rows, selected, policy, lo, hi)
+
     seen: Dict[str, Dict[str, Any]] = {}
     duplicates = 0
     for row in selected:
@@ -937,7 +1101,26 @@ def build_payload(
         warnings.append("SERVING_LAST_KNOWN_GOOD")
     if not source.supports_actual:
         warnings.append("SOURCE_DOES_NOT_PROVIDE_ACTUAL")
-    if source.feeds_total and source.feeds_ok < source.feeds_total:
+
+    # [S1] Un flux SECONDAIRE (nextweek) absent ou en échec n'est PAS traité
+    # comme le flux primaire : un 404 mi-semaine est la condition NORMALE de
+    # la source (cf. en-tête [F1]/[S1]) et une erreur dessus reste un simple
+    # bonus manqué. Repli explicite sur l'ancien calcul feeds_ok/feeds_total
+    # si feed_status est vide (compat avec tout SourceInfo construit à la
+    # main, hors fetch_raw).
+    thisweek_status = source.feed_status.get("thisweek")
+    nextweek_status = source.feed_status.get("nextweek")
+    primary_failed = False
+    if thisweek_status is not None:
+        primary_failed = thisweek_status != "ok"
+        if primary_failed:
+            warnings.append(f"PRIMARY_FEED_FAILED:{thisweek_status}")
+        if nextweek_status and nextweek_status not in ("ok", "absent_404"):
+            warnings.append(f"SECONDARY_FEED_ERROR:{nextweek_status}")
+    elif source.feeds_total and source.feeds_ok < source.feeds_total:
+        # Ancien comportement (v5), conservé à l'identique quand la
+        # granularité par flux n'est pas disponible.
+        primary_failed = True
         warnings.append(f"PARTIAL_FEED_COVERAGE:{source.feeds_ok}/{source.feeds_total}")
 
     all_times = [r["scheduled_at_utc"] for r in rows]
@@ -962,7 +1145,7 @@ def build_payload(
         score -= 0.25
     if rejections:
         score -= min(0.25, 0.05 * len(rejections))
-    if source.feeds_total and source.feeds_ok < source.feeds_total:
+    if primary_failed:
         score -= 0.15
     if "ALL_SOURCE_EVENTS_IN_THE_PAST_WEEK_ROLLOVER_PENDING" in warnings:
         score -= 0.30
@@ -997,6 +1180,7 @@ def build_payload(
         source=source,
         quality=quality,
         selection_policy=policy,
+        coverage=coverage,
         events=tuple(events),
     )
     return payload.model_copy(update={"content_hash": canonical_content_hash(payload)})
@@ -1136,6 +1320,9 @@ def to_legacy_payload(payload: CalendarPayload, now_utc: datetime) -> Dict[str, 
             "source_urls": list(payload.source.urls),
             "feeds_ok": payload.source.feeds_ok,
             "feeds_total": payload.source.feeds_total,
+            # [S1] Statut par flux ("ok"/"absent_404"/"error:CODE"), même clé
+            # ("feeds_status") que calendar_core.to_legacy_payload côté app TA.
+            "feeds_status": dict(payload.source.feed_status),
             "fetched_at_utc": iso_z(payload.source.fetched_at_utc),
             "supports_actual": payload.source.supports_actual,
             "timezone": f"UTC (backend) / {policy.display_timezone} (display)",
@@ -1158,6 +1345,17 @@ def to_legacy_payload(payload: CalendarPayload, now_utc: datetime) -> Dict[str, 
             "engine_events_count": len(rows),
             "summary_by_day_basis": "display_timezone",
             "ui_filters_applied": None,
+            # [S2] Couverture par devise (policy vs source réelle), mêmes
+            # noms de clé que calendar_core.to_legacy_payload.
+            "coverage_window_start_utc": payload.coverage.window_start_utc if payload.coverage else None,
+            "coverage_window_end_utc": payload.coverage.window_end_utc if payload.coverage else None,
+            "currencies_scope": list(payload.coverage.currencies_scope) if payload.coverage else [],
+            "currencies_covered": list(payload.coverage.currencies_covered) if payload.coverage else [],
+            "currencies_excluded_by_policy": (
+                list(payload.coverage.currencies_excluded_by_policy) if payload.coverage else []),
+            "currencies_no_data_in_source": (
+                list(payload.coverage.currencies_no_data_in_source) if payload.coverage else []),
+            "coverage_note": render_coverage_note(payload.coverage, policy.impact_levels),
         },
         "events": rows,
         "events_engine": rows,
@@ -1294,19 +1492,28 @@ def _fetch_one(session: requests.Session, url: str) -> Tuple[List[Dict], Dict[st
     """Un seul flux. Ne lève JAMAIS : retourne ``([], {"ok": False, ...})``."""
     started = time.monotonic()
     label = "nextweek" if "nextweek" in url else "thisweek"
-    fail = {"ok": False, "url": url, "feed": label}
+    fail = {"ok": False, "url": url, "feed": label, "status": "error:UNKNOWN"}
     try:
         response = session.get(url, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), stream=True)
+    except requests.Timeout as exc:
+        logger.error("Calendar fetch failed (%s): timeout (%s)", label, exc)
+        return [], {**fail, "status": "error:NETWORK_TIMEOUT"}
     except requests.RequestException as exc:
         logger.error("Calendar fetch failed (%s): %s", label, exc)
-        return [], fail
+        return [], {**fail, "status": "error:NETWORK_ERROR"}
 
     try:
         with response:
             if response.status_code >= 400:
-                logger.error("Calendar fetch failed (%s): HTTP %s",
-                             label, response.status_code)
-                return [], {**fail, "http_status": response.status_code}
+                # [S1] Un 404 sur le flux secondaire est la condition NORMALE
+                # de la source en milieu de semaine (cf. [F1]/[S1]) : c'est un
+                # STATUT, pas une erreur à crier au même niveau qu'une vraie
+                # panne. Le flux primaire n'a, lui, jamais de 404 "normal".
+                status = ("absent_404" if response.status_code == 404
+                          else f"error:HTTP_{response.status_code}")
+                log = logger.info if status == "absent_404" else logger.error
+                log("Calendar fetch (%s): HTTP %s (%s)", label, response.status_code, status)
+                return [], {**fail, "http_status": response.status_code, "status": status}
 
             chunks, size = [], 0
             for chunk in response.iter_content(chunk_size=65536):
@@ -1314,7 +1521,7 @@ def _fetch_one(session: requests.Session, url: str) -> Tuple[List[Dict], Dict[st
                 if size > MAX_PAYLOAD_BYTES:
                     logger.error("Calendar fetch failed (%s): payload too large (%d B)",
                                  label, size)
-                    return [], fail
+                    return [], {**fail, "status": "error:PAYLOAD_TOO_LARGE"}
                 chunks.append(chunk)
             body = b"".join(chunks)
 
@@ -1322,6 +1529,7 @@ def _fetch_one(session: requests.Session, url: str) -> Tuple[List[Dict], Dict[st
                 "ok": True,
                 "url": url,
                 "feed": label,
+                "status": "ok",
                 "http_status": response.status_code,
                 "content_type": (response.headers.get("Content-Type") or "")
                                 .split(";")[0].strip() or None,
@@ -1336,17 +1544,17 @@ def _fetch_one(session: requests.Session, url: str) -> Tuple[List[Dict], Dict[st
         if not isinstance(parsed, list):
             logger.error("Calendar fetch failed (%s): root is %s, expected array",
                          label, type(parsed).__name__)
-            return [], fail
+            return [], {**fail, "status": "error:SCHEMA_ROOT_NOT_ARRAY"}
         for row in parsed:
             if isinstance(row, dict):
                 row["_feed"] = label
         return parsed, meta
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         logger.error("Calendar fetch failed (%s): invalid JSON (%s)", label, exc)
-        return [], fail
+        return [], {**fail, "status": "error:INVALID_JSON"}
     except Exception as exc:                      # ceinture + bretelles
         logger.error("Calendar fetch failed (%s): %s", label, exc)
-        return [], fail
+        return [], {**fail, "status": f"error:{type(exc).__name__}"}
 
 
 def _raw_dedupe_key(row: Dict[str, Any]) -> Tuple[str, str, str]:
@@ -1393,12 +1601,18 @@ def fetch_raw(urls: Optional[Iterable[str]] = None) -> Tuple[List[Dict], Dict[st
         deduped.append(row)
 
     ok_metas = [m for m in metas if m.get("ok")]
+    # [S1] Statut lisible par flux ("thisweek"/"nextweek" -> "ok"/
+    # "absent_404"/"error:CODE"), emprunté à calendar_ingestor.feed_status.
+    feed_status: Dict[str, str] = {}
+    for m in metas:
+        feed_status[m.get("feed", "?")] = m.get("status", "error:UNKNOWN")
     agg: Dict[str, Any] = {
         "fetched_at_utc": fetched_at,
         "urls": tuple(url_list),
         "feeds_total": len(url_list),
         "feeds_ok": len(ok_metas),
         "feeds": metas,
+        "feed_status": feed_status,
         "raw_duplicates_dropped": raw_dupes,
         "fetch_duration_ms": sum(int(m.get("fetch_duration_ms") or 0) for m in metas),
         "payload_bytes": sum(int(m.get("payload_bytes") or 0) for m in metas),
@@ -1441,6 +1655,7 @@ def _empty_source(now_utc: datetime, meta: Dict[str, Any]) -> SourceInfo:
         payload_sha256=str(meta.get("payload_sha256") or "sha256:unknown"),
         supports_actual=False,
         from_last_known_good=False,
+        feed_status=dict(meta.get("feed_status") or {}),
     )
 
 
@@ -1553,6 +1768,7 @@ def build_calendar(
         last_modified=meta.get("last_modified"),
         supports_actual=any(isinstance(r, dict) and "actual" in r for r in raw_data),
         from_last_known_good=False,
+        feed_status=dict(meta.get("feed_status") or {}),
     )
 
     extra_warnings: List[str] = []
