@@ -10,109 +10,169 @@ strength -> IPS -> asset selection -> levels/expected-move -> sizing -> risk
 scenarios -> :class:`BriefingContext`.
 
 =============================================================================
-CORRECTIFS DE CE ROUND (14/09/2026) -- chacun vérifié contre le flux Forex
-Factory réel du 14/09/2026 et contre le briefing HTML du même jour.
+ROUND 1 (14/09/2026) -- correctifs [M1] à [M6], conservés tels quels
 =============================================================================
 
 [M1] PLAFOND ``medium[:6]`` -- LA DÉCISION BoJ DISPARAISSAIT DU RAPPORT
-     ``build_catalysts`` tronquait la liste MODÉRÉ à 6 éléments après un tri
-     purement chronologique. Sur la semaine du 14/09, les 6 premiers créneaux
-     étaient consommés par les 4 lignes FOMC du 16/09, le GDP néo-zélandais
-     et les votes MPC du 17/09 -- si bien que ``BOJ Policy Rate`` (17/09
-     22:30 ET, ~85h, forecast ``<1,25%`` vs previous ``<1,00%``),
-     ``Monetary Policy Statement`` et ``BOJ Press Conference`` étaient
-     silencieusement coupés, ainsi que ``Official Bank Rate`` /
-     ``Monetary Policy Summary`` (GBP). Le setup n°1 du jour était USD/JPY
-     SHORT : une réunion BoJ dont le consensus anticipe une hausse
-     n'apparaissait NULLE PART dans le document.
-     → ``_prioritise_events()`` réserve d'abord UN créneau par devise ayant
-       une décision de banque centrale (la plus proche), puis remplit le
-       reste par proximité, puis réordonne chronologiquement pour
-       l'affichage. Un simple tri « CB d'abord » ne suffisait PAS : le flux
-       porte ~10 lignes CB pour 8 places cette semaine-là, et la BoJ étant
-       la plus tardive elle restait coupée. La réservation par devise la
-       rend structurellement imperdable, quel que soit le plafond.
-     ``priority`` (CRITICAL/HIGH/MEDIUM) est INCHANGÉ -- aucune décision CB
-     n'est promue en HIGH, donc ``_compute_asset_score``/``catalyst_pen``
-     voit exactement les mêmes événements qu'avant. Zéro impact scoring.
+     ``build_catalysts`` tronquait la liste à 6 éléments après un tri
+     purement chronologique, si bien que ``BOJ Policy Rate`` (17/09 22:30 ET)
+     était silencieusement coupé alors que le setup n°1 du jour était
+     USD/JPY SHORT.
+     → ``_prioritise_events()`` réserve UN créneau par devise ayant une
+       décision de banque centrale, puis remplit par proximité, puis
+       réordonne chronologiquement. ``priority`` reste INCHANGÉ : aucune
+       décision n'est promue en HIGH, donc ``catalyst_pen`` voit exactement
+       les mêmes événements qu'avant. Zéro impact scoring.
 
 [M2] FENÊTRE DES CATALYSEURS D'INVALIDATION BORNÉE À 72h
-     ``_events_for_ccys(..., within_h=72)`` alimentait à la fois le scoring
-     ET le texte « Risque d'invalidation » des fiches actifs. À ~85h, la
-     réunion BoJ était hors fenêtre : la fiche USD/JPY listait donc
-     « (FOMC Economic Projections, FOMC Press Conference) » -- deux
-     catalyseurs USD -- et AUCUN catalyseur sur la jambe JPY.
-     → Troisième appel dédié (``ev_label``), borné à ``FF_WATCH_HORIZON_H``
-       (168h), utilisé UNIQUEMENT pour le libellé. ``ev`` (scoring) et
-       ``blackout_ev`` (gating) sont inchangés, à l'octet près.
-     Zéro régression sur ``catalyst_pen`` : il ne compte que les événements
-     ``priority == "HIGH"`` (h <= 48), tous déjà couverts par les 72h
-     existantes -- élargir à 168h n'ajoute que des MEDIUM, non comptés.
+     → Troisième appel dédié (``ev_label``), borné à ``FF_WATCH_HORIZON_H``,
+       utilisé UNIQUEMENT pour le libellé. ``ev`` (scoring) et
+       ``blackout_ev`` (gating) inchangés à l'octet près.
 
 [M3] ``ev_names`` TRIÉ ALPHABÉTIQUEMENT
-     ``sorted({e.event_name for e in ev})[:2]`` retenait les deux premiers
-     noms par ordre ALPHABÉTIQUE, pas par proximité ni par importance --
-     d'où « FOMC Economic Projections, FOMC Press Conference » plutôt que
-     le catalyseur le plus imminent ou la décision de taux.
-     → Tri par (décision CB d'abord, puis proximité), dédoublonné, 2 noms.
-     CHANGEMENT DE SORTIE ASSUMÉ (ce n'est pas un no-op) : le texte
-     d'invalidation change sur les actifs ayant >1 catalyseur en fenêtre.
+     → Tri par (décision CB d'abord, puis proximité). Changement de sortie
+       assumé sur les actifs ayant >1 catalyseur en fenêtre.
 
 [M4] ``na_stamp("source sans clé API")`` TROMPEUR
-     Ce libellé s'affichait sur les cartes BCE et BoJ alors que la clé FRED
-     fonctionne parfaitement (GDPNOW, DGS10, VIXCLS, SOFR/EFFR et DFEDTARU
-     étaient tous résolus en PRIMARY sur le même run, via le même
-     ``ThreadPoolExecutor``). La vraie cause est en amont, série par série
-     (``ECBDFR`` est une série en escalier et ``IRSTCI01JPM156N`` est une
-     série MENSUELLE OCDE : toutes deux se font écarter par le garde-fou
-     ``_CB_MAX_STALENESS_DAYS = 70`` de external_sources.py). Le message
-     envoyait chercher le problème au mauvais endroit.
-     → Deux messages distincts, choisis sur une information réellement
-       disponible ici : si AU MOINS un taux a été résolu en amont, la clé
-       et le réseau fonctionnent et la série a donc été rejetée ; si AUCUN
-       taux n'est résolu, la cause est globale (clé ou réseau).
-     Le correctif de fond (bornes de fraîcheur par série) appartient à
-     external_sources.py -- module suivant.
+     → Messages distincts selon une information réellement disponible ici.
+       Étendu au round 2, voir [N4].
 
 [M5] DIFFÉRENTIEL DOMINANT « USD (3,75%) vs USD (3,75%) »
-     ``max(rates, key=rates.get)`` et ``min(...)`` renvoient TOUS DEUX la
-     première clé rencontrée en cas d'égalité de valeurs. Avec seulement
-     Fed et BoE résolues, toutes deux à 3,75%, ``ccy_hi == ccy_lo ==
-     "USD"`` -- la ligne comparait USD à lui-même, et le tag de source
-     s'effondrait sur « [FRED · PRIMARY] » alors que la jambe GBP vient de
-     la Bank of England IADB (``sorted({...})`` sur un ensemble d'un seul
-     élément).
-     → Tri explicite sur (valeur, code devise) : premier et dernier élément
-       d'une liste d'au moins 2 entrées sont toujours deux devises
-       DISTINCTES, même à valeurs égales. Le message d'égalité existant
-       (gap == 0) est conservé tel quel.
+     ``max()``/``min()`` renvoient la première clé en cas d'égalité.
+     → Tri explicite sur (valeur, code devise).
 
 [M6] « Prochaine réunion » NE RETOMBAIT JAMAIS SUR LE CALENDRIER
-     La BoE n'a pas de table officielle codée (``_BOE_MEETING_DATES``
-     n'existe pas), donc sa carte affichait « Prochaine : [N/A] » -- alors
-     que le flux Forex Factory, DÉJÀ téléchargé et parsé, contenait
-     ``Official Bank Rate`` au 17/09/2026. Même trou pour toute banque
-     au-delà de l'horizon de sa table codée.
      → ``_next_meeting_from_feed()``, repli additif.
-     PRÉCÉDENCE RETENUE : table officielle > override manuel > flux > [N/A].
-     Le flux passe APRÈS l'override (et non avant, contrairement à la table)
-     parce qu'une saisie manuelle délibérée reste plus autoritaire qu'une
-     dérivation heuristique par mots-clés sur un libellé de flux. Le seul
-     cas réellement corrigé est donc le [N/A] -- aucune valeur existante
-     n'est écrasée.
+       Précédence : table officielle > override manuel > flux > [N/A].
+
+=============================================================================
+ROUND 2 (14/09/2026) -- [N1] à [N8]
+Chaque point est vérifié sur le flux réel https://nfs.faireconomy.media/
+ff_calendar_thisweek.json (HTTP 200, 13 793 octets, relu le 14/09/2026) et
+sur la fiche FRED de la série BoJ.
+=============================================================================
+
+[N1] LA CARTE BoJ RESTAIT EN [N/A] MÊME APRÈS LES CORRECTIFS DE FRAÎCHEUR
+     Deux faits vérifiés :
+       a) La série FRED ``IRSTCI01JPM156N`` n'est PAS le taux directeur de la
+          BoJ. Sa fiche FRED indique : source « Organization for Economic
+          Co-operation and Development », « Frequency: Monthly », intitulé
+          « Interest Rates: Immediate Rates (< 24 Hours): Call Money/
+          Interbank Rate: Total for Japan ». C'est un taux INTERBANCAIRE
+          MENSUEL OCDE. Relever son seuil de fraîcheur ne suffit donc pas :
+          il ne faut pas la présenter comme le taux de politique monétaire.
+       b) Le flux Forex Factory porte la donnée exacte :
+          ``{"title":"BOJ Policy Rate","country":"JPY",
+             "date":"2026-09-17T22:30:00-04:00","impact":"High",
+             "forecast":"<1.25%","previous":"<1.00%"}``
+     → ``_rate_event_for_bank()`` + ``_parse_feed_rate()`` résolvent le taux
+       en vigueur depuis le champ ``previous`` de la prochaine décision.
+       ``_CB_PREFER_CALENDAR = {"BoJ"}`` fait passer le flux DEVANT FRED pour
+       cette banque, et uniquement pour elle, au motif (a) ci-dessus.
+
+[N2] LES VALEURS BORNÉES « <1.00% » CASSAIENT TOUS LES PARSEURS
+     ``_parse_rate_pct`` faisait ``s.strip().lstrip("~").rstrip("%")`` puis
+     ``float(...)`` : sur « <1,00% » cela lève ``ValueError`` et la fonction
+     retournait ``None``. La BoJ était donc exclue du différentiel de taux
+     même une fois son taux résolu. Le même parseur inversait aussi le SIGNE
+     des taux négatifs : ``re.split(r"[–-]", "-0,10")`` produit
+     ``["", "0.10"]`` → +0,10 au lieu de −0,10 (bug latent, réactivé au
+     premier taux négatif BoJ/SNB).
+     → Parseur unique tolérant : qualificateurs (< > ≤ ≥ ~ ±) conservés et
+       réaffichés, fourchettes « 3,50–3,75% » moyennées, signe négatif
+       préservé (le tiret n'est traité comme séparateur de fourchette que
+       s'il est ENTRE deux chiffres).
+
+[N3] GARDE-FOU CONTRE LES FAUX TAUX (découverte de ce round)
+     Le flux contient ``{"title":"MPC Official Bank Rate Votes",
+     "country":"GBP","forecast":"3-0-6","previous":"3-0-6"}``. Ce libellé
+     CONTIENT « official bank rate » : un match par mot-clé aurait retenu cet
+     événement, et un ``re.search`` numérique aurait extrait « 3 » de
+     « 3-0-6 », affichant un taux BoE de 3,00%.
+     → Double garde-fou : la valeur doit contenir « % » (rejette « 3-0-6 » et
+       « 480B »), et les libellés contenant « vote » sont exclus.
+     Même famille de bug côté ``_CB_DECISION_HINTS`` : le mot-clé nu
+     « press conference » matchait ``{"title":"NBS Press Conference",
+     "country":"CNY"}`` -- le bureau statistique chinois, pas une banque
+     centrale -- qui pouvait donc consommer un créneau réservé [M1]. Les
+     conférences de presse sont désormais énumérées banque par banque.
+
+[N4] ``na_stamp`` : TROISIÈME CAS MANQUANT, ET PROXY MENSONGER
+     a) [M4] ne distinguait que « clé/réseau » et « série rejetée ». Il
+        manquait le cas « la décision est au calendrier mais le flux ne
+        publie pas de valeur » (cas BCE cette semaine : le flux ne contient
+        AUCUNE décision BCE, seulement deux ``ECB President Lagarde Speaks``
+        en Medium -- la carte EUR ne peut donc PAS être réparée par le
+        calendrier, elle dépend du correctif de fraîcheur sur ``ECBDFR``).
+     b) Bug distinct : ``elif o:`` posait ``proxy_stamp("manual override")``
+        dès qu'un override EXISTAIT pour la banque, même s'il ne contenait
+        pas de clé ``rate``. La carte affichait alors « [N/A] » sous un tag
+        [PROXY · override] -- une source revendiquée pour une valeur absente.
+     → Le stamp est désormais choisi sur l'origine RÉELLE de la valeur
+       affichée (``kind`` ∈ live / feed / override / None).
+
+[N5] BIAIS : LE CONSENSUS DE HAUSSE BoJ N'APPARAISSAIT NULLE PART
+     ``_derive_bias_from_rate`` ne lit que le NIVEAU du taux contre une
+     fourchette neutre. Sur la BoJ, cela peut produire « Dovish » (taux bas)
+     le jour même où le consensus attend une HAUSSE (<1,25% contre <1,00%) --
+     lecture exactement inverse du risque porté par le setup USD/JPY.
+     → ``_derive_bias_from_consensus()``. Règle de précédence explicite :
+       override > consensus SI le consensus implique un CHANGEMENT de taux >
+       fourchette neutre > [N/A].
+       CONSÉQUENCE VOULUE ET BORNÉE : quand ``forecast == previous`` (cas FED
+       4,00%/3,75%… non, cas BoE 3,75%/3,75% cette semaine) la règle ne se
+       déclenche PAS et le mot d'ouverture reste celui de la fourchette
+       neutre -- donc ``_cb_bias_word`` renvoie la même valeur qu'avant et
+       le score de force de devise est inchangé. Le seul cas qui bouge est
+       une banque dont le consensus attend un mouvement.
+
+[N6] ANCRE DES SCÉNARIOS ET DU THÈME : PREMIER ÉLÉMENT DE LISTE
+     ``build_macro_overlay`` faisait ``events[0].event_name`` et
+     ``build_risk_scenarios`` ``events[0]``, sur une liste ``upcoming`` NI
+     TRIÉE NI FILTRÉE par importance. Le « prochain catalyseur » du thème
+     pouvait donc être n'importe quel événement Low du flux (le 14/09, la
+     première ligne à venir est ``New Home Prices m/m`` / CNY / Low), et le
+     branchement « [N/A] — aucun événement CRITICAL/HIGH programmé » était
+     structurellement inatteignable puisque la liste contenait tout.
+     → ``_anchor_event()`` : plus imminent parmi CRITICAL/HIGH, sinon
+       MEDIUM, sinon rien. Changement de sortie assumé sur le thème macro,
+       ``risk_main`` et les déclencheurs bull/bear.
+
+[N7] DÉPENDANCE À ``date_display``, NON VÉRIFIÉE
+     ``_next_meeting_from_feed`` (round 1) lisait ``getattr(nxt,
+     "date_display", "")`` en supposant un format ISO ``YYYY-MM-DD``, que je
+     n'ai jamais pu vérifier faute d'accès à models.py.
+     → ``_iso_date_of()`` essaie ``datetime_utc``, puis ``date_display``,
+       puis ``date``, accepte ``datetime`` comme ``str``, et extrait la date
+       par expression régulière. Retourne ``None`` si rien n'est lisible, le
+       caller retombant alors sur override/[N/A] comme avant.
+       NOTE : la date rendue est celle de ``datetime_utc``, donc en UTC. La
+       réunion BoJ du 17/09 22:30 ET s'affiche au 18/09 (02:30 UTC), ce qui
+       reste dans la fenêtre de réunion officielle 17-18/09.
+
+[N8] ROBUSTESSE DU DIFFÉRENTIEL
+     ``zip(_CB_DEFS, central_banks)`` supposait que les deux listes restent
+     dans le même ordre. Remplacé par un appariement par ``cb.name``. Le
+     filtre d'éligibilité n'exige plus ``stamp.ok`` seul (un stamp FALLBACK,
+     nouveau depuis [N1], aurait pu être écarté selon la définition de ``ok``
+     dans models.py, que je n'ai pas pu lire) : il retient toute valeur
+     effectivement parsable portée par un stamp PRIMARY/FALLBACK/PROXY.
 
 INCHANGÉ ET DÉLIBÉRÉMENT NON TOUCHÉ DANS CE MODULE
      ``_render_event_medium`` n'affiche ni ``previous`` ni ``forecast``
      (asymétrie avec ``_render_event_high``), ce qui fait perdre le
-     « Federal Funds Rate  forecast 4.00%  previous 3.75% » pourtant fetché,
-     parsé et transporté jusqu'ici. C'est du ressort de renderer.py.
-     ``build_coverage_report`` ne compte pas les taux directeurs (d'où le
-     « 0 N/A » affiché alors que deux banques sont en [N/A]) : staleness.py.
+     « Federal Funds Rate · forecast 4,00% · previous 3,75% » pourtant
+     transporté jusqu'ici -- ressort de renderer.py.
+     ``build_coverage_report`` ne compte pas les taux directeurs -- ressort
+     de staleness.py.
+     Les bornes de fraîcheur PAR SÉRIE (``ECBDFR``, et le remplacement de
+     ``IRSTCI01JPM156N``) -- ressort de external_sources.py.
 """
 from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -167,10 +227,15 @@ def fr_day_name(dt: datetime) -> str:
 # contrat ; cette table sert uniquement à l'ORDONNANCEMENT d'affichage et au
 # repli « prochaine réunion », jamais au gating ni au scoring.
 #
-# NOTE sur "fomc" : le mot-clé nu est délibérément ABSENT. Le flux Forex
-# Factory contient « FOMC Member Bowman Speaks » / « FOMC Member Schmid
-# Speaks », des interventions de faible valeur qui monopoliseraient les
-# créneaux réservés. Seules les lignes FOMC décisionnelles sont listées.
+# NOTE sur "fomc" : le mot-clé nu est délibérément ABSENT. Le flux contient
+# « FOMC Member Bowman Speaks » / « FOMC Member Schmid Speaks », des
+# interventions de faible valeur qui monopoliseraient les créneaux réservés.
+#
+# [N3] NOTE sur "press conference" : le mot-clé NU a été RETIRÉ. Il matchait
+# ``{"title":"NBS Press Conference","country":"CNY","impact":"Low"}`` --
+# conférence du bureau statistique chinois, pas une banque centrale -- qui
+# pouvait ainsi réserver un créneau [M1] au détriment d'une vraie décision.
+# Les conférences sont désormais énumérées banque par banque.
 _CB_DECISION_HINTS: tuple[str, ...] = (
     "policy rate",
     "official bank rate",
@@ -188,7 +253,12 @@ _CB_DECISION_HINTS: tuple[str, ...] = (
     "cash rate",
     "main refinancing rate",
     "deposit facility rate",
-    "press conference",
+    "boj press conference",
+    "ecb press conference",
+    "snb press conference",
+    "boc press conference",
+    "rbnz press conference",
+    "rba press conference",
 )
 
 
@@ -225,12 +295,10 @@ def _prioritise_events(events: list[MacroEvent], cap: int) -> list[MacroEvent]:
          chronologiquement parmi ~10 lignes CB pour 8 places.
       2. Remplissage : le reste des événements, triés (décisions CB d'abord,
          puis par proximité), jusqu'à atteindre ``cap``.
-      3. Affichage : tri chronologique final, pour que le lecteur garde une
-         lecture calendaire naturelle.
+      3. Affichage : tri chronologique final.
 
     Zéro régression quand ``len(events) <= cap`` : la sortie est alors
-    strictement identique à l'ancien ``sorted(...)[:cap]`` (mêmes éléments,
-    même ordre chronologique).
+    strictement identique à l'ancien ``sorted(...)[:cap]``.
     """
     if not events:
         return []
@@ -256,6 +324,32 @@ def _prioritise_events(events: list[MacroEvent], cap: int) -> list[MacroEvent]:
 
     selected = reserved + remaining[: max(0, cap - len(reserved))]
     return sorted(selected, key=lambda e: e.hours_until)
+
+
+# ---------------------------------------------------------------------------
+# [N6] Ancre calendaire -- événement de référence du thème et des scénarios
+# ---------------------------------------------------------------------------
+def _anchor_event(events: Optional[list[MacroEvent]]) -> Optional[MacroEvent]:
+    """Événement de référence : le plus IMMINENT parmi CRITICAL/HIGH, sinon
+    parmi MEDIUM, sinon ``None``.
+
+    [N6] Remplace ``events[0]``, qui dépendait de l'ordre d'arrivée du flux et
+    ne filtrait pas l'importance : le « prochain catalyseur » affiché dans le
+    thème macro pouvait être un événement Low (le 14/09/2026, la première
+    ligne à venir du flux est ``New Home Prices m/m`` / CNY / Low).
+
+    Ne retourne JAMAIS un événement passé (``is_upcoming`` faux).
+    """
+    if not events:
+        return None
+    up = [e for e in events if getattr(e, "is_upcoming", False)]
+    if not up:
+        return None
+    majors = [e for e in up if getattr(e, "priority", "") in ("CRITICAL", "HIGH")]
+    pool = majors or [e for e in up if getattr(e, "priority", "") == "MEDIUM"]
+    if not pool:
+        return None
+    return min(pool, key=lambda e: e.hours_until)
 
 
 # ---------------------------------------------------------------------------
@@ -333,17 +427,13 @@ def determine_market_regime(market: MarketSnapshot,
 
 
 # ---------------------------------------------------------------------------
-# Step 4 -- Central banks (no keyless source -> overrides or [N/A]/[PROXY])
+# Step 4 -- Central banks
 # ---------------------------------------------------------------------------
 # P0 FIX (audit 23/07/2026): official ECB Governing Council monetary-policy
 # meeting calendar (Day 1, Day 2 = press-conference day), verified directly
 # against https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html
-# on 23/07/2026. Used to compute the BCE "next meeting" field live instead of
-# it depending entirely on a manually-typed override that can go stale (the
-# HTML audited on 23/07/2026 still showed a manually-entered "fin juillet"
-# proxy). Covers through Oct 2028; if `now_utc` is past the last entry the
-# code below falls back to the override / [N/A], same as before this fix --
-# no behaviour change beyond this table's horizon.
+# on 23/07/2026. Covers through Oct 2028; beyond the last entry the code falls
+# back to the override / [N/A], same as before this fix.
 _ECB_MEETING_DATES: list[tuple[str, str]] = [
     ("2026-07-22", "2026-07-23"), ("2026-09-09", "2026-09-10"),
     ("2026-10-28", "2026-10-29"), ("2026-12-16", "2026-12-17"),
@@ -378,9 +468,7 @@ def _next_ecb_meeting(now_utc: Optional[datetime]) -> Optional[str]:
 # P0 FIX (audit 23/07/2026): official FOMC calendar, verified directly
 # against https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
 # on 23/07/2026 (2027 dates listed there as "tentative until confirmed at
-# the meeting immediately preceding it" -- included anyway since that's the
-# best available information and this only ever improves on [N/A]/a stale
-# override, never worsens it).
+# the meeting immediately preceding it").
 _FOMC_MEETING_DATES: list[tuple[str, str]] = [
     ("2026-07-28", "2026-07-29"), ("2026-09-15", "2026-09-16"),
     ("2026-10-27", "2026-10-28"), ("2026-12-08", "2026-12-09"),
@@ -392,9 +480,7 @@ _FOMC_MEETING_DATES: list[tuple[str, str]] = [
 
 # P0 FIX (audit 23/07/2026): official BoJ Monetary Policy Meeting calendar,
 # verified directly against
-# https://www.boj.or.jp/en/mopo/mpmsche_minu/index.htm on 23/07/2026. Only
-# 2026 is published by the BoJ at time of writing; falls back to override/
-# [N/A] beyond that, same zero-regression pattern as the ECB/FOMC tables.
+# https://www.boj.or.jp/en/mopo/mpmsche_minu/index.htm on 23/07/2026.
 _BOJ_MEETING_DATES: list[tuple[str, str]] = [
     ("2026-07-30", "2026-07-31"), ("2026-09-17", "2026-09-18"),
     ("2026-10-29", "2026-10-30"), ("2026-12-17", "2026-12-18"),
@@ -406,8 +492,7 @@ def _next_meeting_from_table(now_utc: Optional[datetime],
                              label: str) -> Optional[str]:
     """Shared lookup for the official-calendar tables above. Returns the
     next meeting as 'DD–DD/MM/YYYY (<label>, calendrier officiel)', or
-    ``None`` if ``now_utc`` is past the table's last entry (caller then
-    falls back to override / [N/A])."""
+    ``None`` if ``now_utc`` is past the table's last entry."""
     if now_utc is None:
         return None
     today = now_utc.date().isoformat()
@@ -422,21 +507,178 @@ def _next_meeting_from_table(now_utc: Optional[datetime],
 
 
 # [M6] Devise de rattachement de chaque banque centrale, pour le repli sur le
-# flux Forex Factory. Séparé de ``_CB_DEFS`` (qui porte aussi le drapeau et
-# l'ordre d'affichage) pour que le repli reste lisible isolément.
+# flux Forex Factory.
 _CB_FEED_CCY: dict[str, str] = {
     "FED": "USD", "BCE": "EUR", "BoJ": "JPY", "BoE": "GBP",
 }
 
+_CB_DEFS = [
+    ("FED", "🇺🇸", "USD"),
+    ("BCE", "🇪🇺", "EUR"),
+    ("BoJ", "🇯🇵", "JPY"),
+    ("BoE", "🇬🇧", "GBP"),
+]
 
-def _fr_date_from_iso(raw: str) -> Optional[str]:
-    """'2026-09-17' -> '17/09/2026'. ``None`` si illisible (jamais d'exception,
-    le caller retombe alors sur override/[N/A])."""
+_CCY_BY_CB: dict[str, str] = {name: ccy for name, _flag, ccy in _CB_DEFS}
+
+
+# ---------------------------------------------------------------------------
+# [N1]/[N2]/[N3] -- Résolution des taux directeurs depuis le flux calendrier
+# ---------------------------------------------------------------------------
+# Libellés du flux Forex Factory portant la VALEUR NUMÉRIQUE du taux
+# directeur, banque par banque. Vérifiés sur le flux du 14/09/2026 :
+#   Federal Funds Rate / USD / 2026-09-16T14:00:00-04:00 / High
+#   Official Bank Rate / GBP / 2026-09-17T07:00:00-04:00 / High / 3.75%
+#   BOJ Policy Rate    / JPY / 2026-09-17T22:30:00-04:00 / High / <1.00%
+# Aucune décision BCE dans ce flux (uniquement « ECB President Lagarde
+# Speaks », Medium) : la carte EUR ne peut donc pas être réparée par ce
+# chemin, elle dépend des bornes de fraîcheur d'``ECBDFR``.
+_RATE_EVENT_TITLES: dict[str, tuple[str, ...]] = {
+    "FED": ("federal funds rate",),
+    "BCE": ("main refinancing rate", "deposit facility rate", "minimum bid rate"),
+    "BoJ": ("boj policy rate",),
+    "BoE": ("official bank rate",),
+}
+
+# [N3] Exclusion indispensable : « MPC Official Bank Rate Votes » contient
+# « official bank rate » et porte « 3-0-6 » en previous/forecast.
+_RATE_EVENT_EXCLUDE: tuple[str, ...] = ("vote",)
+
+# [N1] Banques pour lesquelles le flux PRIME sur FRED, et pourquoi.
+# BoJ : la série FRED utilisée en amont (``IRSTCI01JPM156N``) est, d'après sa
+# propre fiche FRED, un taux interbancaire MENSUEL publié par l'OCDE
+# (« Immediate Rates (< 24 Hours): Call Money/Interbank Rate »), pas le taux
+# de politique monétaire de la Banque du Japon. Le flux Forex Factory publie
+# la bonne grandeur (« BOJ Policy Rate »), on la préfère donc explicitement.
+_CB_PREFER_CALENDAR: frozenset[str] = frozenset({"BoJ"})
+
+# Le flux, source live, passe-t-il devant un override manuel pour le TAUX ?
+# True = cohérent avec la règle « live d'abord » adoptée le 15/07/2026 pour
+# FRED. Passez à False pour rendre l'override prioritaire sur le flux.
+# N'affecte PAS la « prochaine réunion », où l'override reste prioritaire sur
+# le flux (dérivation heuristique par mots-clés, cf. [M6]).
+_RATE_FEED_BEATS_OVERRIDE: bool = True
+
+_RATE_QUAL_RE = re.compile(r"^\s*(<=|>=|≤|≥|<|>|~|±)")
+_RATE_NUM_RE = re.compile(r"-?\d+(?:[.,]\d+)?")
+_RATE_QUAL_NORM = {"<=": "≤", ">=": "≥", "≤": "≤", "≥": "≥",
+                   "<": "<", ">": ">", "~": "~", "±": "±"}
+_RATE_EMPTY = {"", "-", "--", "n/a", "N/A", "[N/A]", "none", "None"}
+
+
+@dataclass(frozen=True)
+class _ParsedRate:
+    """Taux parsé depuis une chaîne de flux ou d'override.
+
+    ``value`` est la valeur numérique en pourcentage ; pour une valeur BORNÉE
+    (« <1.00% ») c'est la BORNE publiée, pas un point. ``display`` conserve le
+    qualificateur, de sorte qu'aucun affichage ne transforme une borne en
+    valeur exacte.
+    """
+    value: float
+    qualifier: str
+    display: str
+    raw: str
+
+    @property
+    def is_bounded(self) -> bool:
+        return self.qualifier in ("<", ">", "≤", "≥")
+
+
+def _parse_feed_rate(raw) -> Optional[_ParsedRate]:
+    """[N2]/[N3] Parse une valeur de taux issue du flux calendrier.
+
+    Accepte « 3.75% », « <1.00% », « 3,75 % », « -0.10% ».
+    Rejette (``None``) : vide, « - », et TOUTE chaîne sans « % » -- ce dernier
+    garde-fou est ce qui empêche « 3-0-6 » (votes MPC) d'être lu comme 3,00%
+    et « 480B » (New Loans) d'être lu comme un taux.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if s in _RATE_EMPTY:
+        return None
+    if "%" not in s:
+        return None
+    m_q = _RATE_QUAL_RE.match(s)
+    qual = _RATE_QUAL_NORM.get(m_q.group(1), "") if m_q else ""
+    body = s[m_q.end():] if m_q else s
+    m_n = _RATE_NUM_RE.search(body)
+    if not m_n:
+        return None
+    try:
+        val = float(m_n.group(0).replace(",", "."))
+    except ValueError:
+        return None
+    return _ParsedRate(value=val, qualifier=qual,
+                       display=f"{qual}{fr_num(val, 2)}%", raw=s)
+
+
+def _iso_date_of(event) -> Optional[str]:
+    """[N7] Date ISO ``YYYY-MM-DD`` d'un événement, quelle que soit la forme
+    du champ porteur. Essaie ``datetime_utc``, ``date_display`` puis ``date``,
+    accepte ``datetime`` comme ``str``. Retourne ``None`` si rien n'est
+    lisible -- le caller retombe alors sur override/[N/A].
+
+    La date rendue suit le fuseau du champ source (``datetime_utc`` est en
+    UTC) : la réunion BoJ du 17/09 22:30 ET ressort donc au 18/09 UTC.
+    """
+    for attr in ("datetime_utc", "date_display", "date"):
+        raw = getattr(event, attr, None)
+        if isinstance(raw, datetime):
+            return raw.date().isoformat()
+        if raw:
+            m = re.search(r"\d{4}-\d{2}-\d{2}", str(raw))
+            if m:
+                return m.group(0)
+    return None
+
+
+def _fr_date_from_iso(raw) -> Optional[str]:
+    """'2026-09-17' -> '17/09/2026'. ``None`` si illisible (jamais
+    d'exception)."""
     try:
         d = datetime.strptime(str(raw)[:10], "%Y-%m-%d")
     except (ValueError, TypeError):
         return None
     return f"{d.day:02d}/{d.month:02d}/{d.year}"
+
+
+def _fr_date_of_event(event) -> Optional[str]:
+    iso = _iso_date_of(event)
+    return _fr_date_from_iso(iso) if iso else None
+
+
+def _rate_event_for_bank(events: Optional[list[MacroEvent]],
+                         name: str) -> Optional[MacroEvent]:
+    """[N1] Prochaine décision de ``name`` portant une valeur de taux dans le
+    flux calendrier, ou ``None``.
+
+    Seuls les événements À VENIR sont retenus : pour un événement à venir, le
+    champ ``previous`` du flux est le taux EN VIGUEUR. Sur un événement déjà
+    tombé, ``previous`` désigne le taux d'avant la décision, donc une valeur
+    périmée d'un cran -- et le flux n'expose pas de champ ``actual`` ici.
+    """
+    titles = _RATE_EVENT_TITLES.get(name)
+    ccy = _CB_FEED_CCY.get(name)
+    if not events or not titles or not ccy:
+        return None
+    best: Optional[MacroEvent] = None
+    best_h = float("inf")
+    for e in events:
+        if (getattr(e, "currency", "") or "") != ccy:
+            continue
+        low = str(getattr(e, "event_name", "") or "").lower()
+        if not any(t in low for t in titles):
+            continue
+        if any(x in low for x in _RATE_EVENT_EXCLUDE):
+            continue
+        h = getattr(e, "hours_until", None)
+        if h is None or h < 0:
+            continue
+        if h < best_h:
+            best, best_h = e, float(h)
+    return best
 
 
 def _next_meeting_from_feed(events: Optional[list[MacroEvent]],
@@ -449,21 +691,27 @@ def _next_meeting_from_feed(events: Optional[list[MacroEvent]],
     flux au 17/09/2026. Sert aussi de filet pour FED/BCE/BoJ au-delà de
     l'horizon de leurs tables respectives.
 
-    Retourne ``None`` si aucun événement ne correspond -- le caller retombe
-    alors sur l'override puis sur [N/A], comportement historique inchangé.
+    [N3] Les libellés de votes sont exclus. [N7] La date est extraite par
+    ``_iso_date_of`` et non plus d'un ``date_display`` supposé ISO.
     """
     if not events:
         return None
-    candidates = [
-        e for e in events
-        if getattr(e, "currency", "") == ccy
-        and getattr(e, "is_upcoming", False)
-        and _is_cb_decision(e)
-    ]
+    candidates = []
+    for e in events:
+        if (getattr(e, "currency", "") or "") != ccy:
+            continue
+        if not getattr(e, "is_upcoming", False):
+            continue
+        if not _is_cb_decision(e):
+            continue
+        low = str(getattr(e, "event_name", "") or "").lower()
+        if any(x in low for x in _RATE_EVENT_EXCLUDE):
+            continue
+        candidates.append(e)
     if not candidates:
         return None
     nxt = min(candidates, key=lambda e: e.hours_until)
-    disp = _fr_date_from_iso(getattr(nxt, "date_display", "") or "")
+    disp = _fr_date_of_event(nxt)
     if disp is None:
         return None
     ev_name = (getattr(nxt, "event_name", "") or "").strip()
@@ -471,50 +719,88 @@ def _next_meeting_from_feed(events: Optional[list[MacroEvent]],
     return f"{disp} ({label}, calendrier Forex Factory{suffix})"
 
 
-_CB_DEFS = [
-    ("FED", "🇺🇸", "USD"),
-    ("BCE", "🇪🇺", "EUR"),
-    ("BoJ", "🇯🇵", "JPY"),
-    ("BoE", "🇬🇧", "GBP"),
-]
-
-
-def _derive_bias_from_rate(name: str, live_rate_pct: Optional[float]) -> Optional[str]:
+def _derive_bias_from_rate(name: str, live_rate_pct: Optional[float],
+                           rate_label: Optional[str] = None) -> Optional[str]:
     """Fallback hawkish/dovish/neutral bias tag derived from the live policy
-    rate, used only when no textual override is supplied for that bank.
+    rate, used when no textual override is supplied for that bank.
 
     AUDIT-FIX (23/07/2026, synergy gap #1): before this, ``bias`` had exactly
     one write path — the manual override — so ``_cb_link``,
-    ``_currency_rationale`` and ``_cb_bias_word`` (the only three readers of
-    ``bias_interpretation`` in the codebase) all fell back to "neutre" by
-    default even on a day where the live FRED/BoE rate gave a perfectly
-    usable reading (reproduced 23/07/2026: Fed live at 3,75% while the
-    Banques Centrales → Taux narrative link showed "BC en attente").
+    ``_currency_rationale`` and ``_cb_bias_word`` all fell back to "neutre"
+    even on a day where the live FRED/BoE rate gave a usable reading.
 
     Returns ``None`` (never a fabricated string) when ``live_rate_pct`` is
-    unavailable or the bank has no configured band, so the caller's existing
-    "[N/A] — interprétation à confirmer." floor is preserved as the final
-    fallback. The literal words "Hawkish"/"Dovish" are used deliberately so
-    the three existing text-matching readers pick this up with zero changes
-    on their side. The "[dérivé taux]" tag makes clear this is a
-    rate-threshold heuristic, never a sourced central-bank communiqué.
+    unavailable or the bank has no configured band, so the caller's
+    "[N/A] — interprétation à confirmer." floor is preserved. The literal
+    words "Hawkish"/"Dovish" are used deliberately so the three existing
+    text-matching readers pick this up with zero changes on their side.
+
+    [N2] ``rate_label`` (additif, défaut ``None`` -> ancien formatage) permet
+    d'afficher la valeur AVEC son qualificateur (« <1,00% ») pour une valeur
+    bornée, au lieu de la présenter comme un point.
     """
     band = C.CB_NEUTRAL_RATE_BAND.get(name)
     if live_rate_pct is None or band is None:
         return None
     low, high = band
-    r = fr_num(live_rate_pct, 2)
+    r = rate_label or f"{fr_num(live_rate_pct, 2)}%"
     if live_rate_pct > high:
-        return (f"Hawkish — taux directeur ({r}%) au-dessus de la fourchette "
+        return (f"Hawkish — taux directeur ({r}) au-dessus de la fourchette "
                 f"neutre estimée ({fr_num(low,2)}–{fr_num(high,2)}%) [dérivé taux, "
                 f"pas un communiqué officiel].")
     if live_rate_pct < low:
-        return (f"Dovish — taux directeur ({r}%) en dessous de la fourchette "
+        return (f"Dovish — taux directeur ({r}) en dessous de la fourchette "
                 f"neutre estimée ({fr_num(low,2)}–{fr_num(high,2)}%) [dérivé taux, "
                 f"pas un communiqué officiel].")
-    return (f"Neutre — taux directeur ({r}%) dans la fourchette neutre estimée "
+    return (f"Neutre — taux directeur ({r}) dans la fourchette neutre estimée "
             f"({fr_num(low,2)}–{fr_num(high,2)}%) [dérivé taux, pas un communiqué "
             f"officiel].")
+
+
+def _derive_bias_from_consensus(prev: Optional[_ParsedRate],
+                                fcst: Optional[_ParsedRate],
+                                event) -> Optional[str]:
+    """[N5] Biais dérivé du CONSENSUS de la prochaine décision.
+
+    Retourne ``None`` -- donc ne prend jamais la main -- sauf si le flux
+    publie à la fois ``previous`` et ``forecast`` ET qu'ils DIFFÈRENT, c'est-à-
+    dire quand le marché attend un mouvement de taux. C'est ce cadrage qui
+    rend le correctif non régressif : sur la semaine du 14/09/2026, BoE
+    (3,75% vs 3,75%) reste sur la dérivation par fourchette neutre, donc le
+    mot d'ouverture lu par ``_cb_bias_word`` ne change pas.
+
+    Cas réel couvert : BoJ ``previous "<1.00%"`` / ``forecast "<1.25%"`` →
+    hausse de 25 pb attendue, lecture INVERSE de celle qu'aurait produite la
+    seule fourchette neutre sur un taux aussi bas.
+    """
+    if prev is None or fcst is None:
+        return None
+    if fcst.value == prev.value:
+        return None
+    when = _fr_date_of_event(event) or "la prochaine réunion"
+    delta_bp = abs(fcst.value - prev.value) * 100.0
+    bounded = (" (comparaison de bornes publiées, la banque ne communique "
+               "pas un point)") if (prev.is_bounded or fcst.is_bounded) else ""
+    if fcst.value > prev.value:
+        word, move = "Hawkish", "hausse"
+    else:
+        word, move = "Dovish", "baisse"
+    return (f"{word} — {move} de {fr_num(delta_bp, 0)} pb attendue le {when} : "
+            f"consensus {fcst.display} contre {prev.display} en vigueur{bounded} "
+            f"[consensus Forex Factory, pas un communiqué officiel].")
+
+
+def _consensus_note(prev: Optional[_ParsedRate],
+                    fcst: Optional[_ParsedRate],
+                    event) -> str:
+    """[N5] Complément TEXTUEL de statu quo, ajouté après un mot d'ouverture
+    déjà décidé ailleurs. Ne contient volontairement ni « hawkish » ni
+    « dovish » en tête, pour ne pas déplacer ``_cb_bias_word``."""
+    if prev is None or fcst is None or fcst.value != prev.value:
+        return ""
+    when = _fr_date_of_event(event) or "la prochaine réunion"
+    return (f" Consensus Forex Factory : statu quo attendu le {when} "
+            f"({fcst.display}).")
 
 
 def build_central_bank_context(overrides: Optional[dict],
@@ -524,33 +810,28 @@ def build_central_bank_context(overrides: Optional[dict],
     """Build the four central-bank blocks.
 
     ``events`` (additif, défaut ``None`` -- tout appelant existant à deux
-    arguments continue de fonctionner à l'identique) alimente le repli
-    « prochaine réunion » sur le flux calendrier, voir [M6].
+    arguments continue de fonctionner) alimente le repli « prochaine réunion »
+    [M6] ET, depuis [N1], la résolution du taux directeur depuis le flux.
 
-    Sourcing precedence:
-      1. FRED policy rate (``fetch_central_bank_rates``) for the *rate*
-         field — preferred when live, so a working FRED feed is never
-         permanently shadowed by an override typed once and left in place.
-         AUDIT-FIX (15/07/2026): this used to be override-always-wins for
-         the rate too ("[PROXY · taux saisis en overrides]" showing up
-         indefinitely even when FRED was fine), per user request the two
-         are now swapped for the *rate* specifically.
-      2. User override (``overrides['central_banks'][name]['rate']``) —
-         fallback when FRED has no value for that bank.
-      3. ``fact`` stays override-only: FRED only supplies a numeric rate,
-         not the qualitative FAIT write-up, so there is nothing live to
-         prefer for that field. Empty string when no override supplies it
-         (never a fabricated "[N/A] — ..." literal) — AUDIT-FIX
-         (01/08/2026): closes the loop on renderer._cb_biais_block's
-         23/07/2026 fix, which was already omitting the entire "FAIT ·"
-         line whenever ``cb.fact`` is falsy.
-      4. ``bias`` is override-first too, but now falls back to a
-         rate-derived hawkish/dovish/neutral tag (``_derive_bias_from_rate``,
-         audit fix 23/07/2026 — synergy gap #1) instead of a static
-         "[N/A]" before reaching the final [N/A] floor.
-      5. CME FedWatch (``fetch_fedwatch_probabilities``) — fills the Fed's
-         pause/cut/hike when the override omits them (unchanged).
-      6. Otherwise [N/A] — never invented.
+    Précédence du TAUX (``kind``) :
+      1. ``feed`` si la banque est dans ``_CB_PREFER_CALENDAR`` (BoJ : la
+         série FRED amont n'est pas la bonne grandeur, cf. [N1]).
+      2. ``live`` : FRED / BoE IADB (``fetch_central_bank_rates``).
+      3. ``feed`` si ``_RATE_FEED_BEATS_OVERRIDE`` (défaut True, cohérent avec
+         la règle « live d'abord » du 15/07/2026).
+      4. ``override`` : ``overrides['central_banks'][name]['rate']``.
+      5. ``feed`` en dernier recours si l'override a été préféré.
+      6. Sinon « [N/A] » -- jamais inventé.
+
+    ``fact`` reste override-only (FRED ne fournit qu'un nombre, pas le FAIT
+    qualitatif) ; chaîne vide quand aucun override ne l'alimente, ce que
+    ``renderer._cb_biais_block`` sait déjà omettre (AUDIT-FIX 01/08/2026).
+
+    ``bias`` : override > consensus impliquant un CHANGEMENT [N5] >
+    fourchette neutre > [N/A].
+
+    CME FedWatch (``fetch_fedwatch_probabilities``) remplit les probabilités
+    pause/baisse/hausse de la Fed quand l'override les omet (inchangé).
     """
     cb_over = (overrides or {}).get("central_banks", {})
 
@@ -563,25 +844,71 @@ def build_central_bank_context(overrides: Optional[dict],
     for name, flag, _ccy in _CB_DEFS:
         o = cb_over.get(name, {})
 
-        # --- Rate: live source (FRED or BoE IADB) > override > [N/A] ---
+        # --- [N1] Données de taux disponibles dans le flux calendrier ---
+        feed_ev = _rate_event_for_bank(events, name)
+        feed_prev = _parse_feed_rate(getattr(feed_ev, "previous", None)) if feed_ev else None
+        feed_fcst = _parse_feed_rate(getattr(feed_ev, "forecast", None)) if feed_ev else None
+
         live_val = fred_rates.get(name)
-        rate_is_live = False
-        if live_val is not None:
-            rate = f"{fr_num(live_val, 2)}%"
-            rate_is_live = True
+        over_rate = o.get("rate")
+        prefer_feed = name in _CB_PREFER_CALENDAR
+
+        # --- Résolution du taux affiché ---
+        kind: Optional[str]
+        if feed_prev is not None and prefer_feed:
+            kind = "feed"
+        elif live_val is not None:
+            kind = "live"
+        elif feed_prev is not None and _RATE_FEED_BEATS_OVERRIDE:
+            kind = "feed"
+        elif over_rate is not None:
+            kind = "override"
+        elif feed_prev is not None:
+            kind = "feed"
         else:
-            rate = o.get("rate")
-        if rate is None:
+            kind = None
+
+        if kind == "feed":
+            rate = feed_prev.display
+            resolved_val: Optional[float] = feed_prev.value
+            rate_label: Optional[str] = feed_prev.display
+            if live_val is not None and prefer_feed:
+                logger.info(
+                    "%s: taux du flux calendrier (%s) préféré à la valeur "
+                    "amont (%.2f) — série amont inadaptée, cf. [N1]",
+                    name, feed_prev.display, live_val)
+        elif kind == "live":
+            rate = f"{fr_num(live_val, 2)}%"
+            resolved_val = live_val
+            rate_label = rate
+        elif kind == "override":
+            rate = str(over_rate)
+            parsed_over = _parse_rate_pct(rate)
+            resolved_val = parsed_over
+            rate_label = rate
+        else:
             rate = "[N/A]"
+            resolved_val = None
+            rate_label = None
 
         fact = o.get("fact", "")
-        bias = (o.get("bias")
-                or _derive_bias_from_rate(name, live_val)
-                or "[N/A] — interprétation à confirmer.")
+
+        # --- [N5] Biais ---
+        band_bias = _derive_bias_from_rate(name, resolved_val, rate_label=rate_label)
+        change_bias = _derive_bias_from_consensus(feed_prev, feed_fcst, feed_ev)
+        if o.get("bias"):
+            bias = o["bias"]
+        elif change_bias:
+            # Le mouvement attendu prime sur le niveau ; la lecture de niveau
+            # est conservée en contexte, jamais perdue.
+            bias = change_bias + (f" Lecture de niveau : {band_bias}" if band_bias else "")
+        elif band_bias:
+            bias = band_bias + _consensus_note(feed_prev, feed_fcst, feed_ev)
+        else:
+            bias = "[N/A] — interprétation à confirmer."
 
         # P0 FIX (audit 23/07/2026): computed official calendar takes
-        # precedence over a manual override, same rule already applied to
-        # the FRED rate above.
+        # precedence over a manual override, same rule as the live rate.
         computed_next = None
         if name == "FED":
             computed_next = _next_meeting_from_table(now_utc, _FOMC_MEETING_DATES, "FED")
@@ -610,25 +937,45 @@ def build_central_bank_context(overrides: Optional[dict],
             fw_used = True
             fw_as_of = fedwatch.get("as_of")
 
-        # --- Stamp reflects the strongest source actually used ---
-        if rate_is_live or fw_used:
-            src = central_bank_rate_source(name) if rate_is_live else ""
+        # --- [N4] Stamp : reflète l'origine RÉELLE de la valeur affichée ---
+        if kind == "live":
+            src = central_bank_rate_source(name)
             if fw_used:
                 src = (src + " + CME FedWatch").strip(" +")
             stamp = SourceStamp(src or "external", Reliability.PRIMARY, timestamp=now_utc)
-        elif o:
+        elif kind == "feed":
+            ev_name = (getattr(feed_ev, "event_name", "") or "décision de taux").strip()
+            src = f"Forex Factory · {ev_name}"
+            if fw_used:
+                src += " + CME FedWatch"
+            stamp = SourceStamp(
+                src, Reliability.FALLBACK, timestamp=now_utc,
+                note=("taux en vigueur = champ « previous » de la prochaine "
+                      "décision au calendrier ; valeur bornée telle que publiée"
+                      if feed_prev is not None and feed_prev.is_bounded
+                      else "taux en vigueur = champ « previous » de la prochaine "
+                           "décision au calendrier"),
+            )
+        elif kind == "override":
             stamp = proxy_stamp("manual override")
+        elif fw_used:
+            # Probabilités FedWatch obtenues alors que le taux reste [N/A] :
+            # la source existe, mais pas pour le champ « taux ».
+            stamp = SourceStamp("CME FedWatch", Reliability.PRIMARY, timestamp=now_utc,
+                                note="probabilités sourcées, taux directeur non sourcé")
+        elif feed_ev is not None:
+            # [N4] Cas manquant jusqu'ici : la décision EST au calendrier mais
+            # le flux ne publie pas de valeur exploitable pour cette banque.
+            stamp = na_stamp("décision au calendrier, valeur de taux non publiée dans le flux")
         elif fred_rates:
             # [M4] Au moins un taux a été résolu en amont sur ce run : la clé
             # API et le réseau fonctionnent. L'absence de CELUI-CI vient donc
-            # d'un rejet côté external_sources (fraîcheur / bornes de
-            # plausibilité), pas d'un défaut d'authentification. L'ancien
-            # libellé unique "source sans clé API" affirmait le contraire et
-            # envoyait le diagnostic au mauvais endroit.
-            stamp = na_stamp("série rejetée en amont (fraîcheur / bornes) — voir logs")
+            # d'un rejet côté external_sources (fraîcheur / série inadaptée),
+            # pas d'un défaut d'authentification. L'ancien libellé unique
+            # « source sans clé API » affirmait le contraire.
+            stamp = na_stamp("série rejetée en amont (fraîcheur / série inadaptée) — voir logs")
         else:
-            # Aucun taux résolu, toutes banques confondues : la cause est
-            # globale (clé absente ou réseau indisponible).
+            # Aucun taux résolu, toutes banques confondues : cause globale.
             stamp = na_stamp("aucune source live disponible (clé API ou réseau)")
 
         out.append(CentralBankSnapshot(
@@ -651,58 +998,96 @@ _HAWKISH_ANY_RE = re.compile(r"\bhawkish\b")
 _DOVISH_ANY_RE = re.compile(r"\bdovish\b")
 
 
-def _parse_rate_pct(rate_display: str) -> Optional[float]:
+def _parse_rate_pct(rate_display) -> Optional[float]:
     """Parse a CB rate string into a float percentage.
 
-    Handles a single value ("2,25%"), a range ("3,50–3,75%" -> midpoint) and
-    a leading "~" ("~1,00%"). Returns ``None`` for anything not parseable
-    (e.g. "[N/A]"), so the caller can tell "sourced" from "not sourced".
+    [N2] CORRECTIF. L'ancienne implémentation
+    (``s.lstrip("~").rstrip("%")`` puis ``re.split(r"[–-]", s)``) avait deux
+    défauts vérifiés :
+      - « <1,00% » (forme réelle du BOJ Policy Rate dans le flux Forex
+        Factory) levait ``ValueError`` → ``None`` → la BoJ était exclue du
+        différentiel de taux même son taux résolu ;
+      - « -0,10% » était découpé en ``["", "0.10"]`` → +0,10 au lieu de
+        −0,10, inversion de signe sur tout taux négatif.
+
+    Gère : valeur simple, fourchette (« 3,50–3,75% » → point milieu),
+    qualificateur de tête (« ~ », « < », « ≤ », « ± »), signe négatif.
+    Retourne ``None`` pour tout ce qui n'est pas exploitable (« [N/A] »).
     """
     if not rate_display:
         return None
-    s = rate_display.strip().lstrip("~").rstrip("%").strip()
-    parts = re.split(r"[–-]", s)
-    try:
-        vals = [float(p.strip().replace(",", ".")) for p in parts if p.strip()]
-    except ValueError:
+    s = str(rate_display).strip()
+    if s in _RATE_EMPTY:
         return None
+    s = _RATE_QUAL_RE.sub("", s).strip()
+    # Normalisation des séparateurs de fourchette. Le tiret n'est traité comme
+    # séparateur que s'il est ENTRE deux chiffres, ce qui préserve le signe.
+    s = s.replace("\u2013", "|").replace("\u2014", "|")
+    s = re.sub(r"(?<=\d)\s*-\s*(?=\d)", "|", s)
+    vals: list[float] = []
+    for seg in s.split("|"):
+        m = _RATE_NUM_RE.search(seg)
+        if not m:
+            continue
+        try:
+            vals.append(float(m.group(0).replace(",", ".")))
+        except ValueError:
+            continue
     return sum(vals) / len(vals) if vals else None
+
+
+_RATE_USABLE_RELIABILITY = (Reliability.PRIMARY, Reliability.FALLBACK, Reliability.PROXY)
 
 
 def _build_rate_differential(central_banks: list[CentralBankSnapshot]) -> tuple[str, str]:
     """Dominant policy-rate differential among the tracked central banks.
 
-    [M5] CORRECTIF (14/09/2026) : ``max(rates, key=rates.get)`` et
-    ``min(rates, key=rates.get)`` renvoient tous deux la PREMIÈRE clé
-    rencontrée quand plusieurs valeurs sont égales. Avec Fed et BoE toutes
-    deux à 3,75% (cas réel du 14/09/2026, les seules deux banques résolues ce
-    jour-là), ``ccy_hi`` et ``ccy_lo`` valaient donc tous deux "USD" et la
-    ligne affichait « USD (3,75%) vs USD (3,75%) → écart ≈ 0,00 pt ». Effet
-    de bord : ``sorted({hi_stamp.source_name, lo_stamp.source_name})``
-    s'effondrait sur un seul élément et le tag devenait « [FRED · PRIMARY] »
-    alors que la jambe GBP provient de la Bank of England IADB.
+    [M5] CORRECTIF : ``max(rates, key=rates.get)`` et ``min(...)`` renvoient
+    tous deux la PREMIÈRE clé rencontrée quand plusieurs valeurs sont égales.
+    Avec Fed et BoE toutes deux à 3,75% (cas réel du 14/09/2026), ``ccy_hi``
+    et ``ccy_lo`` valaient « USD » et la ligne affichait « USD (3,75%) vs USD
+    (3,75%) → écart ≈ 0,00 pt ». Effet de bord :
+    ``sorted({hi.source_name, lo.source_name})`` s'effondrait sur un seul
+    élément et le tag devenait « [FRED · PRIMARY] » alors que la jambe GBP
+    provient de la Bank of England IADB. Le tri explicite sur (valeur, code
+    devise) garantit deux devises DISTINCTES dès qu'au moins deux taux sont
+    disponibles.
 
-    Le tri explicite ci-dessous garantit deux devises DISTINCTES dès qu'au
-    moins deux taux sont disponibles (premier et dernier élément d'une liste
-    d'au moins 2 entrées), y compris à valeurs strictement égales. Le message
-    d'égalité (``gap == 0``) reste inchangé et devient enfin atteignable avec
-    les bonnes devises.
+    [N8] Appariement par ``cb.name`` au lieu de ``zip(_CB_DEFS,
+    central_banks)`` (dépendance à l'ordre), et éligibilité fondée sur la
+    valeur réellement parsable + une fiabilité connue, de sorte qu'un stamp
+    FALLBACK (nouveau depuis [N1]) ne soit pas écarté silencieusement.
+
+    [N2] Les valeurs sont affichées telles que publiées (``rate_display``),
+    donc « <1,00% » reste borné à l'écran ; l'écart numérique est calculé sur
+    les bornes et signalé comme tel.
     """
     rates: dict[str, float] = {}
+    displays: dict[str, str] = {}
     stamps: dict[str, SourceStamp] = {}
-    for (_name, _flag, ccy), cb in zip(_CB_DEFS, central_banks):
-        if cb.stamp.ok:
-            r = _parse_rate_pct(cb.rate_display)
-            if r is not None:
-                rates[ccy] = r
-                stamps[ccy] = cb.stamp
+    bounded: set[str] = set()
+    for cb in central_banks:
+        ccy = _CCY_BY_CB.get(cb.name)
+        if not ccy:
+            continue
+        stamp = getattr(cb, "stamp", None)
+        if stamp is None:
+            continue
+        if getattr(stamp, "reliability", None) not in _RATE_USABLE_RELIABILITY:
+            continue
+        r = _parse_rate_pct(cb.rate_display)
+        if r is None:
+            continue
+        rates[ccy] = r
+        displays[ccy] = str(cb.rate_display)
+        stamps[ccy] = stamp
+        if _RATE_QUAL_RE.match(str(cb.rate_display)):
+            bounded.add(ccy)
 
     if len(rates) < 2:
         return ("[N/A] — taux directeurs non sourcés (saisir en overrides).",
                 "Différentiel non calculable sans au moins 2 taux sourcés.")
 
-    # Tri sur (valeur, code devise) : déterministe, et les extrémités sont
-    # toujours deux clés différentes même à valeurs identiques.
     ordered = sorted(rates.items(), key=lambda kv: (kv[1], kv[0]))
     ccy_lo, rate_lo = ordered[0]
     ccy_hi, rate_hi = ordered[-1]
@@ -724,11 +1109,18 @@ def _build_rate_differential(central_banks: list[CentralBankSnapshot]) -> tuple[
                 return stamp.source_name or "PRIMARY"
             if stamp.reliability is Reliability.PROXY:
                 return "override"
+            if stamp.reliability is Reliability.FALLBACK:
+                return stamp.source_name or "FALLBACK"
             return stamp.source_name or stamp.reliability.value
         tag = f"[MIXTE · {ccy_hi} {_leg_tag(hi_stamp)} + {ccy_lo} {_leg_tag(lo_stamp)}]"
-    dominant = (f"{ccy_hi} ({fr_num(rate_hi, 2)}%) vs {ccy_lo} "
-               f"({fr_num(rate_lo, 2)}%) → écart ≈ {fr_num(gap, 2)} pt "
-               f"{tag}")
+
+    caveat = ""
+    if bounded & {ccy_hi, ccy_lo}:
+        caveat = (" — écart calculé sur les bornes publiées, pas sur des "
+                  "points de taux")
+    dominant = (f"{ccy_hi} ({displays[ccy_hi]}) vs {ccy_lo} "
+               f"({displays[ccy_lo]}) → écart ≈ {fr_num(gap, 2)} pt "
+               f"{tag}{caveat}")
     if gap == 0:
         implication = f"Taux directeurs identiques ({ccy_hi}/{ccy_lo}) — pas de portage net entre les deux."
     else:
@@ -740,13 +1132,17 @@ def _build_rate_differential(central_banks: list[CentralBankSnapshot]) -> tuple[
 def _cb_bias_word(cb: CentralBankSnapshot) -> int:
     """Map a CB bias string to a strength delta (+hawkish / -dovish).
 
-    The bias field is free text (e.g. "Hawkish — biais de resserrement..."
-    or "Neutre à légèrement hawkish."). A plain ``"hawkish" in text`` match
-    treats an outright stance and a hedged "leaning hawkish" identically --
-    that's exactly how BoE's "Neutre à légèrement hawkish" used to land on
-    the same +12 as the Fed's unqualified "Hawkish", producing a false tie.
-    The tone word must *open* the sentence for the full +/-12; appearing
-    later or softened (légèrement, neutre à, etc.) counts as a weaker +/-6.
+    The bias field is free text. A plain ``"hawkish" in text`` match treats an
+    outright stance and a hedged "leaning hawkish" identically -- that's how
+    BoE's "Neutre à légèrement hawkish" used to land on the same +12 as the
+    Fed's unqualified "Hawkish", producing a false tie. The tone word must
+    *open* the sentence for the full +/-12; appearing later or softened counts
+    as a weaker +/-6.
+
+    [N5] Compatible avec le biais dérivé du consensus : celui-ci commence
+    délibérément par « Hawkish » ou « Dovish », et le complément de niveau
+    ajouté après ne peut pas renverser le score puisque la correspondance
+    d'OUVERTURE est testée en premier.
     """
     b = cb.bias_interpretation.strip().lower()
     if _HAWKISH_OPEN_RE.match(b):
@@ -772,8 +1168,7 @@ def _oanda_strength_scores(
     If ``market.currency_strength_oanda`` is present (dict with 8 major
     currencies on a 0-10 scale, 5.0 neutral), convert to 0-100 and replace
     the CB-bias scores.  The sort order is re-established by score.
-    If the attribute is absent or empty, return ``cb_ranking`` unchanged
-    (zero-regression fallback).
+    If the attribute is absent or empty, return ``cb_ranking`` unchanged.
     """
     oanda = getattr(market, "currency_strength_oanda", None)
     if not oanda:
@@ -810,8 +1205,13 @@ def build_currency_strength_ranking(
     central_banks: list[CentralBankSnapshot],
     regime_class: str,
 ) -> list[CurrencyStrength]:
-    """Qualitative 0-100 score per major currency. Always [PROXY]."""
-    cb_by_ccy = {ccy: cb for (name, _f, ccy), cb in zip(_CB_DEFS, central_banks)}
+    """Qualitative 0-100 score per major currency. Always [PROXY].
+
+    [N8] Appariement banque → devise par ``cb.name``, sans dépendance à
+    l'ordre des deux listes.
+    """
+    cb_by_ccy = {_CCY_BY_CB[cb.name]: cb for cb in central_banks
+                 if cb.name in _CCY_BY_CB}
     scores: dict[str, int] = {c: 50 for c in C.MAJOR_CURRENCIES}
 
     for ccy in C.MAJOR_CURRENCIES:
@@ -842,21 +1242,13 @@ def _reference_cftc_friday(now_utc: datetime) -> datetime:
     15:30 ET.  Until the next Friday's publication, the previous Friday's
     report remains the official reference (Règle Absolue n°3).
 
-    Logic:
-      1. Convert now_utc to ET to stay consistent with CFTC publication time.
-      2. Find the most recent Friday ≤ today.
-      3. If today IS a Friday but the 15:30 ET cut-off has not yet passed,
-         step back one more week (the current report is not yet released).
-
     Returns a datetime set to 15:30 ET on the reference Friday (UTC-aware).
     """
     from datetime import timedelta
     now_et = now_utc.astimezone(C.TZ_ET)
-    # days_since_friday: 0 if today is Friday, 1 if Saturday, ..., 6 if Thursday
     days_since_friday = (now_et.weekday() - 4) % 7
     candidate = now_et.replace(hour=15, minute=30, second=0, microsecond=0) \
                 - timedelta(days=days_since_friday)
-    # If it is Friday but before 15:30 ET, the current report is not yet out.
     if now_et < candidate:
         candidate -= timedelta(days=7)
     return candidate
@@ -925,13 +1317,7 @@ def _ips_from_overrides(cot_over: dict, ref_label: str) -> list[CotPositioning]:
 
 
 def _ips_from_scrape(ref_date_str: str) -> list[CotPositioning]:
-    """Path 3: live CFTC scrape with linear scaling [PROXY].
-
-    ``ref_date_str`` is the date portion only (no "CFTC Non-Commercials |"
-    prefix, no reliability tag) — see the audit-fix note in
-    ``build_ips_scores`` for why this was split out of the old
-    ``ref_label``.
-    """
+    """Path 3: live CFTC scrape with linear scaling [PROXY]."""
     ext_net, external_date = fetch_cot_data()
     if not ext_net:
         return []
@@ -942,8 +1328,8 @@ def _ips_from_scrape(ref_date_str: str) -> list[CotPositioning]:
             continue
         frac = max(-1.0, min(1.0, net / C.IPS_FULL_SCALE_CONTRACTS))
         score = int(round(50 + frac * 50))
-        # MACRO-B3 FIX : retrait du mot "OBSERVÉ" trompeur. Ce n'est pas un percentile,
-        # c'est un scaling linéaire arbitraire (150k contrats).
+        # MACRO-B3 FIX : retrait du mot "OBSERVÉ" trompeur. Ce n'est pas un
+        # percentile, c'est un scaling linéaire arbitraire (150k contrats).
         src_label = f"CFTC Non-Commercials | {external_date or ref_date_str} [PROXY · scaling linéaire]"
         rows.append(CotPositioning(
             currency=ccy, net_contracts=net, ips_score=score,
@@ -1029,8 +1415,26 @@ _CORR_BENCHMARK: dict[str, str] = {
     "DAX": "VIX", "US30": "VIX", "NAS100": "VIX", "SPX500": "VIX",
 }
 
-_CORR_SIG_MIN = getattr(C, "CORRELATION_SIGNIFICANCE_MIN", None) or getattr(
-    C, "CORR_SIGNIFICANCE_MIN", 0.2)
+
+def _resolve_corr_sig_min() -> float:
+    """Seuil de significativité de |r|.
+
+    L'ancienne écriture ``getattr(C, "A", None) or getattr(C, "B", 0.2)``
+    ignorait silencieusement une valeur configurée à 0.0 (falsy). Test
+    explicite contre ``None``, et repli documenté sur 0.2.
+    """
+    for attr in ("CORRELATION_SIGNIFICANCE_MIN", "CORR_SIGNIFICANCE_MIN"):
+        val = getattr(C, attr, None)
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                logger.warning("config.%s illisible (%r) — repli 0.2", attr, val)
+                break
+    return 0.2
+
+
+_CORR_SIG_MIN = _resolve_corr_sig_min()
 
 
 def _pct_returns(closes: list[float]) -> list[float]:
@@ -1102,11 +1506,10 @@ def _correlation_short(asset: str, market: MarketSnapshot) -> str:
 # ---------------------------------------------------------------------------
 # [M2] Horizon utilisé UNIQUEMENT pour nommer les catalyseurs dans le texte
 # « Risque d'invalidation ». Aligné sur l'horizon de veille annoncé par la
-# couche calendrier (168h) : le rapport déclarait surveiller 168h mais n'en
-# servait que 72 pour ce libellé, d'où une réunion BoJ à ~85h invisible sur
-# la fiche USD/JPY. Ne touche NI le scoring (``ev``), NI le gating
-# (``blackout_ev``).
-_CATALYST_LABEL_HORIZON_H: float = float(cal.FF_WATCH_HORIZON_H)
+# couche calendrier : le rapport déclarait surveiller 168h mais n'en servait
+# que 72 pour ce libellé, d'où une réunion BoJ à ~85h invisible sur la fiche
+# USD/JPY. Ne touche NI le scoring (``ev``), NI le gating (``blackout_ev``).
+_CATALYST_LABEL_HORIZON_H: float = float(getattr(cal, "FF_WATCH_HORIZON_H", 168.0))
 
 
 def _events_for_ccys(events: list[MacroEvent], ccys: tuple[str, ...],
@@ -1115,14 +1518,12 @@ def _events_for_ccys(events: list[MacroEvent], ccys: tuple[str, ...],
     fenêtre rétrospective utilisée pour le scoring/l'affichage (catalyst_pen,
     ev_names) -- INCHANGÉ, zero-régression sur ces deux usages.
 
-    PATCH-CALGATE-F2 (round de validation zero-régression, 31/07/2026) :
-    le SEUL appelant qui a besoin d'une fenêtre plus large est le gating de
-    blackout (``is_blackout`` couvre jusqu'à -48h pour un event Tier S,
-    cf. ``TIER_WINDOWS`` dans calendar_layer.py). Avant ce correctif,
+    PATCH-CALGATE-F2 (31/07/2026) : le SEUL appelant qui a besoin d'une
+    fenêtre plus large est le gating de blackout (``is_blackout`` couvre
+    jusqu'à -48h pour un event Tier S). Avant ce correctif,
     ``select_priority_assets`` appelait cette fonction UNE SEULE fois avec
-    ``since_h`` implicitement fixé à 6, et réutilisait le résultat tronqué à
-    la fois pour le scoring ET pour le blackout. Le correctif ajoute un
-    second appel, à fenêtre large, dédié exclusivement au gating.
+    ``since_h`` à 6 et réutilisait le résultat tronqué à la fois pour le
+    scoring ET pour le blackout.
 
     [M2] (14/09/2026) : un TROISIÈME appel, à fenêtre PROSPECTIVE large
     (``within_h=_CATALYST_LABEL_HORIZON_H``), alimente désormais le seul
@@ -1153,16 +1554,14 @@ def _compute_direction_edge(
 ) -> tuple[int, float, bool]:
     """Compute directional edge for an asset from currency strength or regime tilt.
 
-    Returns ``(direction, edge, source_is_live)``. ``source_is_live`` is
-    True only when *both* legs of the pair are scored from live Oanda D1
-    data; regime-tilt edges (commodities/indices, no ``ccys``) are never
-    Oanda-sourced and stay False.
+    Returns ``(direction, edge, source_is_live)``. ``source_is_live`` is True
+    only when *both* legs of the pair are scored from live Oanda D1 data;
+    regime-tilt edges (commodities/indices, no ``ccys``) stay False.
 
     CORRECTIF (02/08/2026) : seul un tuple à EXACTEMENT 2 éléments (une vraie
     paire FX) emprunte la branche de différentiel de force ; tout le reste
-    (0 ou 1 élément, cas des 7 instruments non-FX depuis V4-03) retombe sur
-    la branche "regime tilt". Sans ce garde-fou, ``base, quote = ccys`` levait
-    ``ValueError: not enough values to unpack``."""
+    retombe sur la branche "regime tilt". Sans ce garde-fou,
+    ``base, quote = ccys`` levait ``ValueError``."""
     if ccys and len(ccys) == 2:
         base, quote = ccys
         diff = smap.get(base, 50) - smap.get(quote, 50)
@@ -1393,7 +1792,7 @@ def _compute_rr_ratio(p: float, stop, sell, direction: int, atr) -> str:
     if risk <= 0:
         return "[N/A]"
     # PATCH-RRFLAG-F4 (31/07/2026) : format strict (1:X,X ou [N/A]) exigé par
-    # le validateur institutionnel — pas de mention "structurel" dans le champ.
+    # le validateur institutionnel.
     return f"1:{fr_num(reward / risk, 1)}"
 
 
@@ -1494,16 +1893,15 @@ def _build_setup(asset: str, direction: int, score: float, market: MarketSnapsho
 def build_catalysts(events: list[MacroEvent]) -> tuple[list[MacroEvent], list[MacroEvent], dict]:
     """Split events into 🔴 ÉLEVÉ and 🟡 MODÉRÉ, build beat/miss scenarios.
 
-    [M1] La troncature est désormais déléguée à ``_prioritise_events()``, qui
-    garantit un créneau à la décision de banque centrale la plus proche de
-    CHAQUE devise avant de remplir par proximité. Sans cette garantie, la
-    réunion BoJ du 17-18/09/2026 -- catalyseur binaire de la jambe JPY du
-    setup n°1 du jour -- était purement et simplement absente du rapport.
+    [M1] La troncature est déléguée à ``_prioritise_events()``, qui garantit un
+    créneau à la décision de banque centrale la plus proche de CHAQUE devise
+    avant de remplir par proximité. Sans cette garantie, la réunion BoJ du
+    17-18/09/2026 -- catalyseur binaire de la jambe JPY du setup n°1 du jour --
+    était purement et simplement absente du rapport.
 
     ``scenarios`` reste construit sur la liste ``high`` COMPLÈTE avant
-    troncature, exactement comme avant : un scénario beat/miss préparé pour un
-    événement qui ne s'affiche pas ne coûte rien, alors que l'inverse
-    (affichage sans scénario) laisserait une carte vide.
+    troncature : un scénario préparé pour un événement non affiché ne coûte
+    rien, alors que l'inverse laisserait une carte vide.
     """
     high = [e for e in events if e.priority in ("CRITICAL", "HIGH") and e.is_upcoming]
     medium = [e for e in events if e.priority == "MEDIUM" and e.is_upcoming]
@@ -1543,8 +1941,7 @@ def _pairs_for_ccy(ccy: str) -> list[str]:
 # Step -- Macro overlay text blocks
 # ---------------------------------------------------------------------------
 def _build_cot_summary(ips: list) -> str:
-    """Synthesize the qualitative COT/positioning summary for the 'COT &
-    Positioning' card."""
+    """Synthesize the qualitative COT/positioning summary."""
     if not ips:
         return "[N/A] — aucune donnée de positionnement disponible."
     crowded_long = [r.currency for r in ips
@@ -1569,19 +1966,24 @@ def build_macro_overlay(market: MarketSnapshot, regime: str,
                         liquidity_msg: str,
                         pc_data: Optional[dict] = None,
                         ips: Optional[list] = None) -> dict:
+    """[N6] Le « prochain catalyseur » du thème est désormais l'ancre
+    ``_anchor_event`` (plus imminent parmi CRITICAL/HIGH, sinon MEDIUM) et non
+    plus ``events[0]``, qui dépendait de l'ordre d'arrivée du flux et pouvait
+    nommer un événement Low. Le branchement « aucun événement CRITICAL/HIGH
+    programmé », jusqu'ici inatteignable, devient effectif."""
     vix = market.gauge("VIX")
     move = market.gauge("MOVE")
     dxy = market.gauge("DXY")
 
-    if events:
-        nearest = events[0].event_name
-        theme = (f"Semaine pilotée par le calendrier macro (prochain catalyseur : {nearest}). "
-                 f"Régime : {regime}.")
+    anchor = _anchor_event(events)
+    if anchor is not None:
+        theme = (f"Semaine pilotée par le calendrier macro (prochain catalyseur : "
+                 f"{anchor.event_name}). Régime : {regime}.")
         theme_src = "[Forex Factory | calendrier]"
     else:
         theme = (f"Semaine sans catalyseur macro daté majeur — lecture pilotée par le régime "
                  f"de volatilité et le positionnement plutôt que par le calendrier. Régime : {regime}.")
-        theme_src = "[N/A] — aucun événement CRITICAL/HIGH programmé"
+        theme_src = "[N/A] — aucun événement CRITICAL/HIGH/MEDIUM programmé"
 
     if dxy.available:
         dxy_ctx = f"DXY {dxy.display} ({dxy.trend or 'tendance n/d'}) — impacte EUR/USD, USD/JPY, USD/CAD."
@@ -1597,9 +1999,8 @@ def build_macro_overlay(market: MarketSnapshot, regime: str,
                     + ("Vol comprimée → stops plus serrés viables." if vix.value < 18
                        else "Vol modérée à élevée → réduire la taille, élargir les stops."))
         # DECOMMISSIONED (17/07/2026, ADR): CBOE Put/Call ratio removed from
-        # the briefing. `pc_data` stays wired through unchanged (still passed
-        # to _assess_regime/build_interpretation as None) since both already
-        # degrade gracefully on None.
+        # the briefing. `pc_data` stays wired through unchanged since both
+        # consumers already degrade gracefully on None.
     else:
         vol_regime = "VIX [N/A]"
         vol_impl = "Méthode indisponible — régime vol non évaluable [N/A]."
@@ -1621,7 +2022,10 @@ def build_risk_scenarios(events: list[MacroEvent], regime_class: str,
                          priority: list[AssetSetup],
                          central_banks: Optional[list[CentralBankSnapshot]] = None
                          ) -> tuple[dict, RiskScenario, RiskScenario, str]:
-    anchor = events[0] if events else None
+    """[N6] Ancre = ``_anchor_event(events)`` et non ``events[0]``. Le test
+    ``anchor.currency == "USD"`` qui conditionne l'affichage des probabilités
+    FedWatch porte donc maintenant sur un événement réellement majeur."""
+    anchor = _anchor_event(events)
     if anchor is not None:
         anchor_name = anchor.event_name
         anchor_src = "[Forex Factory | calendrier]"
@@ -1657,7 +2061,7 @@ def build_risk_scenarios(events: list[MacroEvent], regime_class: str,
 
     risk_main = {
         "desc": ("Surprise macro sur le principal catalyseur de la semaine "
-                 f"({anchor_name}) déclenchant un repricing brutal." if events else
+                 f"({anchor_name}) déclenchant un repricing brutal." if anchor is not None else
                  f"Repricing brutal piloté par le {anchor_name}."),
         "asset": priority[0].asset if priority else "—",
         "level": (priority[0].invalidation_level
@@ -1741,8 +2145,8 @@ def build_context(
 
     # A6-fix: sequential execution to avoid SIGSEGV from nested
     # ThreadPoolExecutor + curl_cffi/libcurl thread-unsafety.
-    # [M6] ``events`` est transmis pour alimenter le repli « prochaine
-    # réunion » sur le flux calendrier (corrige le [N/A] de la carte BoE).
+    # [M6]/[N1] ``events`` alimente le repli « prochaine réunion » ET la
+    # résolution du taux directeur depuis le flux (carte BoJ).
     central_banks = build_central_bank_context(overrides, now_utc, events=events)
     ips, cot_ref_label = build_ips_scores(overrides, now_utc)
     sofr_effr_bp = fetch_liquidity_stress()
