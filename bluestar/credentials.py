@@ -30,6 +30,78 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+__version__ = "2026-09-15.1"  # P0-2/secrets : chargement .env (python-dotenv)
+
+
+# ---------------------------------------------------------------------------
+# MISSION SECRETS (15/09/2026) — le trou identifié : Streamlit ne charge PAS
+# .env (il ne lit que st.secrets / secrets.toml). Les trois secrets du desk
+# (OANDA_API_KEY ou OANDA_ACCESS_TOKEN, OANDA_ACCOUNT_ID, FRED_API_KEY) sont
+# donc relégués dans l'environnement système, rare dans un conteneur. Ce bloc
+# comble le trou SANS toucher à la résolution existante : le .env est copié
+# dans os.environ (override=False : ce qui existe déjà — secrets.toml, env
+# système, service — garde la main), et les fonctions de résolution ci-dessous
+# continuent de lire st.secrets PUIS os.environ comme avant.
+#
+# Discipline thread (cf. docstring du module + SIGSEGV 23/07) : python-dotenv
+# n'est importé qu'ici et dans external_sources.py, À L'IMPORT DU MODULE (donc
+# thread principal uniquement) — jamais depuis un worker. Idempotent via le
+# marqueur os.environ "_BLUESTAR_DOTENV_PATH" : premier importé = unique
+# lecteur du fichier ; poser ce marqueur avant tout import désactive le
+# chargement .env pour tout le processus (tests « sans clé »).
+#
+# Chemin alternatif documenté : .streamlit/secrets.toml (toujours prioritaire
+# sur le .env grâce à override=False + ordre st.secrets-then-env).
+# ---------------------------------------------------------------------------
+def _ensure_dotenv_loaded() -> None:
+    """Charge le .env projet dans os.environ — main thread, à l'import.
+
+    Échec honnête : absence de python-dotenv ou d'un fichier candidat → log
+    WARNING et on continue (les chemins st.secrets / environnement système
+    restent fonctionnels). N'invente jamais une clé, ne masque jamais un
+    secret déjà posé.
+    """
+    if os.environ.get("_BLUESTAR_DOTENV_PATH"):
+        return
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        logger.warning(
+            "python-dotenv absent — le .env n'est PAS chargé depuis "
+            "credentials.py ; secrets attendus dans st.secrets "
+            "(.streamlit/secrets.toml) ou l'environnement système.")
+        return
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.environ.get("BLUESTAR_DOTENV_PATH"),          # override explicite
+        os.path.join(here, ".env"),                       # package bluestar/
+        os.path.join(os.path.dirname(here), ".env"),      # racine applicative (app.py)
+        os.path.join(os.path.dirname(os.path.dirname(here)), ".env"),  # parent
+        os.path.join(os.getcwd(), ".env"),                # courant au lancement
+    ]
+    for path in candidates:
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            load_dotenv(path, override=False)
+        except OSError as exc:  # pragma: no cover — partage réseau éphémère
+            logger.warning("Chargement .env impossible (%s) : %s", path, exc)
+            continue
+        os.environ["_BLUESTAR_DOTENV_PATH"] = path
+        logger.warning("BLUESTAR — secrets .env chargés depuis %s "
+                       "(override=False ; secrets.toml/environnement système "
+                       "prioritaires)", path)
+        return
+    logger.warning(
+        "BLUESTAR — aucun .env trouvé (candidats : BLUESTAR_DOTENV_PATH, "
+        "%s, %s, %s, cwd) — les secrets doivent venir de st.secrets/"
+        "secrets.toml ou de l'environnement système ; sinon mode sans clé "
+        "(dégradation FALLBACK assumée).", here, os.path.dirname(here),
+        os.path.dirname(os.path.dirname(here)))
+
+
+_ensure_dotenv_loaded()
+
 try:
     import streamlit as st  # type: ignore
     _ST_OK = True

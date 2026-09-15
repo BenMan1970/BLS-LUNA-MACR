@@ -193,8 +193,9 @@ except Exception:  # pragma: no cover
     _inst = None
 from .oanda_data import fr_num
 from .external_sources import (
-    fetch_central_bank_rates,
-    central_bank_rate_source,            # AUDIT-ENRICHMENT 15/07/2026: BoE via IADB
+    fetch_central_bank_rates,             # wrapper contrat historique dict[str,float]
+    fetch_central_bank_rates_with_meta,   # P0-2 (15/09/2026) : provenance RÉELLE par run
+    central_bank_rate_source,             # repli d'étiquetage (chemin principal attendu)
     fetch_fedwatch_probabilities,
     fetch_cot_data,
     fetch_liquidity_stress,
@@ -816,7 +817,8 @@ def build_central_bank_context(overrides: Optional[dict],
     Précédence du TAUX (``kind``) :
       1. ``feed`` si la banque est dans ``_CB_PREFER_CALENDAR`` (BoJ : la
          série FRED amont n'est pas la bonne grandeur, cf. [N1]).
-      2. ``live`` : FRED / BoE IADB (``fetch_central_bank_rates``).
+      2. ``live`` : FRED (FED/BCE/BoJ) et BoE via Bank-Rate.asp (repli IADB)
+         -- ``fetch_central_bank_rates_with_meta`` [P0-2].
       3. ``feed`` si ``_RATE_FEED_BEATS_OVERRIDE`` (défaut True, cohérent avec
          la règle « live d'abord » du 15/07/2026).
       4. ``override`` : ``overrides['central_banks'][name]['rate']``.
@@ -837,7 +839,13 @@ def build_central_bank_context(overrides: Optional[dict],
 
     # A6-fix: sequential calls — ThreadPoolExecutor nested inside
     # ThreadPoolExecutor caused SIGSEGV with curl_cffi/libcurl (non-thread-safe).
-    fred_rates = fetch_central_bank_rates()     # {name: pct} or {}
+    # P0-2 (15/09/2026) : la version « _with_meta » est le chemin canonique —
+    # elle rend (valeur, source RÉELLE) par banque et son contrat réseau est
+    # identique (mêmes appels, internes au module external_sources, déjà
+    # séquentiels du point de vue d'ici). ``fred_rates`` reste la vue
+    # {name: float} pour toute la logique de résolution en aval (inchangée).
+    rates_meta = fetch_central_bank_rates_with_meta()   # {name: (pct, source)} or {}
+    fred_rates: dict[str, float] = {n: v for n, (v, _s) in rates_meta.items()}
     fedwatch = fetch_fedwatch_probabilities()   # {pause/cut/hike} or None
 
     out: list[CentralBankSnapshot] = []
@@ -939,7 +947,11 @@ def build_central_bank_context(overrides: Optional[dict],
 
         # --- [N4] Stamp : reflète l'origine RÉELLE de la valeur affichée ---
         if kind == "live":
-            src = central_bank_rate_source(name)
+            # P0-2 : provenance réellement servie ce run (BoE scrape vs IADB),
+            # avec repli sur l'étiquette du chemin principal si la méta est
+            # muette (ne peut arriver que pour un appelant fantôme de
+            # fetch_central_bank_rates — jamais par ce chemin).
+            src = rates_meta.get(name, (None, None))[1] or central_bank_rate_source(name)
             if fw_used:
                 src = (src + " + CME FedWatch").strip(" +")
             stamp = SourceStamp(src or "external", Reliability.PRIMARY, timestamp=now_utc)

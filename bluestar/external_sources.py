@@ -83,6 +83,102 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# P0-1 FINGERPRINT + P0-2 .env — ajout 15/09/2026
+#
+# external_sources est le module dont le déploiement a été suspecté (le
+# briefing du 14/09/2026 affichait les labels de l'ANCIENNE version — voir
+# le rapport d'audit « Avis macro external sources.txt »). Un fingerprint
+# (version + chemin importé + sha256 du fichier) est donc journalisé à
+# l'IMPORT du module, sur le thread principal uniquement — jamais depuis un
+# worker (même discipline que st.secrets, cf. SIGSEGV documenté 23/07).
+# Le sha256 est l'identité réelle du fichier chargé : il rend impossible
+# qu'une copie fantôme ailleurs dans le PYTHONPATH passe inaperçue.
+# ---------------------------------------------------------------------------
+__version__ = "2026-09-15.1"  # P0-2 : ordre BoE inversé + fetch_central_bank_rates_with_meta
+
+
+def _file_sha256_12() -> Optional[str]:
+    """sha256 (12 premiers hex) du fichier source de CE module, ou None."""
+    try:
+        import hashlib
+        with open(os.path.abspath(__file__), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:12]
+    except OSError as exc:  # pragma: no cover — partage réseau éphémèrement indisponible
+        logger.warning("external_sources: fingerprint de fichier indisponible (%s)", exc)
+        return None
+
+
+def _ensure_dotenv_loaded() -> None:
+    """Charge le .env projet dans os.environ — main thread uniquement, à l'import.
+
+    TROIS règles de câblage (mission secrets 15/09/2026) :
+      * python-dotenv n'est importé qu'ici et dans credentials.py — jamais
+        depuis un worker thread ;
+      * ``override=False`` : un secret déjà posé (st.secrets/secrets.toml,
+        environnement système, service) garde la main sur le .env ;
+      * la CLÉ FRED RESTE RELUE À CHAQUE APPEL dans ``_fred_api_key()`` —
+        aucun cache module-level n'est introduit ici (bug du 23/07 : une
+        lecture figée à l'import survivait mal au rajout tardif de la clé).
+
+    Idempotent multi-modules : le marqueur ``_BLUESTAR_DOTENV_PATH`` posé dans
+    os.environ par le premier importé (ici ou credentials.py) rend le second
+    appel no-op — le .env n'est lu qu'une fois par processus. Le poser AVANT
+    import avec une valeur quelconque désactive donc le chargement .env pour
+    tout le processus (utile pour rejouer le mode « sans clé » de façon
+    contrôlée dans les tests).
+    """
+    if os.environ.get("_BLUESTAR_DOTENV_PATH"):
+        return
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        logger.warning(
+            "python-dotenv absent — le .env n'est PAS chargé ; les secrets "
+            "doivent venir de st.secrets (secrets.toml) ou de l'environnement "
+            "système. pip install python-dotenv pour activer le chemin .env.")
+        return
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.environ.get("BLUESTAR_DOTENV_PATH"),          # override explicite
+        os.path.join(here, ".env"),                       # package bluestar/
+        os.path.join(os.path.dirname(here), ".env"),      # racine applicative (app.py)
+        os.path.join(os.path.dirname(os.path.dirname(here)), ".env"),  # parent de la racine
+        os.path.join(os.getcwd(), ".env"),                # courant au lancement
+    ]
+    for path in candidates:
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            load_dotenv(path, override=False)
+        except OSError as exc:  # pragma: no cover
+            logger.warning("Chargement .env impossible (%s) : %s", path, exc)
+            continue
+        os.environ["_BLUESTAR_DOTENV_PATH"] = path
+        logger.warning("BLUESTAR — secrets .env chargés depuis %s "
+                       "(override=False ; secrets.toml/environnement système prioritaires)", path)
+        return
+    logger.warning(
+        "BLUESTAR — aucun .env trouvé (candidats : BLUESTAR_DOTENV_PATH, "
+        "%s, %s, %s, cwd) — les clés live (OANDA/FRED) restent accessibles via "
+        "st.secrets/secrets.toml ou l'environnement système ; sinon dégradation "
+        "FALLBACK assumée.", here, os.path.dirname(here),
+        os.path.dirname(os.path.dirname(here)))
+
+
+_ensure_dotenv_loaded()
+
+
+def _log_import_fingerprint() -> None:
+    """P0-1 — preuve au boot de la version de CE fichier réellement importée."""
+    sha = _file_sha256_12()
+    logger.warning("BLUESTAR external_sources v%s chargé depuis %s (sha256 %s)",
+                   __version__, os.path.abspath(__file__), sha or "?")
+
+
+_log_import_fingerprint()
+
+
 # Optional Streamlit secrets access (mirrors oanda_data.py degradation pattern).
 try:
     import streamlit as st  # type: ignore
@@ -522,9 +618,14 @@ def fetch_oil_fred(key: str) -> Optional[tuple[float, str]]:
 #
 # Le blocage observé peut être lié au User-Agent (ancien : identifiant
 # "BLUESTAR/8.1" explicite). Le header a été changé pour un profil
-# navigateur ci-dessous ; NON re-testé depuis cet environnement (pas
-# d'accès réseau sortant vers bankofengland.co.uk ici) — à valider dans
-# le vôtre avant de faire confiance au chemin CSV.
+# navigateur ci-dessous ; re-testé le 14/09/2026 depuis l'environnement de
+# prod : l'export IADB répond de nouveau 200 + application/csv avec ces
+# headers (dernières lignes "11 Sep 2026,3.75"). MAIS robots.txt (vérifié le
+# même jour) contient toujours "Disallow: /boeapps/database/_iadb-FromShowColumns.asp"
+# et "Disallow: /boeapps/iadb" — le chemin reste donc RÉSERVÉ au repli, et
+# la page publique Bank-Rate.asp (autorisée, 200, "3.75%") devient le chemin
+# PRIMAIRE (P0-2, 15/09/2026). Le stamp ne revendique IADB que si IADB a
+# réellement servi (voir fetch_central_bank_rates_with_meta).
 _BOE_IADB_URL = "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp"
 _BOE_BANK_RATE_URL = "https://www.bankofengland.co.uk/boeapps/database/Bank-Rate.asp"
 _BOE_BANK_RATE_CODE = "IUDBEDR"  # Bank Rate officielle (code série IADB)
@@ -576,6 +677,13 @@ def _boe_parse_date(raw: str) -> Optional[datetime.date]:
 
 def _boe_bank_rate() -> Optional[tuple[float, str]]:
     """Fetch the latest BoE Bank Rate observation from the IADB CSV export.
+
+    REPLI (P0-2, 15/09/2026) derrière le scrape Bank-Rate.asp : robots.txt
+    de bankofengland.co.uk interdit toujours ce chemin (« Disallow:
+    /boeapps/database/_iadb-FromShowColumns.asp »), vérifié de nouveau
+    le 14/09/2026 ; le 200/CSV observé ce jour avec les headers navigateur
+    ne rend pas le chemin conforme — il ne sert donc que si la page publique
+    est injoignable, et le stamp affiché le dit alors explicitement.
 
     Returns ``(value, date_iso)`` or ``None`` on any failure — never raises,
     matching every other fetcher in this module. NOTE: this endpoint is
@@ -651,9 +759,11 @@ def _boe_bank_rate() -> Optional[tuple[float, str]]:
 
 
 def _boe_bank_rate_scrape() -> Optional[tuple[float, str]]:
-    """Fallback : lit le taux courant depuis la page publique Bank-Rate.asp
-    plutôt que l'export CSV IADB (utile si ce dernier reste bloqué même
-    avec des headers navigateur — cf. commentaire d'audit plus haut).
+    """Chemin PRIMAIRE BoE (P0-2, 15/09/2026) : lit le taux courant depuis la
+    page publique Bank-Rate.asp — autorisée par robots.txt, vérifiée 200 et
+    « 3.75% » le 14/09/2026 — plutôt que l'export CSV IADB (interdit par
+    robots.txt ; bloqué « Access denied » le 23/07/2026 ; ne sert que de
+    repli via _boe_bank_rate()).
 
     Vérifiée manuellement le 23/07/2026 : cette page répond 200 sans
     blocage et affiche "Current official Bank Rate" suivi du taux, plus un
@@ -727,136 +837,170 @@ def _boe_bank_rate_scrape() -> Optional[tuple[float, str]]:
     return rate_val, date_iso
 
 
+# Source affichée par défaut quand on ne connaît QUE le nom de la banque
+# (chemin PRIMAIRE actuellement câblé). La provenance RÉELLE par run — celle
+# qui a réellement répondu, IADB vs Bank-Rate.asp pour la BoE — est portée par
+# ``fetch_central_bank_rates_with_meta()`` et consommée par macro_engine.
+# (P0-2, 15/09/2026 — label honnête validé par le reviewer.)
+_CB_PRIMARY_SOURCE: dict[str, str] = {
+    "FED": "FRED",                              # série DFEDTARU (Fed funds cible)
+    "BCE": "ECB Data Portal · DFR",            # dépôt FRED ECBDFR = miroir du DFR BCE
+    "BoJ": "FRED",                              # série IRSTCI01JPM156N (rare ; flux préféré)
+    "BoE": "Bank of England · Bank-Rate.asp",  # scrape = chemin primaire dès P0-2
+}
+
+
 def central_bank_rate_source(name: str) -> str:
-    """Human-readable source label for a rate resolved by
-    ``fetch_central_bank_rates()`` — lets callers (macro_engine.py) render
-    an accurate stamp instead of hardcoding "FRED" for every entry, which
-    would now be wrong for "BoE" specifically (audit-enrichment 15/07/2026).
+    """Label de la source PRINCIPALE qui résout ``name`` dans
+    ``fetch_central_bank_rates()`` — repli d'étiquetage pour un appelant qui
+    ne disposerait pas de la provenance réelle par run.
+
+    INCHANGÉ de signature (retourne ``str``). P0-2 (15/09/2026) : la valeur
+    BoE n'est plus le IADB en dur (le chemin réel est le scrape Bank-Rate.asp,
+    le CSV IADB restant bloqué par robots.txt) et BCE rend la source primaire
+    « ECB Data Portal · DFR » (le dépôt FRED n'en est que le transport). La
+    provenance réellement servie est rendue par ``fetch_central_bank_rates_with_meta``.
     """
-    return "Bank of England · IADB" if name == "BoE" else "FRED"
+    return _CB_PRIMARY_SOURCE.get(name, "FRED")
 
 
-def fetch_central_bank_rates() -> dict[str, float]:
-    """Return ``{cb_name: rate_pct}`` for every rate a live source can serve.
+def _boe_with_source() -> Optional[tuple[float, str]]:
+    """Résout le Bank Rate BoE en renvoyant AUSSI la source qui a servi.
 
-    Audit A1 FIX: chaque série FRED résolue est contrôlée en fraîcheur (date
-    d'observation) et en plausibilité (bornes _CB_RATE_BOUNDS). Une série qui
-    échoue est écartée avec un WARNING, dégradant proprement vers [N/A] en aval.
-
-    Audit-ENRICHMENT (15/07/2026): "BoE" est désormais résolu ici aussi, via
-    la Bank of England elle-même plutôt que FRED (voir section 1bis) — le
-    contrat public de cette fonction ({name: float}) est inchangé, BoE
-    apparaît simplement comme une clé de plus quand la source répond.
-    Utiliser ``central_bank_rate_source(name)`` en aval pour savoir quelle
-    source a réellement servi une entrée donnée (au lieu de supposer "FRED").
+    P0-2 : ordre inversé — scrape Bank-Rate.asp EN PREMIER (page publique
+    autorisée par robots.txt, vérifiée 200/« 3.75% »), export CSV IADB en
+    REPLI (bloqué par robots.txt : « Disallow: /boeapps/iadb »). Retourne
+    ``(valeur_pct, libellé_source)`` ou ``None`` ; ne lève jamais.
     """
-    out: dict[str, float] = {}
-
-    def _resolve_fred(name: str, series_id: str) -> Optional[float]:
-        res = _fred_series_dated(series_id)
-        if res is None:
-            logger.warning("CB rate: %s (%s) — aucune observation FRED", name, series_id)
-            return None
-
-        val, dt_iso = res
-
-        # --- Contrôle 1 : fraîcheur ---
-        try:
-            obs_date = datetime.date.fromisoformat(dt_iso)
-            age_days = (datetime.date.today() - obs_date).days
-            if age_days > _CB_MAX_STALENESS_DAYS:
-                logger.warning(
-                    "CB rate: %s (%s) — observation datée du %s (%d j) "
-                    "→ série potentiellement gelée, valeur écartée",
-                    name, series_id, dt_iso, age_days,
-                )
-                return None
-        except (ValueError, TypeError):
-            # Date illisible → on NE GARDE PAS la valeur (élimine le risque de sentinelle)
-            logger.warning(
-                "CB rate: %s (%s) — date illisible '%s', valeur écartée",
-                name, series_id, dt_iso,
-            )
-            return None
-
-        # --- Contrôle 2 : plausibilité ---
-        bounds = _CB_RATE_BOUNDS.get(name)
-        if bounds is not None:
-            lo, hi = bounds
-            if not (lo <= val <= hi):
-                logger.warning(
-                    "CB rate: %s (%s) — valeur %.4f hors bornes [%.1f, %.1f], écartée",
-                    name, series_id, val, lo, hi,
-                )
-                return None
-
-        return val
-
-    def _resolve_boe() -> Optional[float]:
+    res = _boe_bank_rate_scrape()
+    used = _CB_PRIMARY_SOURCE["BoE"]
+    if res is None:
+        logger.warning(
+            "CB rate: BoE (scrape %s) — aucune observation, tentative repli "
+            "CSV IADB %s", _BOE_BANK_RATE_URL.rsplit("/", 1)[-1], _BOE_BANK_RATE_CODE)
         res = _boe_bank_rate()
-        if res is None:
+        used = "Bank of England · IADB"
+    if res is None:
+        logger.warning("CB rate: BoE — aucune source (scrape et CSV) n'a répondu")
+        return None
+
+    val, dt_iso = res
+    try:
+        obs_date = datetime.date.fromisoformat(dt_iso)
+        age_days = (datetime.date.today() - obs_date).days
+        if age_days > _BOE_MAX_STALENESS_DAYS:
             logger.warning(
-                "CB rate: BoE (IADB %s) — aucune observation, tentative "
-                "fallback scrape Bank-Rate.asp", _BOE_BANK_RATE_CODE,
-            )
-            res = _boe_bank_rate_scrape()
-        if res is None:
-            logger.warning("CB rate: BoE — aucune source (CSV et scrape) n'a répondu")
+                "CB rate: BoE (%s) — observation datée du %s (%d j) "
+                "→ série potentiellement gelée, valeur écartée",
+                used, dt_iso, age_days)
             return None
+    except (ValueError, TypeError):
+        logger.warning("CB rate: BoE (%s) — date illisible '%s', valeur écartée",
+                        used, dt_iso)
+        return None
 
-        val, dt_iso = res
-
-        # --- Contrôle 1 : fraîcheur (fenêtre BoE dédiée, cf. _BOE_MAX_STALENESS_DAYS) ---
-        try:
-            obs_date = datetime.date.fromisoformat(dt_iso)
-            age_days = (datetime.date.today() - obs_date).days
-            if age_days > _BOE_MAX_STALENESS_DAYS:
-                logger.warning(
-                    "CB rate: BoE (IADB) — observation datée du %s (%d j) "
-                    "→ série potentiellement gelée, valeur écartée",
-                    dt_iso, age_days,
-                )
-                return None
-        except (ValueError, TypeError):
-            logger.warning("CB rate: BoE (IADB) — date illisible '%s', valeur écartée", dt_iso)
+    bounds = _CB_RATE_BOUNDS.get("BoE")
+    if bounds is not None:
+        lo, hi = bounds
+        if not (lo <= val <= hi):
+            logger.warning(
+                "CB rate: BoE (%s) — valeur %.4f hors bornes [%.1f, %.1f], écartée",
+                used, val, lo, hi)
             return None
+    return val, used
 
-        # --- Contrôle 2 : plausibilité ---
-        bounds = _CB_RATE_BOUNDS.get("BoE")
-        if bounds is not None:
-            lo, hi = bounds
-            if not (lo <= val <= hi):
-                logger.warning(
-                    "CB rate: BoE (IADB) — valeur %.4f hors bornes [%.1f, %.1f], écartée",
-                    val, lo, hi,
-                )
-                return None
 
-        return val
+def _resolve_fred_with_source(name: str,
+                              series_id: str) -> Optional[tuple[float, str]]:
+    """Résolution FRED d'un taux avec les contrôles Audit A1 (fraîcheur +
+    plausibilité) ; renvoie AUSSI le libellé de source affiché. Ne lève jamais."""
+    res = _fred_series_dated(series_id)
+    if res is None:
+        logger.warning("CB rate: %s (%s) — aucune observation FRED", name, series_id)
+        return None
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(_CB_RATE_SERIES) + 1) as ex:
-        future_to_name = {ex.submit(_resolve_fred, name, series_id): name
-                          for name, series_id in _CB_RATE_SERIES.items()}
-        future_to_name[ex.submit(_resolve_boe)] = "BoE"
+    val, dt_iso = res
+    try:
+        obs_date = datetime.date.fromisoformat(dt_iso)
+        age_days = (datetime.date.today() - obs_date).days
+        if age_days > _CB_MAX_STALENESS_DAYS:
+            logger.warning(
+                "CB rate: %s (%s) — observation datée du %s (%d j) "
+                "→ série potentiellement gelée, valeur écartée",
+                name, series_id, dt_iso, age_days)
+            return None
+    except (ValueError, TypeError):
+        logger.warning("CB rate: %s (%s) — date illisible '%s', valeur écartée",
+                        name, series_id, dt_iso)
+        return None
+
+    bounds = _CB_RATE_BOUNDS.get(name)
+    if bounds is not None:
+        lo, hi = bounds
+        if not (lo <= val <= hi):
+            logger.warning(
+                "CB rate: %s (%s) — valeur %.4f hors bornes [%.1f, %.1f], écartée",
+                name, series_id, val, lo, hi)
+            return None
+    return val, _CB_PRIMARY_SOURCE.get(name, "FRED")
+
+
+def fetch_central_bank_rates_with_meta() -> dict[str, tuple[float, str]]:
+    """Return ``{cb_name: (rate_pct, source_label)}`` — provenance RÉELLE.
+
+    NOUVEAU contrat additif (P0-2) : chaque entrée porte le libellé de la
+    source QUI A VRAIMENT SERVÉ la valeur ce run (p. ex. BoE « Bank of England
+    · Bank-Rate.asp » si le scrape a répondu, « Bank of England · IADB » si
+    c'est le CSV qui a servi). macro_engine consomme cette méta pour afficher
+    un stamp honnête. ``fetch_central_bank_rates()`` (``dict[str, float]``)
+    devient le wrapper rétro-compatible de cette fonction.
+    """
+    out: dict[str, tuple[float, str]] = {}
+    with concurrent.futures.ThreadPoolExecutor(
+            max_workers=len(_CB_RATE_SERIES) + 1) as ex:
+        future_to_name = {
+            ex.submit(_resolve_fred_with_source, name, series_id): name
+            for name, series_id in _CB_RATE_SERIES.items()
+        }
+        future_to_name[ex.submit(_boe_with_source)] = "BoE"
         for future in concurrent.futures.as_completed(future_to_name):
             name = future_to_name[future]
             try:
-                val = future.result()
-            except Exception:
+                res = future.result()
+            except Exception:  # noqa: BLE001 — point défensif documenté : ne jamais propager un worker
                 logger.exception("CB rate: exception imprévue pour %s", name)
-                val = None
-            if val is not None:
-                out[name] = val
-                
+                res = None
+            if res is not None:
+                out[name] = res
+
     _all_names = set(_CB_RATE_SERIES) | {"BoE"}
     if not out:
         logger.error("CB rate: AUCUN taux résolu — différentiels indisponibles")
     else:
         missing = _all_names - set(out)
         if missing:
-            logger.warning("CB rate: taux manquants pour %s — dégradation [N/A] attendue", ", ".join(sorted(missing)))
-
+            logger.warning("CB rate: taux manquants pour %s — dégradation [N/A] attendue",
+                           ", ".join(sorted(missing)))
     return out
+
+
+def fetch_central_bank_rates() -> dict[str, float]:
+    """Return ``{cb_name: rate_pct}`` for every rate a live source can serve.
+
+    CONTRAT PUBLIC INCHANGÉ (``dict[str, float]``, règle 1 du brief). Depuis
+    P0-2 ce n'est plus qu'un WRAPPER de ``fetch_central_bank_rates_with_meta``
+    qui projette la valeur et jette le libellé de source. Les contrôles de
+    fraîcheur/plausibilité (audit A1), l'ajout BoE hors FRED (audit 15/07) et
+    le nouveau chemin primaire BoE (scrape Bank-Rate.asp, P0-2) vivent tous
+    dans la fonction méta — donc dans CE wrapper, sans duplication.
+
+    Pour une provenance exacte par run (quelle source BoE a réellement servi),
+    appeler ``fetch_central_bank_rates_with_meta()`` ; ``central_bank_rate_source``
+    ne rend plus que le libellé principal par défaut (repli d'étiquetage).
+    """
+    meta = fetch_central_bank_rates_with_meta()
+    return {name: val for name, (val, _src) in meta.items()}
+
 
 
 def fetch_liquidity_stress() -> Optional[float]:
