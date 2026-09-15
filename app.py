@@ -27,8 +27,17 @@ from bluestar.macro_engine import build_context, fr_date, fr_day_name, session_l
 from bluestar.oanda_data import build_market_snapshot
 from bluestar.renderer import render_html
 from bluestar.validation import validate_context, validate_html
+from bluestar.fingerprint import log_boot_fingerprints, summary_for_ui
 
 logging.basicConfig(level=logging.WARNING)
+
+# P0-1 (15/09/2026) — preuve de déploiement : chaque module critique est
+# journalisé (version · chemin importé · sha256 du fichier réellement chargé)
+# au boot, sur le thread principal, AVANT tout cache et avant tout worker.
+# C'est cette ligne qui répond à « le fichier corrigé est-il bien celui qui
+# tourne ? » — un sha256 différent de celui du dépôt = copie fantôme ou
+# serveur non redémarré après déploiement.
+_BOOT_FINGERPRINTS = log_boot_fingerprints()
 
 st.set_page_config(page_title="BLUESTAR · Macro Briefing Engine",
                    page_icon="🛰️", layout="wide",
@@ -74,6 +83,9 @@ label, is_live = session_label(now_cet)
 with st.sidebar:
     st.caption("⬡ BLUESTAR SYSTEM")
     st.markdown(f"### MACRO BRIEFING ENGINE\n`v{__version__}`")
+    # P0-1 — proof-of-deploy visuelle (le détail complet est dans les logs
+    # Streamlit, journalisé au boot par log_boot_fingerprints()).
+    st.caption("🧬 " + summary_for_ui(_BOOT_FINGERPRINTS))
     st.divider()
     st.caption("HORLOGE")
     st.markdown(f"**{fr_day_name(now_cet)} {fr_date(now_cet)}**")
@@ -91,7 +103,8 @@ with st.sidebar:
     st.caption(
         "Ces champs n'ont **aucune source keyless / live** possible et ne sont "
         "donc jamais auto-remplis : **FAIT/BIAIS narratif des banques centrales** "
-        "(le taux directeur lui-même est live via FRED/BoE IADB — voir ci-dessous), "
+        "(le taux directeur lui-même est live via FRED · ECB Data Portal DFR · "
+        "BoE Bank-Rate.asp — voir les stamps ci-dessous), "
         "**Surprise Index** (aucune API gratuite connue), **COT Non-Commercials** "
         "en secours uniquement si `institutional.fetch_positioning_stats` échoue. "
         "Les prix marchés (FX/indices/gauges) sont exclusivement live "
